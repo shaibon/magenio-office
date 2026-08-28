@@ -99,6 +99,19 @@ test('a missing command falls back to the default, then to claude', () => {
   assert.equal(launch({}).bin, 'claude');
 });
 
+test('an explicit provider with no command picks that provider binary', () => {
+  // A provider-only spawn must NOT fall through to defaultCommand 'claude';
+  // resolving the binary via defaultCommandForProvider is what keeps an
+  // opencode worker on 'opencode' instead of dying in ~279ms.
+  const l = launch({
+    requestProvider: 'opencode',
+    requestModel: 'deepseek/deepseek-v4-flash',
+    defaultCommand: 'claude'
+  });
+  assert.equal(l.bin, 'opencode');
+  assert.deepEqual(l.args, ['--model', 'deepseek/deepseek-v4-flash']);
+});
+
 test('main and renderer split with the SAME tokenizer (shared module)', () => {
   // The old inline copy was byte-identical to the renderer's; now it IS the
   // renderer's. One example locks the routing through the shared function.
