@@ -15,7 +15,7 @@ import { initAutoUpdater, abortPendingRestart } from './updater';
 import { RealtimeFloorWatcher } from './realtimeFloorWatcher';
 import {
   readConfig, writeConfig, setAgentTokenCap, resetConfig, onConfigWritten, ensureHarnessHome, ensureClaudePermissionsAccepted,
-  modelForRole, OPS_STANDUP_MISSION, HEARTBEAT_MISSION, JIRA_POLL_MISSION, COMPACT_MAINTENANCE_MISSION, type HarnessConfig, type ScheduledMission
+  modelForRole, OPS_STANDUP_MISSION, HEARTBEAT_MISSION, JIRA_POLL_MISSION, TRELLO_INTAKE_MISSION, COMPACT_MAINTENANCE_MISSION, type HarnessConfig, type ScheduledMission
 } from './config';
 import { listDir, readFileText, readFileBinary, writeFileText, statAbs, expandTilde } from './fs';
 import { normalizeWeekly, weeklyDelayMs } from '../shared/weeklySchedule';
@@ -942,6 +942,19 @@ function ensureDefaultMissions(): void {
     writeConfig({
       missions: has ? missions : [...missions, { ...JIRA_POLL_MISSION, lastFiredAt: Date.now() }],
       jiraPollSeeded: true
+    });
+  }
+
+  // Seed the Trello intake once. Shipped DISABLED like the Jira poll — it
+  // creates issues on a real tracker, so the user opts in from the Schedules
+  // panel once a board is bound to a project.
+  const cfgTrelloIntake = readConfig();
+  if (!cfgTrelloIntake.trelloIntakeSeeded) {
+    const missions = cfgTrelloIntake.missions ?? [];
+    const has = missions.some((m) => m.id === TRELLO_INTAKE_MISSION.id);
+    writeConfig({
+      missions: has ? missions : [...missions, { ...TRELLO_INTAKE_MISSION, lastFiredAt: Date.now() }],
+      trelloIntakeSeeded: true
     });
   }
 

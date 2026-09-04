@@ -47,7 +47,9 @@ import { resolveGodName } from '../shared/godIdentity';
 /** The subset of HarnessConfig the hive consumes for the default-MCP merge.
  *  Kept as a local shape so hive.ts never imports the foundation-owned config
  *  module just for a type. */
-type McpDefaultsMap = { [id: string]: { enabled: boolean } } | undefined;
+type McpDefaultsMap =
+  | { [id: string]: { enabled: boolean; agents?: string[]; command?: string; args?: string[] } }
+  | undefined;
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 

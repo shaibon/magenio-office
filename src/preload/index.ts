@@ -285,7 +285,7 @@ export interface HarnessConfig {
   godModel?: string;
   /** Per-server consent for the default MCP bundle, keyed by catalog id. Mirrors
    *  src/main/config.ts. */
-  mcpDefaults?: { [id: string]: { enabled: boolean } };
+  mcpDefaults?: { [id: string]: { enabled: boolean; agents?: string[]; command?: string; args?: string[] } };
   semanticMemory: boolean;
   embeddingModel: 'minilm' | 'embeddinggemma';
   missions?: ScheduledMission[];
