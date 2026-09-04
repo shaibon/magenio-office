@@ -56,7 +56,7 @@ export interface McpCatalogEntry {
  *  runs it inside its own agents, so a moving `main` would mean two installs
  *  are not the same software. Raising this tag is a reviewable code change. */
 export const TRELLO_MCP_REPO_URL = 'https://github.com/delorenj/mcp-server-trello.git';
-export const TRELLO_MCP_TAG = 'v1.8.0';
+export const TRELLO_MCP_TAG = 'v1.8.1';
 
 /** The default MCP bundle. Safe/read-only servers are ON; anything that writes
  *  beyond the workspace or needs a secret is OFF until the user consents. */
