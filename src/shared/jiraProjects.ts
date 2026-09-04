@@ -9,6 +9,8 @@
  * docs/superpowers/specs/2026-08-29-jira-project-mapping-design.md.
  */
 
+import type { TrelloIntakeBinding } from './trelloIntake';
+
 export interface JiraProjectBinding {
   /** Jira project key, e.g. "BURD". Immutable once created (identity for CRUD). */
   key: string;
@@ -18,6 +20,11 @@ export interface JiraProjectBinding {
   baseBranch: string;
   /** Agent ids that cover this project. Absent/empty = all agents. */
   agents?: string[];
+  /** Trello source upstream of this project: the cards in these lists become
+   *  issues of `key`. Absent = no Trello intake. Deliberately a field on the
+   *  Jira binding and not a registry of its own — that makes a Trello source
+   *  pointing at a deleted Jira project unrepresentable. */
+  trello?: TrelloIntakeBinding;
   /** Exclude a project from the poll without deleting it. */
   enabled: boolean;
 }
