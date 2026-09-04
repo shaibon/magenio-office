@@ -59,7 +59,17 @@ modificata da munder-difflin.
   /Users/shaibon/www/magenio-mcp/trello-mcp/build/index.js`, credenziali lette
   da sé (`TRELLO_API_KEY`/`TRELLO_TOKEN` nel proprio `.env`), **nessuna**
   modalità read-only e **nessun** allow-list di tool: espone anche
-  `create_board`, `archive_list`, `update_card_details`.
+  `create_board`, `archive_list`, `update_card_details`. Il checkout locale è
+  allineato esattamente a `origin/main` (0 commit avanti, 0 indietro): nessuna
+  modifica locale da preservare. Il repo espone tag di versione (l'ultimo è
+  `v1.8.0`) e la sua build richiede `bun` (`bun build src/index.ts …`).
+- `src/index.ts:17` del server: `loadEnv({ path: join(__dirname, '../.env') })`
+  — le credenziali si leggono dal `.env` **accanto al pacchetto installato**,
+  non dal cwd. `~/.trello-mcp/config.json` conserva solo board e workspace
+  attivi, con un commento esplicito (*keep credentials from env*). Conseguenza:
+  con un checkout locale il token non entra mai in munder-difflin; con `npx`
+  dovrebbe essere iniettato nel blocco `env` e finirebbe in chiaro nel
+  `settings.json` per-sessione di ogni agente.
 - Realtà delle board (verificata via MCP): board identificate da `id` (24 hex)
   e `shortLink` (8 char, es. `781LrPy9`), entrambi immutabili; `name`
   modificabile. Le liste hanno id 24-hex e nomi modificabili. La board
@@ -98,7 +108,12 @@ modificata da munder-difflin.
    convenzione.
 9. **Trascrizione, non interpretazione**: la issue riporta le parole della
    card, non una riscrittura fatta da un LLM.
-10. **`projectTag` non si tocca.** Gli agenti lavorano su issue Jira e il tag
+10. **Installazione da checkout locale**, non da `npx`. Il server è pubblicato
+    (`@delorenj/mcp-server-trello@1.8.1`), ma un pacchetto risolto da npx non ha
+    il proprio `.env` e obbligherebbe a iniettare il token nel blocco `env`, in
+    chiaro nel `settings.json` di ogni agente. Il checkout locale tiene la
+    credenziale fuori dall'app, coerentemente con la decisione 7.
+11. **`projectTag` non si tocca.** Gli agenti lavorano su issue Jira e il tag
     che vedono è già quello giusto; god non ha tag (`isGod` ritorna stringa
     vuota). Nessuna modifica a `useResolvedRepoNames.ts`.
 
@@ -265,10 +280,92 @@ Regole di inclusione, nell'ordine, dentro il ciclo esistente:
 Il namespacing `munder-<id>` e la sostituzione del segnaposto `<cwd>` restano
 invariati.
 
-Configurazione attesa dall'utente: `mcpDefaults.trello = { enabled: true,
-agents: ['god'], command: '/opt/homebrew/bin/bun', args: ['/Users/shaibon/www/magenio-mcp/trello-mcp/build/index.js'] }`.
+Configurazione attesa: `mcpDefaults.trello = { enabled: true, agents: ['god'],
+command: '<path di bun>', args: ['<radice del pacchetto>/build/index.js'] }`.
+La radice è il checkout esistente dell'utente
+(`/Users/shaibon/www/magenio-mcp/trello-mcp`) oppure la directory creata
+dall'installazione (sezione C), che pre-compila entrambi i campi.
 
-## C. La mission di intake
+## C. Preflight e installazione del server MCP
+
+Un server MCP assente o che non parte è un errore silenzioso e costoso: god
+riceve un `settings.json` che dichiara `munder-trello`, il processo fallisce
+all'avvio, e la mission gira riportando "nessuna card" invece di "Trello non è
+raggiungibile". Due meccanismi lo prevengono, entrambi in un nuovo modulo
+`src/main/mcpProvision.ts`, con le dipendenze (esistenza dei file, esecuzione
+dei comandi) iniettate come in `main/jiraProjects.ts` così che restino
+testabili con dei fake.
+
+### Test di esistenza
+
+```ts
+export type McpPresenceReason =
+  | 'not_configured'      // comando/args non compilati in Settings
+  | 'command_missing'     // il binario non esiste o non è eseguibile
+  | 'entry_missing'       // il file di ingresso (la build) non esiste
+  | 'credentials_missing';// il .env del pacchetto non ha le chiavi richieste
+
+export interface McpPresence { ok: boolean; reason?: McpPresenceReason; detail?: string }
+
+export function checkMcpPresence(entryId: string, cfg: McpDefaultsMap): McpPresence;
+```
+
+Per una entry `userConfigured`, nell'ordine: comando e args compilati → binario
+esistente ed eseguibile → primo argomento (quando è un path) esistente → e,
+solo per `trello`, un `.env` nella radice del pacchetto che assegni valori non
+vuoti a `TRELLO_API_KEY` e `TRELLO_TOKEN`.
+
+Quest'ultimo è l'unico punto in cui munder-difflin apre quel file. Lo legge riga
+per riga e ne conserva **due booleani**: i valori non vengono mai restituiti,
+mai loggati, mai inseriti in un messaggio d'errore, mai trattenuti oltre la riga
+in cui compaiono. Il campo `detail` nomina la chiave mancante, mai il suo
+contenuto.
+
+Il preflight gira in due momenti: nella UI, per mostrare lo stato; e prima dello
+spawn, dove un esito negativo fa **omettere** il server dal blocco `mcpServers`
+invece di dichiararlo. Un server dichiarato che poi muore all'avvio è la forma
+peggiore del problema — il client lo ritenta e l'agente resta senza tool senza
+che nessuno lo dica. Omesso, la ragione finisce nel log dell'agente e un token
+scaduto o una build mancante si leggono come tali.
+
+### Funzione di installazione
+
+```ts
+export async function installTrelloMcp(
+  destDir: string,
+  deps: InstallDeps
+): Promise<{ ok: true; command: string; args: string[] } | { ok: false; error: string }>;
+```
+
+Azione esplicita dell'utente da Settings, **mai automatica**, mai allo spawn.
+Passi, in ordine, ognuno con un errore proprio:
+
+1. Rifiuta se `destDir` esiste e non è vuota. Non sovrascrive mai nulla.
+2. Richiede `bun` sul PATH: la build del server è `bun build src/index.ts …`,
+   quindi senza bun l'installazione fallisce **subito**, con un messaggio che lo
+   dice, invece di rompersi a metà lasciando una directory monca.
+3. `git clone --depth 1 --branch v1.8.0
+   https://github.com/delorenj/mcp-server-trello.git <destDir>` — **appuntato a
+   un tag, mai a `main`**. La app clona ed esegue codice di terzi dentro i
+   propri agenti: un `main` mobile significherebbe che due installazioni non
+   installano la stessa cosa e che nessuno ha rivisto cosa è cambiato. La
+   versione è una costante accanto alla entry di catalogo, e alzarla è una
+   modifica di codice, quindi rivedibile.
+4. `bun install` e `bun run build` in `destDir`.
+5. Copia `.env.template` in `.env` **lasciando i valori vuoti**. Le credenziali
+   le scrive l'utente: la app non le chiede, non le riceve, non le tocca.
+6. Ritorna `command` (il path di bun risolto) e `args`
+   (`['<destDir>/build/index.js']`), che la UI pre-compila nei campi del
+   consenso.
+
+Destinazione di default `<userData>/mcp/trello`: dati dell'app, non le directory
+di lavoro dell'utente.
+
+Subito dopo un'installazione riuscita il preflight riporta `credentials_missing`
+finché non compili il `.env` — che è esattamente lo stato vero, e il motivo per
+cui il controllo delle credenziali fa parte del preflight e non è un extra.
+
+## D. La mission di intake
 
 Nuova `TRELLO_INTAKE_MISSION` in `src/main/config.ts`, stesso pattern di
 `JIRA_POLL_MISSION`:
@@ -332,7 +429,7 @@ campo `trello` viaggia già dentro la risposta di `GET /jira-bindings`.
 `resources/skills/capabilities/SKILL.md` guadagna una frase che dice che il
 binding può portare un blocco `trello`.
 
-## D. UI
+## E. UI
 
 **`JiraProjectsRegistry.tsx`** — dentro la riga di progetto già esistente, una
 sottosezione "Sorgente Trello", assente finché non la si aggiunge
@@ -342,13 +439,18 @@ nomi delle liste di intake, e l'interruttore `enabled` dell'intake. Il registro
 resta uno: la gerarchia visiva dice la verità sul modello dati — Trello è una
 sorgente *di* un progetto Jira, non un pari grado.
 
-**`McpDefaultsSettings.tsx`** — per le sole entry `userConfigured: true`, tre
-campi aggiuntivi: comando, argomenti, e la lista di agent id ammessi. Per ogni
-altra entry la UI non cambia.
+**`McpDefaultsSettings.tsx`** — per le sole entry `userConfigured: true`: tre
+campi aggiuntivi (comando, argomenti, lista di agent id ammessi), lo **stato di
+preflight** con la ragione quando è negativo, e — quando la ragione è
+`not_configured`, `command_missing` o `entry_missing` — un bottone **Installa**
+che mostra la directory di destinazione prima di procedere e, a installazione
+riuscita, pre-compila comando e argomenti. Con `credentials_missing` il bottone
+non compare: quello stato si risolve solo compilando il `.env`, e la UI dice
+quale chiave manca e in quale file. Per ogni altra entry la UI non cambia.
 
 Stringhe i18n in tutti e tre i locale: `en.json`, `zh-CN.json`, `ar.json`.
 
-## E. Definizione di fatto
+## F. Definizione di fatto
 
 Test nuovi sotto `test/*.test.cjs` (`npm run test:focused`):
 
@@ -375,6 +477,21 @@ Test nuovi sotto `test/*.test.cjs` (`npm run test:focused`):
    non lo è; una entry `userConfigured` senza `command` configurato viene
    esclusa invece di produrre un `mcpServers` rotto.
 
+6. **Preflight** — `checkMcpPresence` restituisce ognuna delle quattro ragioni
+   nel proprio scenario (consenso senza comando; comando inesistente; file di
+   ingresso mancante; `.env` senza `TRELLO_TOKEN`), e `ok: true` quando tutto è
+   a posto. Un test dedicato verifica che né il valore restituito né `detail`
+   contengano il valore di una chiave presente nel `.env` di prova — la
+   non-divulgazione è una proprietà testata, non una promessa nel commento.
+   Un preflight negativo esclude il server dal blocco `mcpServers` invece di
+   dichiararlo.
+7. **Installazione** — `installTrelloMcp` rifiuta una destinazione non vuota
+   senza toccarla; fallisce con un messaggio esplicito quando `bun` non è sul
+   PATH, prima di clonare qualsiasi cosa; il comando di clone passa
+   `--branch v1.8.0` (mai `main`); il percorso felice, con esecutori finti,
+   ritorna `command`/`args` nella forma che la UI si aspetta e scrive un `.env`
+   con i valori vuoti.
+
 Più `npm run typecheck` pulito su node e web.
 
 ## Rischi accettati
@@ -391,6 +508,17 @@ Più `npm run typecheck` pulito su node e web.
   prompt, non un vincolo tecnico. Mitigazione strutturale possibile in un
   lavoro separato: una modalità `TRELLO_READ_ONLY` nel repo
   `magenio-mcp/trello-mcp` che non registri affatto i tool di scrittura.
+- **La app clona ed esegue codice di terzi dentro i propri agenti.**
+  L'installazione scarica `delorenj/mcp-server-trello` e ne lancia la build; il
+  risultato gira come sottoprocesso di god. Mitigazioni: l'azione è esplicita e
+  mai automatica, il clone è appuntato a un tag e non a `main`, e alzare quel
+  tag è una modifica di codice rivedibile. Resta il fatto che un tag compromesso
+  a monte arriverebbe dentro un agente.
+- **Il preflight apre il `.env` del server.** È l'unico punto in cui la app
+  tocca quel file; conserva solo due booleani e la non-divulgazione dei valori
+  è coperta da un test. Resta una lettura di un file che contiene un segreto,
+  ed è un compromesso deliberato: senza di essa un token scaduto si manifesta
+  come una board che sembra vuota.
 - **I nomi delle liste sono mutabili.** Rinominare una lista su Trello rompe il
   binding — ma rumorosamente: god riporta "lista non trovata sulla board X"
   invece di triaggiare in silenzio la lista sbagliata.
