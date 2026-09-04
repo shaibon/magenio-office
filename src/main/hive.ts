@@ -138,6 +138,11 @@ export interface AgentMeta {
   role?: string;
   capabilities?: string[];
   cwd: string;
+  /** The project/repo this agent works on (Jira key when the repo is bound,
+   *  otherwise the main-repo basename). Resolved at spawn so same-named agents
+   *  are distinguishable in shared data (registry.json / fleet.json), not just
+   *  in renderer-local grouping. */
+  project?: string;
   isGod?: boolean;
   /** Michael's prep assistant — enriches prompts and forwards them to Michael.
    *  Send-only: excluded from broadcast fan-out so it never drains an inbox. */
@@ -2495,6 +2500,7 @@ export class HiveManager {
         ts?: number;
         agents?: Array<{
           id: string; name?: string; role?: string; isGod?: boolean;
+          project?: string;
           breaker?: string; tokens?: number; usd?: number;
           lastTool?: string | null; lastActiveSecAgo?: number | null; inboxBacklog?: number;
           onHold?: boolean; frozen?: boolean;
@@ -2542,7 +2548,10 @@ export class HiveManager {
           bits.push(`ctx ${pct}%`);
           anyCtx = true;
         }
-        return `${a.id}${a.name ? ` "${a.name}"` : ''} (${bits.join(', ')})`;
+        // Same-named agents are only distinguishable once the project is in the
+        // row itself — the whole reason t-033 adds it to shared fleet data.
+        const projectTag = !a.isGod && a.project ? ` [${a.project}]` : '';
+        return `${a.id}${a.name ? ` "${a.name}"` : ''}${projectTag} (${bits.join(', ')})`;
       });
       const more = agents.length > shown.length ? ` +${agents.length - shown.length} more` : '';
       const age = typeof snap.ts === 'number' ? ago(Math.round((Date.now() - snap.ts) / 1000)) : 'unknown';

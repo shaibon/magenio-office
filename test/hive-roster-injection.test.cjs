@@ -274,3 +274,32 @@ test('unfreezing clears the mark on the next snapshot', async (t) => {
   });
   assert.doesNotMatch(hive.rosterContext(), /FROZEN/);
 });
+
+// --- shared project label (t-033) -------------------------------------------
+// Same-named agents are only distinguishable to god once the project lives in
+// registry.json/fleet.json — renderer-local grouping is invisible to everyone
+// who reads the shared files.
+
+test('ensureAgent persists an explicit project and a later spawn without one keeps it', async (t) => {
+  const { home, hive } = await floor(t); // god-1 + jim-1 registered without project
+  await hive.ensureAgent({ id: 'jim-1', name: 'Jim', provider: 'claude', cwd: home, project: 'BURD' });
+  assert.equal(hive.registry().agents['jim-1'].project, 'BURD');
+  // A restore/respawn passes only id/name/cwd — the durable field must survive.
+  await hive.ensureAgent({ id: 'jim-1', name: 'Jim', provider: 'claude', cwd: home });
+  assert.equal(hive.registry().agents['jim-1'].project, 'BURD');
+});
+
+test('the roster row carries the project label, so two same-named agents differ', async (t) => {
+  const { hive } = await floor(t);
+  hive.writeFleetSnapshot({
+    ts: Date.now(),
+    agents: [
+      { id: 'jim-1', name: 'Jim', role: 'agent', isGod: false, project: 'BURD', breaker: 'ok', tokens: 0, usd: 0, lastActiveSecAgo: 5, inboxBacklog: 0 },
+      { id: 'pam-1', name: 'Pam', role: 'agent', isGod: false, project: 'BRAVI', breaker: 'ok', tokens: 0, usd: 0, lastActiveSecAgo: 5, inboxBacklog: 0 }
+    ]
+  });
+  const line = hive.rosterContext();
+  assert.match(line, /"Jim" \[BURD\]/, 'BURD agent must carry its project in the shared roster line');
+  assert.match(line, /"Pam" \[BRAVI\]/, 'BRAVI agent must carry its project in the shared roster line');
+  assert.ok(!line.includes('\n'), 'still one compact line');
+});

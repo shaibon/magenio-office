@@ -57,7 +57,8 @@
     "ghost": "已退出",
     "compacting": "压缩中",
     "looping": "循环中",
-    "typing": "你的草稿"
+    "typing": "你的草稿",
+    "frozen": "已冻结"
   },
   "agentControl": {
     "deliveryPaused": "队列消息已暂停投递（整个楼层）",
@@ -91,6 +92,7 @@
   },
   "agentCard": {
     "boss": "老板",
+    "frozenTitle": "已冻结——有意停放：无自动投递，停放期间不消耗令牌；唤醒后恢复本会话。",
     "contextTitle": "上下文：{{used}} / {{limit}} 令牌（{{pct}}%）",
     "contextGaugeTitle": "上下文指示条——智能体上报活动后开始填充",
     "doingTasks": "正在执行 {{count}} 项任务——点击查看",

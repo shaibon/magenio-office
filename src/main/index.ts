@@ -1260,6 +1260,7 @@ function writeFleetSnapshot(): void {
           id,
           name: a.name,
           role: a.role ?? (a.isGod ? 'orchestrator' : 'agent'),
+          project: a.project ?? null,
           cwd: a.cwd,
           isGod: !!a.isGod,
           breaker: breaker.levelFor(id),
@@ -2597,6 +2598,30 @@ function findCodexHomeForSession(sessionId: string, siblingsRoot: string): strin
  *  ephemeral-worker watcher. */
 type AgentSpawnOptions = SpawnOptions & { hive?: AgentMeta; isolate?: boolean; resume?: boolean; requireResume?: boolean; resumeSessionId?: string; provider?: AgentProvider; noAutoInstall?: boolean; model?: string };
 
+/** Resolve the shared `project` label stamped into registry.json/fleet.json at
+ *  spawn time so same-named agents are distinguishable OUTSIDE the renderer
+ *  (god reads fleet.json; the orchestrator cannot see renderer-local grouping).
+ *  Prefers the bound Jira key (BURD/BRAVI/RISTO — the short label humans use),
+ *  then the main-repo basename; follows a linked worktree back to its real repo
+ *  instead of naming the throwaway `worktrees/<id>` dir. `hive` for god. */
+async function resolveAgentProject(
+  meta: { id: string; cwd?: string; isGod?: boolean; project?: string },
+  cfg: HarnessConfig
+): Promise<string | undefined> {
+  if (meta.isGod) return 'hive';
+  const explicit = meta.project?.trim();
+  if (explicit) return explicit;
+  if (!meta.cwd) return undefined;
+  let root: string | null = null;
+  try { root = await mainRepoRoot(meta.cwd); } catch { root = null; }
+  const binding = (cfg.jiraProjects ?? []).find((b) =>
+    b.enabled && b.repo === root && (!b.agents || b.agents.length === 0 || b.agents.includes(meta.id)));
+  if (binding) return binding.key;
+  const base = root || meta.cwd;
+  const name = basename(base);
+  return name || undefined;
+}
+
 /** Map a `ptyManager.spawn` failure string to the closed `agent_spawn_failed.reason`
  *  enum (analytics.ts). The two known strings come from PtyManager.spawn; anything
  *  else is a generic `spawn_error`. The raw message never leaves the machine — only
@@ -2774,8 +2799,14 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   let seedPrompt: string | undefined;
   if (opts.hive && hive.enabled()) {
     try {
+      // Resolve the shared project label BEFORE provisioning so registry.json is
+      // born with it (fleet.json copies it every 8s). The registry row is the
+      // durable source; the renderer's own project field stays display-only.
+      const hiveMeta = { ...opts.hive, cwd: opts.cwd, provider };
+      const project = await resolveAgentProject(hiveMeta, readConfig());
+      if (project) hiveMeta.project = project;
       const inj = await hive.ensureAgent(
-        { ...opts.hive, cwd: opts.cwd, provider },
+        hiveMeta,
         {
           semanticMemory: memory.active(),
           knowledgeGraph: knowledge.active(),
@@ -4600,6 +4631,7 @@ registerRealtimeActionIpc({
           cwd: res.worktreePath ?? o.cwd,
           command: o.command,
           role: o.hive?.role,
+          project: hive.registry().agents[o.id]?.project,
           worktreePath: res.worktreePath
         });
       } catch { /* window torn down */ }
@@ -4884,6 +4916,7 @@ async function processSpawnRequest(filePath: string): Promise<void> {
       cwd: res.worktreePath ?? cwd,
       command: launch.command,
       role: meta.role,
+      project: hive.registry().agents[workerId]?.project,
       worktreePath: res.worktreePath,
       character: typeof raw.character === 'string' ? raw.character : undefined,
       accent: typeof raw.accent === 'string' ? raw.accent : undefined

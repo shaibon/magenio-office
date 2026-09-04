@@ -10,11 +10,16 @@ export type StatusKind =
   // prompt, which holds its queue. Never stored on the agent (the pty parser
   // would overwrite it); derived at render, see `hasTerminalDraft`. Without it
   // a held queue looked identical to an idle agent doing nothing.
-  | 'typing';
+  | 'typing'
+  // An operator deliberately parked the agent (autoDeliveryPausedAgents). Not
+  // idle: it gets no automatic delivery, consumes no tokens while parked, and
+  // a deliberate wake RESUMES its session rather than starting fresh.
+  | 'frozen';
 
 export interface PixelBadgeProps {
   status: StatusKind;
   label?: string;
+  title?: string;
   style?: CSSProperties;
 }
 
@@ -28,7 +33,8 @@ const colorByStatus: Record<StatusKind, string> = {
   ghost:    'var(--cth-status-ghost)',
   compacting: 'var(--cth-status-compacting)',
   looping:    'var(--cth-status-looping)',
-  typing:     'var(--cth-status-typing)'
+  typing:     'var(--cth-status-typing)',
+  frozen:     'var(--cth-status-frozen)'
 };
 
 // i18n key per status. "blocked" is reserved for the god agent waiting on YOU,
@@ -46,15 +52,17 @@ const labelKeyByStatus: Record<StatusKind, string> = {
   looping:    'badge.looping',
   // Reads as "you are typing", not "the agent is typing" — it is your text
   // sitting on the prompt, and it is why nothing is being delivered.
-  typing:     'badge.typing'
+  typing:     'badge.typing',
+  frozen:     'badge.frozen'
 };
 
-export function PixelBadge({ status, label, style }: PixelBadgeProps) {
+export function PixelBadge({ status, label, title, style }: PixelBadgeProps) {
   const { t } = useTranslation();
   const key = labelKeyByStatus[status];
   const text = label ?? (key ? t(key) : status);
   return (
     <span
+      title={title}
       style={{
         display: 'inline-flex',
         alignItems: 'center',

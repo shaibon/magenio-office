@@ -7,7 +7,7 @@ import { useStore, type Agent } from '@/store/store';
 import { type HarnessConfig } from '@/store/config';
 import { useRestoreTeam } from '@/hooks/useRestoreTeam';
 import { useRtl } from '@/i18n/useDirection';
-import { projectTag, useResolvedRepoNames } from '@/hooks/useResolvedRepoNames';
+import { projectTag, repoLabelOf, jiraKeyFor, useResolvedRepoNames } from '@/hooks/useResolvedRepoNames';
 
 export interface AgentStripProps {
   /** Needed to rebuild a spawn command when a restorable agent predates the
@@ -22,7 +22,12 @@ export function AgentStrip({ config }: AgentStripProps) {
   const restorableAgents = useStore(s => s.restorableAgents);
   // Restorable agents from a past session are shown in one flat list — the
   // exact place two same-named agents from different projects would collide.
+  // Resolve ACTIVE agents too: their card name tag (Jira key or repo label)
+  // must come from the same git-root/Jira truth as every other surface, not
+  // from a stale renderer-local `project` field.
+  useResolvedRepoNames(agents);
   useResolvedRepoNames(restorableAgents);
+  const frozenIds = new Set(config?.autoDeliveryPausedAgents ?? []);
   const selectedId = useStore(s => s.selectedId);
   const select = useStore(s => s.select);
   const setAddAgentOpen = useStore(s => s.setAddAgentOpen);
@@ -141,8 +146,10 @@ export function AgentStrip({ config }: AgentStripProps) {
             character={a.character}
             accent={a.accent}
             status={a.status}
+            frozen={frozenIds.has(a.id)}
             ptyId={a.ptyId}
-            project={a.project}
+            project={repoLabelOf(a)}
+            nameTag={a.isGod ? undefined : (jiraKeyFor(a) ?? repoLabelOf(a))}
             action={a.action}
             progress={a.progress}
             contextTokens={a.contextTokens}

@@ -57,7 +57,8 @@
     "ghost": "gone",
     "compacting": "compacting",
     "looping": "looping",
-    "typing": "your draft"
+    "typing": "your draft",
+    "frozen": "frozen"
   },
   "agentControl": {
     "deliveryPaused": "queued messages held (whole floor)",
@@ -91,6 +92,7 @@
   },
   "agentCard": {
     "boss": "BOSS",
+    "frozenTitle": "Frozen — parked on purpose: no auto-delivery and no tokens while parked; a wake resumes this session.",
     "contextTitle": "Context: {{used}} / {{limit}} tokens ({{pct}}%)",
     "contextGaugeTitle": "Context gauge — fills once the agent reports activity",
     "doingTasks": "actively working {{count}} task — click to open",

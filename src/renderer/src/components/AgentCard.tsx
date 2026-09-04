@@ -15,11 +15,19 @@ export interface AgentCardProps {
   character: OfficeCharacterName;
   accent: AccentColorName;
   status: StatusKind;
+  /** Operator-parked (config.autoDeliveryPausedAgents): renders a FROZEN badge
+   *  instead of idle so a deliberately parked agent is never read as merely
+   *  quiet. Display-only — the freeze semantics stay in shared/frozenAgents.ts. */
+  frozen?: boolean;
   /** This agent's pty, if it has one. Only used to notice that the USER has
    *  unsent text on its prompt — which holds the agent's queue, and otherwise
    *  looks identical to an idle agent with nothing to do. */
   ptyId?: string;
   project: string;
+  /** Short label appended to the name (e.g. "· BURD") when same-named agents
+   *  sit in one flat list. Display-only; the full repo label stays on the
+   *  context line. */
+  nameTag?: string;
   action?: string;
   /** Context gauge: 0..8 segments filled (session context ÷ context limit). */
   progress?: number;
@@ -55,13 +63,20 @@ const fmtK = (n: number): string => `${Math.round(n / 1000)}k`;
  * and a slim gauge pinned to the bottom edge. Nothing overlaps anything.
  */
 export function AgentCard({
-  name, character, accent, status, ptyId, project, action, progress = 0,
+  name, character, accent, status, frozen, ptyId, project, nameTag, action, progress = 0,
   contextTokens, contextLimit, selected, isGod, onClick, onRename,
   doingCount = 0, onTaskNoteClick, draggable, note, onEditNote
 }: AgentCardProps) {
   const { t } = useTranslation();
   const [hover, setHover] = useState(false);
   const typing = useHasTerminalDraft(ptyId);
+  // Frozen is only a DISPLAY override of idle: an operator-parked agent that is
+  // mid-turn or waiting on something must keep showing that truth. The FROZEN
+  // badge says "parked on purpose, not quiet" — exactly what idle would lie
+  // about.
+  const badgeStatus: StatusKind = typing
+    ? 'typing'
+    : (frozen && status === 'idle') ? 'frozen' : status;
   // IDENTITY and SELECTION are two different things, and conflating them is why
   // selecting Michael appeared to do nothing.
   //
@@ -214,7 +229,7 @@ export function AgentCard({
                     color: 'var(--cth-ink-900)',
                     flex: 1, minWidth: 0,
                     whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'
-                  }}>{name.toUpperCase()}</span>
+                  }}>{name.toUpperCase()}{nameTag && !isGod ? ` · ${nameTag}` : ''}</span>
                 )}
                 {isGod && (
                   <span style={{
@@ -227,7 +242,11 @@ export function AgentCard({
                   it was allowed to shrink, the browser resolved the overflow by
                   eating the NAME instead. Truncation should land on the longest,
                   most redundant thing, not on the identity. */}
-              <PixelBadge status={typing ? 'typing' : status} style={{ flexShrink: 0 }} />
+              <PixelBadge
+                status={badgeStatus}
+                title={badgeStatus === 'frozen' ? t('agentCard.frozenTitle') : undefined}
+                style={{ flexShrink: 0 }}
+              />
             </div>
 
             {/* Context line: action while working, repo while idle. */}

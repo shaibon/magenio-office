@@ -53,6 +53,9 @@ export interface HiveAgentMeta {
   role?: string;
   capabilities?: string[];
   cwd: string;
+  /** Shared project label (Jira key or main-repo basename) — stamped by main at
+   *  spawn; surfaced to renderer cards so they match registry/fleet data. */
+  project?: string;
   isGod?: boolean;
   /** Michael's prep assistant — send-only; enriches prompts and forwards them. */
   isAssistant?: boolean;
@@ -935,7 +938,7 @@ const api = {
   onHiveAgentSpawned: (
     cb: (rec: {
       id: string; name: string; provider?: string; cwd: string;
-      command?: string; role?: string; worktreePath?: string;
+      command?: string; role?: string; project?: string; worktreePath?: string;
       character?: string; accent?: string;
     }) => void
   ): (() => void) => {

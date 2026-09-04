@@ -102,6 +102,9 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
   const parser = usePtyParser(agent?.id ?? '__none__');
 
   const repoVersion = useResolvedRepoNames(agents);
+  // Same persisted source of truth as AgentStrip: a frozen agent must not read
+  // as idle in the fullscreen roster either.
+  const frozenIds = new Set(config?.autoDeliveryPausedAgents ?? []);
   const scale = rosterScale(useTerminalFontSize());
 
   // Drag-to-reorder, same as the floor strip (native HTML5 DnD, no dep). A plain
@@ -374,6 +377,7 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
               <SidebarRow
                 key={a.id}
                 agent={a}
+                frozen={frozenIds.has(a.id)}
                 active={a.id === agent.id}
                 onClick={() => { select(a.id); setFullscreen(a.id); }}
                 onNoteChange={(note) => setAgentNote(a.id, note)}
@@ -410,6 +414,7 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
                   <SidebarRow
                     key={a.id}
                     agent={a}
+                    frozen={frozenIds.has(a.id)}
                     active={a.id === agent.id}
                     onClick={() => { select(a.id); setFullscreen(a.id); }}
                     onNoteChange={(note) => setAgentNote(a.id, note)}
@@ -584,6 +589,7 @@ function ContextBar({ tokens, limit, accent }: { tokens?: number; limit?: number
 
 function SidebarRow({
   agent,
+  frozen,
   active,
   onClick,
   onNoteChange,
@@ -591,6 +597,7 @@ function SidebarRow({
   scale
 }: {
   agent: Agent;
+  frozen?: boolean;
   active: boolean;
   onClick: () => void;
   onNoteChange: (note: string) => void;
@@ -618,6 +625,11 @@ function SidebarRow({
   const bullets = (agent.note ?? '').split('\n').map(s => s.trim()).filter(Boolean);
 
   const typing = useHasTerminalDraft(agent.ptyId);
+  // Same display rule as AgentCard: frozen replaces IDLE only, so an agent that
+  // is genuinely mid-turn keeps showing that instead of lying about being parked.
+  const badgeStatus = typing
+    ? 'typing'
+    : (frozen && agent.status === 'idle') ? 'frozen' : agent.status;
 
   /** The ✎ button opens the editor beside the row — the bullets on the row are
    *  the summary, this is where you write them. EXPLICIT open only (v0.3.4):
@@ -699,7 +711,10 @@ function SidebarRow({
             {/* Your unsent text outranks the agent's own state here: an idle
                 agent with a draft on its prompt is not idle-and-free, it is
                 idle-and-held, and nothing else on screen said so. */}
-            <PixelBadge status={typing ? 'typing' : agent.status} />
+            <PixelBadge
+              status={badgeStatus}
+              title={badgeStatus === 'frozen' ? t('agentCard.frozenTitle') : undefined}
+            />
             {/* Explicit note edit — a real control instead of a hover surprise.
                 A span, not a <button>: we're inside the row's button element. */}
             <span

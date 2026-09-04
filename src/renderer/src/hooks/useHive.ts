@@ -1121,7 +1121,11 @@ export function useHive(config: HarnessConfig | null): void {
       const askedAccent = SPAWN_ACCENTS.find((a) => a === rec.accent?.trim().toLowerCase());
       let h = 0;
       for (const ch of rec.id) h = (h + ch.charCodeAt(0)) % SPAWN_ACCENTS.length;
-      const project = (rec.cwd || '').split(/[\\/]/).filter(Boolean).pop() || 'hive';
+      // Main resolves the shared project at spawn (Jira key or main-repo
+      // basename); prefer it over a basename guess, which for an isolated agent
+      // would be its throwaway worktree id.
+      const project = rec.project?.trim()
+        || (rec.cwd || '').split(/[\\/]/).filter(Boolean).pop() || 'hive';
       const agent: Agent = {
         id: rec.id,
         name: rec.name || rec.id,

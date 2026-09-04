@@ -4,7 +4,10 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased] - [xx/xx/2026]
+
+- HIVE / agents: frozen agents now show a FROZEN badge on floor cards and in the fullscreen roster instead of reading as idle, with a tooltip explaining the parked/resume semantics.
+- HIVE / agents: registry.json and fleet.json now carry a shared per-agent project label (bound Jira key, else main-repo basename) and god's live roster shows it, so same-named agents are distinguishable outside the renderer.
 
 ## [0.4.6] — 2026-08-27
 
