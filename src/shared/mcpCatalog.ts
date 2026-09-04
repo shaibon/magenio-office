@@ -43,9 +43,20 @@ export interface McpCatalogEntry {
     env?: Record<string, string>;
   };
   tier: McpTier;
+  /** The launch command is NOT distributable (a local server, an absolute path,
+   *  the user's own build): `spec` is a placeholder and the real values come
+   *  from `config.mcpDefaults[id].command/args`. */
+  userConfigured?: boolean;
   /** Seed for `config.mcpDefaults[id].enabled`. Always === (tier === 'safe-readonly'). */
   defaultEnabled: boolean;
 }
+
+/** Upstream repo of the Trello MCP server the installer clones, and the TAG it
+ *  is pinned to. Pinned deliberately: the app builds this third-party code and
+ *  runs it inside its own agents, so a moving `main` would mean two installs
+ *  are not the same software. Raising this tag is a reviewable code change. */
+export const TRELLO_MCP_REPO_URL = 'https://github.com/delorenj/mcp-server-trello.git';
+export const TRELLO_MCP_TAG = 'v1.8.0';
 
 /** The default MCP bundle. Safe/read-only servers are ON; anything that writes
  *  beyond the workspace or needs a secret is OFF until the user consents. */
@@ -149,6 +160,16 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
     spec: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-brave-search'], env: { BRAVE_API_KEY: '' } },
     tier: 'secret',
     defaultEnabled: false
+  },
+  {
+    id: 'trello',
+    label: 'Trello (read-only intake)',
+    description: 'Reads Trello boards, lists and cards for the Trello→Jira intake poll. You supply the launch command; the server holds its own credentials in its .env.',
+    // Placeholder: userConfigured entries take command/args from the consent map.
+    spec: { command: '', args: [] },
+    tier: 'write',
+    defaultEnabled: false,
+    userConfigured: true
   }
 ];
 
