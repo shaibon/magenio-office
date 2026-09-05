@@ -211,6 +211,8 @@ test('no Arabic string is left as its English source', () => {
     'addAgent.projectPlaceholder',           // /path/to/your/project — a filesystem path
     'onboarding.home.placeholder',           // /path/to/HarnessAgents — same
     'settings.memory.vaultPathPlaceholder',  // /path/to/Obsidian/SecondBrain — same
+    'mcpDefaults.commandPlaceholder',        // /opt/homebrew/bin/bun — a path the user types
+    'mcpDefaults.argsPlaceholder',           // /Users/you/mcp/trello/build/index.js — same
     'mcpDefaults.toggleNote',                // "{{id}}: {{state}}" — pure interpolation
     'webhooksSection.summary'                // "{{count}} · {{state}}" — same
   ]);

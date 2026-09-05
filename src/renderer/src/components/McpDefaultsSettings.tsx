@@ -33,6 +33,9 @@ interface ConsentFieldProps {
   onCommit: (value: string) => void;
   multiline?: boolean;
   rows?: number;
+  /** Shown while the field is empty. Carries a REAL example of the value the
+   *  field wants: the hint below explains, the placeholder shows. */
+  placeholder?: string;
   style: React.CSSProperties;
 }
 
@@ -65,7 +68,7 @@ interface ConsentFieldProps {
  * class of bug impossible regardless of timing: nothing this component
  * writes was not typed by the user.
  */
-function ConsentField({ value, onCommit, multiline, rows, style }: ConsentFieldProps) {
+function ConsentField({ value, onCommit, multiline, rows, placeholder, style }: ConsentFieldProps) {
   const [draft, setDraft] = useState(value);
   const focusedRef = useRef(false);
   const editedRef = useRef(false);
@@ -94,9 +97,9 @@ function ConsentField({ value, onCommit, multiline, rows, style }: ConsentFieldP
   };
 
   return multiline ? (
-    <textarea rows={rows} value={draft} onChange={handleChange} onFocus={handleFocus} onBlur={handleBlur} style={style} />
+    <textarea rows={rows} value={draft} onChange={handleChange} onFocus={handleFocus} onBlur={handleBlur} placeholder={placeholder} style={style} />
   ) : (
-    <input value={draft} onChange={handleChange} onFocus={handleFocus} onBlur={handleBlur} style={style} />
+    <input value={draft} onChange={handleChange} onFocus={handleFocus} onBlur={handleBlur} placeholder={placeholder} style={style} />
   );
 }
 
@@ -272,42 +275,26 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
                               : t(`mcpDefaults.presence.${presence[entry.id]?.reason ?? 'not_configured'}`, { detail: presence[entry.id]?.detail ?? '' })}
                           </span>
 
-                          <label style={labelStyle}>{t('mcpDefaults.command')}</label>
-                          <ConsentField
-                            value={config.mcpDefaults?.[entry.id]?.command ?? ''}
-                            onCommit={(v) => { void patchConsent(entry.id, { command: v.trim() }); }}
-                            style={{ width: '100%', padding: '6px 8px', background: 'var(--cth-paper-100)', border: 'none', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)', fontSize: 12, color: 'var(--cth-ink-900)' }}
-                          />
-                          <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{t('mcpDefaults.commandHint')}</span>
-
-                          <label style={labelStyle}>{t('mcpDefaults.args')}</label>
-                          <ConsentField
-                            multiline
-                            rows={2}
-                            value={(config.mcpDefaults?.[entry.id]?.args ?? []).join('\n')}
-                            onCommit={(v) => {
-                              void patchConsent(entry.id, {
-                                args: v.split('\n').map((a) => a.trim()).filter(Boolean)
-                              });
-                            }}
-                            style={{ width: '100%', padding: '6px 8px', background: 'var(--cth-paper-100)', border: 'none', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)', fontSize: 12, color: 'var(--cth-ink-900)' }}
-                          />
-                          <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{t('mcpDefaults.argsHint')}</span>
-
-                          <label style={labelStyle}>{t('mcpDefaults.agents')}</label>
-                          <ConsentField
-                            value={(config.mcpDefaults?.[entry.id]?.agents ?? []).join(', ')}
-                            onCommit={(v) => {
-                              void patchConsent(entry.id, {
-                                agents: v.split(',').map((a) => a.trim()).filter(Boolean)
-                              });
-                            }}
-                            style={{ width: '100%', padding: '6px 8px', background: 'var(--cth-paper-100)', border: 'none', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)', fontSize: 12, color: 'var(--cth-ink-900)' }}
-                          />
-                          <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{t('mcpDefaults.agentsHint')}</span>
-
+                          {/* First-run setup. When the server cannot run yet, the
+                              install route leads and the manual fields below are
+                              the fallback — a reader who has just arrived should
+                              not have to guess that Install fills those fields in
+                              for them. Same `canInstallMcp` guard the button has
+                              always used, so `credentials_missing` (which install
+                              cannot fix) still shows no call to action. */}
                           {canInstallMcp(entry.id, presence[entry.id]) && (
-                            <>
+                            <div style={{
+                              display: 'flex', flexDirection: 'column', gap: 4,
+                              padding: '8px 10px', background: 'var(--cth-cream-200)',
+                              boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)'
+                            }}>
+                              <span style={{ ...labelStyle, color: 'var(--cth-ink-900)' }}>{t('mcpDefaults.setupTitle')}</span>
+                              <span style={{ fontSize: 11, lineHeight: '15px', color: 'var(--cth-ink-700)' }}>
+                                {t('mcpDefaults.setupIntro')}
+                              </span>
+                              <span style={{ fontSize: 11, lineHeight: '15px', color: 'var(--cth-ink-500)' }}>
+                                {t('mcpDefaults.setupAfter')}
+                              </span>
                               {/* Spec §E: the Install button SHOWS the destination
                                   before proceeding. Installing clones, builds and
                                   later runs third-party code, so the user sees
@@ -324,8 +311,8 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
                                 disabled={installing === entry.id}
                                 onClick={() => { void onInstall(entry.id); }}
                                 style={{
-                                  alignSelf: 'flex-start', padding: '3px 10px 1px',
-                                  background: 'var(--cth-cream-200)',
+                                  alignSelf: 'flex-start', marginTop: 2, padding: '3px 10px 1px',
+                                  background: 'var(--cth-paper-100)',
                                   boxShadow: 'inset 0 0 0 1px var(--cth-ink-700)',
                                   border: 'none', fontFamily: 'var(--cth-font-display)',
                                   fontSize: 8, lineHeight: '14px', color: 'var(--cth-ink-900)',
@@ -335,8 +322,45 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
                               >
                                 {installing === entry.id ? t('mcpDefaults.installing') : t('mcpDefaults.install')}
                               </button>
-                            </>
+                            </div>
                           )}
+
+                          <label style={labelStyle}>{t('mcpDefaults.command')}</label>
+                          <ConsentField
+                            value={config.mcpDefaults?.[entry.id]?.command ?? ''}
+                            onCommit={(v) => { void patchConsent(entry.id, { command: v.trim() }); }}
+                            placeholder={t('mcpDefaults.commandPlaceholder')}
+                            style={{ width: '100%', padding: '6px 8px', background: 'var(--cth-paper-100)', border: 'none', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)', fontSize: 12, color: 'var(--cth-ink-900)' }}
+                          />
+                          <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{t('mcpDefaults.commandHint')}</span>
+
+                          <label style={labelStyle}>{t('mcpDefaults.args')}</label>
+                          <ConsentField
+                            multiline
+                            rows={2}
+                            value={(config.mcpDefaults?.[entry.id]?.args ?? []).join('\n')}
+                            onCommit={(v) => {
+                              void patchConsent(entry.id, {
+                                args: v.split('\n').map((a) => a.trim()).filter(Boolean)
+                              });
+                            }}
+                            placeholder={t('mcpDefaults.argsPlaceholder')}
+                            style={{ width: '100%', padding: '6px 8px', background: 'var(--cth-paper-100)', border: 'none', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)', fontSize: 12, color: 'var(--cth-ink-900)' }}
+                          />
+                          <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{t('mcpDefaults.argsHint')}</span>
+
+                          <label style={labelStyle}>{t('mcpDefaults.agents')}</label>
+                          <ConsentField
+                            value={(config.mcpDefaults?.[entry.id]?.agents ?? []).join(', ')}
+                            onCommit={(v) => {
+                              void patchConsent(entry.id, {
+                                agents: v.split(',').map((a) => a.trim()).filter(Boolean)
+                              });
+                            }}
+                            placeholder={t('mcpDefaults.agentsPlaceholder')}
+                            style={{ width: '100%', padding: '6px 8px', background: 'var(--cth-paper-100)', border: 'none', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)', fontSize: 12, color: 'var(--cth-ink-900)' }}
+                          />
+                          <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{t('mcpDefaults.agentsHint')}</span>
                         </div>
                       )}
                     </div>
