@@ -181,7 +181,12 @@ export async function installTrelloMcp(
   deps: InstallDeps
 ): Promise<{ ok: true; command: string; args: string[] } | { ok: false; error: string }> {
   if (deps.dirExistsNonEmpty(destDir)) {
-    return { ok: false, error: `${destDir} exists and is not empty. Remove it or choose another directory — the installer never overwrites.` };
+    // Nothing in the UI can clear this directory, and a half-failed install
+    // (clone ok, `bun run build` failed) is exactly how a user ends up here.
+    // So the message names the path and says plainly that removing it is a
+    // manual step — "choose another directory" was advice they cannot act on,
+    // since the destination is derived by main and not selectable.
+    return { ok: false, error: `${destDir} exists and is not empty. The installer never overwrites: delete that directory by hand, then run the install again.` };
   }
   // The server's own build script is `bun build src/index.ts …`, so bun is not
   // optional. Fail here rather than half-way through, leaving a broken directory.

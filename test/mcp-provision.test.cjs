@@ -107,6 +107,11 @@ test('install refuses a destination that already has content', async () => {
   const result = await installTrelloMcp('/dest', deps);
   assert.equal(result.ok, false);
   assert.match(result.error, /not empty/i);
+  assert.match(result.error, /\/dest/, 'the message must name the directory it refused');
+  // Nothing in the UI can clear the directory a half-failed install (clone ok,
+  // build failed) leaves behind, so the message has to say that removing it is
+  // a manual step — otherwise the user is stuck with an unactionable error.
+  assert.match(result.error, /by hand/i, 'the message must say the directory has to be removed by hand');
   assert.equal(calls.length, 0, 'it must not touch a non-empty destination');
 });
 

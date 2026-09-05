@@ -879,6 +879,7 @@
     "agents": "Agents allowed",
     "agentsHint": "Comma-separated agent ids. Leave empty to give this server to every agent.",
     "install": "Install",
+    "installDest": "Will install into: {{path}}",
     "installing": "Installing…",
     "installFailed": "Install failed: {{error}}",
     "presenceOk": "Ready",

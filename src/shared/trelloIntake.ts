@@ -58,6 +58,27 @@ export function trelloCardUrl(cardShortLink: string): string {
   return `https://trello.com/c/${cardShortLink}`;
 }
 
+/**
+ * The intake list names as they must be STORED: each trimmed, blanks dropped.
+ *
+ * The mission matches list names against the live board EXACTLY, so a stored
+ * `"Da fare "` — trivially produced by pasting a list name out of Trello, and
+ * accepted by `validateTrelloIntake`, which trims only for checking — is a
+ * permanent silent zero-intake for that binding. This is the counterpart to
+ * that trim: it returns the normalized names instead of merely tolerating
+ * them, so what was validated and what is persisted are the same strings.
+ *
+ * Dropping blanks is deliberate and belongs HERE, not in the editor: a form
+ * that filters while the user types makes a trailing newline delete a name
+ * mid-edit, while a trailing newline that survives to the commit boundary is
+ * an invisible empty line the validator would reject with a message pointing
+ * at nothing. An all-blank list still normalizes to `[]`, which
+ * `validateTrelloIntake` rejects with "At least one intake list is required."
+ */
+export function normalizeIntakeLists(names: readonly string[] | undefined): string[] {
+  return (names ?? []).map((n) => (n ?? '').trim()).filter(Boolean);
+}
+
 /** Returns an error message, or null when the intake binding is valid. */
 export function validateTrelloIntake(t: TrelloIntakeBinding): string | null {
   const short = (t.boardShortLink ?? '').trim();

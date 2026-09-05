@@ -3208,19 +3208,35 @@ ipcMain.handle('integrations:test', async (_evt, payload: unknown) => {
 
 // ─── IPC: MCP provisioning ──────────────────────────────────────────────────
 
+/**
+ * Where the Trello MCP server is installed. THE single derivation of that
+ * path: `mcp:install` clones into it and `mcp:presence` reports it so the UI
+ * can show the user the destination BEFORE they press Install (spec §E) — the
+ * one moment the app clones, builds and later executes third-party code. Two
+ * copies of this expression could drift and make the UI promise a directory
+ * the installer does not use, so there is only one.
+ *
+ * It lives here rather than in mcpProvision.ts because it needs `app`, and
+ * mcpProvision.ts is electron-free by design. The destination is derived in
+ * main and never accepted from the renderer: an installer that clones wherever
+ * it is told is an arbitrary-write primitive.
+ */
+function trelloMcpInstallDest(): string {
+  return join(app.getPath('userData'), 'mcp', 'trello');
+}
+
 ipcMain.handle('mcp:presence', async (_evt, payload: unknown) => {
   const p = (payload ?? {}) as { id?: unknown };
   if (typeof p.id !== 'string' || !p.id) return { ok: false, reason: 'not_configured', detail: 'id required' };
-  return checkMcpPresence(p.id, readConfig().mcpDefaults?.[p.id], nodePresenceDeps());
+  const presence = checkMcpPresence(p.id, readConfig().mcpDefaults?.[p.id], nodePresenceDeps());
+  // Only trello has an installer, so only trello has a destination to show.
+  return p.id === 'trello' ? { ...presence, installDest: trelloMcpInstallDest() } : presence;
 });
 
 ipcMain.handle('mcp:install', async (_evt, payload: unknown) => {
   const p = (payload ?? {}) as { id?: unknown };
   if (p.id !== 'trello') return { ok: false, error: 'only the trello MCP server has an installer' };
-  // The destination is derived HERE, never accepted from the renderer: an
-  // installer that clones wherever it is told is an arbitrary-write primitive.
-  const destDir = join(app.getPath('userData'), 'mcp', 'trello');
-  return installTrelloMcp(destDir, nodeInstallDeps());
+  return installTrelloMcp(trelloMcpInstallDest(), nodeInstallDeps());
 });
 
 // ─── IPC: config ────────────────────────────────────────────────────────────

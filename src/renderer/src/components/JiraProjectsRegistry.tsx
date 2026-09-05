@@ -4,6 +4,7 @@ import { jiraProjectsClient, type JiraProjectBinding, type JiraAssigneeAllowlist
 import { integrationsClient } from '@/integrations/registryClient';
 import { authTypeNeedsSecret as needsSecret } from '@shared/integrations';
 import { parseTrelloBoardUrl, validateTrelloIntake, type TrelloIntakeBinding } from '@shared/trelloIntake';
+import { bindingFromDraft, draftFromBinding, emptyDraft, type Draft } from './jiraProjectDraft';
 import { PixelButton } from './PixelButton';
 
 // Jira project bindings — Settings → Connections, mounted right below
@@ -14,19 +15,9 @@ import { PixelButton } from './PixelButton';
 
 type View = 'list' | 'configure';
 
-interface Draft {
-  isNew: boolean;
-  key: string;
-  repo: string;
-  baseBranch: string;
-  agents: string[]; // agent ids, empty = any agent
-  enabled: boolean;
-  /** Trello source, or undefined when this project has none. The raw URL is
-   *  kept beside it so the input can show what the user typed even when it
-   *  does not parse. */
-  trello?: TrelloIntakeBinding;
-  trelloUrl: string;
-}
+// `Draft` and the draft ⇄ binding conversions live in ./jiraProjectDraft — a
+// plain .ts module, so `bindingFromDraft` (the form's commit boundary, where
+// the intake list names are normalized) is reachable from node:test.
 
 interface TestResult { ok: boolean; error?: string }
 
@@ -41,28 +32,6 @@ interface JiraPollSettingsState {
  *  entry, god included (the server-side agentExists check always treats god
  *  as valid, so the UI shouldn't exclude it either). */
 interface AssignableAgent { id: string; name: string }
-
-function draftFromBinding(b: JiraProjectBinding): Draft {
-  return {
-    isNew: false, key: b.key, repo: b.repo, baseBranch: b.baseBranch,
-    agents: b.agents ?? [], enabled: b.enabled,
-    trello: b.trello,
-    trelloUrl: b.trello ? `https://trello.com/b/${b.trello.boardShortLink}` : ''
-  };
-}
-function emptyDraft(): Draft {
-  return { isNew: true, key: '', repo: '', baseBranch: '', agents: [], enabled: true, trelloUrl: '' };
-}
-function bindingFromDraft(d: Draft): JiraProjectBinding {
-  return {
-    key: d.key.trim().toUpperCase(),
-    repo: d.repo.trim(),
-    baseBranch: d.baseBranch.trim(),
-    agents: d.agents.length > 0 ? d.agents : undefined,
-    enabled: d.enabled,
-    ...(d.trello ? { trello: d.trello } : {})
-  };
-}
 
 const dispLabel: CSSProperties = { fontFamily: 'var(--cth-font-display)', fontSize: 8, lineHeight: '12px', color: 'var(--cth-ink-500)', textTransform: 'uppercase' };
 const fieldLabel: CSSProperties = { ...dispLabel, color: 'var(--cth-ink-700)' };
@@ -127,11 +96,17 @@ export function JiraProjectsRegistry() {
     if (!draft) return;
     setBusy(true); setErr('');
     try {
-      if (draft.trello) {
-        const trelloError = validateTrelloIntake(draft.trello);
+      // Validate the binding that is actually about to be SAVED, not the raw
+      // draft: `bindingFromDraft` trims the intake list names and drops the
+      // blank ones. Validating the draft instead would reject a trailing
+      // newline with "Intake list names cannot be empty." pointing at an
+      // invisible empty line the user cannot see to remove.
+      const binding = bindingFromDraft(draft);
+      if (binding.trello) {
+        const trelloError = validateTrelloIntake(binding.trello);
         if (trelloError) { setErr(trelloError); return; }
       }
-      const res = await jiraProjectsClient.save(bindingFromDraft(draft));
+      const res = await jiraProjectsClient.save(binding);
       if (!res.ok) { setErr(res.error || tr('jiraProjects.couldNotSave')); return; }
       await refresh();
       goList();

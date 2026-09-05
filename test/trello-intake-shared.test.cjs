@@ -9,6 +9,7 @@ const {
   parseTrelloBoardUrl,
   jiraLabelForCard,
   trelloCardUrl,
+  normalizeIntakeLists,
   validateTrelloIntake
 } = loadTs('src/shared/trelloIntake.ts');
 
@@ -52,6 +53,39 @@ test('parseTrelloBoardUrl refuses a card URL, a foreign host and junk', () => {
 test('jiraLabelForCard and trelloCardUrl produce the agreed shapes', () => {
   assert.equal(jiraLabelForCard('abcd1234'), 'trello-abcd1234');
   assert.equal(trelloCardUrl('abcd1234'), 'https://trello.com/c/abcd1234');
+});
+
+test('normalizeIntakeLists trims every name — the mission matches list names EXACTLY', () => {
+  // A trailing space is what a paste out of Trello produces. Stored untrimmed
+  // it is a permanent silent zero-intake: the name never matches on the board.
+  assert.deepEqual(normalizeIntakeLists(['Da fare ', ' Approvati', '\tIn corso\t']), ['Da fare', 'Approvati', 'In corso']);
+});
+
+test('normalizeIntakeLists drops the blank line a trailing newline leaves behind', () => {
+  assert.deepEqual(normalizeIntakeLists(['Da fare', '']), ['Da fare']);
+  assert.deepEqual(normalizeIntakeLists(['Da fare', '   ', 'Approvati']), ['Da fare', 'Approvati']);
+});
+
+test('normalizeIntakeLists survives an absent or all-blank list, leaving validation to say so', () => {
+  assert.deepEqual(normalizeIntakeLists(undefined), []);
+  assert.deepEqual(normalizeIntakeLists(['', '  ']), []);
+  // …and an empty result is still a rejected binding, so blanks are never a
+  // silent way to save a Trello source with no lists at all.
+  assert.ok(validateTrelloIntake(binding({ intakeLists: normalizeIntakeLists(['', '  ']) })));
+});
+
+test('normalized names pass the validator that rejected them untrimmed', () => {
+  // The asymmetry this closes: validateTrelloIntake trims for CHECKING, so it
+  // accepted "Da fare " and returned nothing normalized. After normalization
+  // what is validated and what is stored are the same strings.
+  const raw = ['Da fare ', ''];
+  assert.ok(validateTrelloIntake(binding({ intakeLists: raw })), 'a blank line is rejected before normalization');
+  assert.equal(validateTrelloIntake(binding({ intakeLists: normalizeIntakeLists(raw) })), null);
+});
+
+test('normalizeIntakeLists does not hide a duplicate that only whitespace separated', () => {
+  const names = normalizeIntakeLists(['Da fare', 'Da fare ']);
+  assert.ok(validateTrelloIntake(binding({ intakeLists: names })), 'trimming must not smuggle a duplicate past the validator');
 });
 
 test('validateTrelloIntake accepts a well-formed binding', () => {

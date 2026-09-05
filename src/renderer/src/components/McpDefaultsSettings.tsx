@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { HarnessConfig } from '@/store/config';
-import { MCP_CATALOG, type McpTier } from '@shared/mcpCatalog';
+import { MCP_CATALOG, mergeMcpConsent, type McpTier } from '@shared/mcpCatalog';
 import { canInstallMcp } from './mcpInstallRule';
 
 export interface McpDefaultsSettingsProps {
@@ -131,10 +131,18 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
    *  queue the write. Returns the real write promise (rejects on failure);
    *  the queue itself is kept always-resolved so one failed write never
    *  stalls the ones queued after it. */
-  const writeConsentPatch = (id: string, patch: Record<string, unknown>): Promise<unknown> => {
+  const writeConsentPatch = (
+    id: string,
+    patch: { enabled?: boolean; agents?: string[]; command?: string; args?: string[] }
+  ): Promise<unknown> => {
     const base = mcpDefaultsRef.current ?? {};
-    const currentEntry = base[id] ?? { enabled: enabledFor(id) };
-    const mergedDefaults = { ...base, [id]: { ...currentEntry, ...patch } };
+    // `mergeMcpConsent` — not a hand-rolled spread — is what applies the
+    // catalog's `defaultAgents` allow-list, so a server that ships restricted
+    // to specific agents is restricted by the FIRST write this panel makes
+    // (enabling it, or an Install pre-filling command/args), rather than only
+    // once the user remembers to type an allow-list. An allow-list the user
+    // deliberately emptied is left alone; see mergeMcpConsent.
+    const mergedDefaults = { ...base, [id]: mergeMcpConsent(id, base[id], patch) };
     mcpDefaultsRef.current = mergedDefaults;
 
     const run = () => window.cth.updateConfig({ mcpDefaults: mergedDefaults });
@@ -155,7 +163,10 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
     }
   };
 
-  const [presence, setPresence] = useState<Record<string, { ok: boolean; reason?: string; detail?: string }>>({});
+  // `installDest` is main's own derivation of where an install would clone to.
+  // It is DISPLAYED only: this component never constructs a path and never
+  // sends one back — `mcpInstall` takes an id and nothing else.
+  const [presence, setPresence] = useState<Record<string, { ok: boolean; reason?: string; detail?: string; installDest?: string }>>({});
   const [installing, setInstalling] = useState<string | null>(null);
 
   /** Re-run the preflight for every user-configured entry. Cheap (a few stat
@@ -296,22 +307,35 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
                           <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{t('mcpDefaults.agentsHint')}</span>
 
                           {canInstallMcp(entry.id, presence[entry.id]) && (
-                            <button
-                              type="button"
-                              disabled={installing === entry.id}
-                              onClick={() => { void onInstall(entry.id); }}
-                              style={{
-                                alignSelf: 'flex-start', padding: '3px 10px 1px',
-                                background: 'var(--cth-cream-200)',
-                                boxShadow: 'inset 0 0 0 1px var(--cth-ink-700)',
-                                border: 'none', fontFamily: 'var(--cth-font-display)',
-                                fontSize: 8, lineHeight: '14px', color: 'var(--cth-ink-900)',
-                                cursor: installing === entry.id ? 'default' : 'pointer',
-                                textTransform: 'uppercase'
-                              }}
-                            >
-                              {installing === entry.id ? t('mcpDefaults.installing') : t('mcpDefaults.install')}
-                            </button>
+                            <>
+                              {/* Spec §E: the Install button SHOWS the destination
+                                  before proceeding. Installing clones, builds and
+                                  later runs third-party code, so the user sees
+                                  where that lands before they click. The path
+                                  comes from main's own derivation — the same one
+                                  the installer uses — never from here. */}
+                              {presence[entry.id]?.installDest && (
+                                <span style={{ fontSize: 11, lineHeight: '15px', color: 'var(--cth-ink-500)', wordBreak: 'break-all' }}>
+                                  {t('mcpDefaults.installDest', { path: presence[entry.id]?.installDest })}
+                                </span>
+                              )}
+                              <button
+                                type="button"
+                                disabled={installing === entry.id}
+                                onClick={() => { void onInstall(entry.id); }}
+                                style={{
+                                  alignSelf: 'flex-start', padding: '3px 10px 1px',
+                                  background: 'var(--cth-cream-200)',
+                                  boxShadow: 'inset 0 0 0 1px var(--cth-ink-700)',
+                                  border: 'none', fontFamily: 'var(--cth-font-display)',
+                                  fontSize: 8, lineHeight: '14px', color: 'var(--cth-ink-900)',
+                                  cursor: installing === entry.id ? 'default' : 'pointer',
+                                  textTransform: 'uppercase'
+                                }}
+                              >
+                                {installing === entry.id ? t('mcpDefaults.installing') : t('mcpDefaults.install')}
+                              </button>
+                            </>
                           )}
                         </div>
                       )}

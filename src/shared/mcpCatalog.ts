@@ -49,6 +49,27 @@ export interface McpCatalogEntry {
   userConfigured?: boolean;
   /** Seed for `config.mcpDefaults[id].enabled`. Always === (tier === 'safe-readonly'). */
   defaultEnabled: boolean;
+  /** Seed for `config.mcpDefaults[id].agents` — the per-agent allow-list this
+   *  server ships restricted to. Absent means "no restriction by default",
+   *  which the merge step reads as every agent (today's behaviour for every
+   *  entry that has always shipped without one).
+   *
+   *  It lives HERE, next to the tier and the description, because it is the
+   *  entry's security posture and a reader looking at the entry must be able
+   *  to see it. A server whose tools are only safe in one agent's hands (the
+   *  Trello server exposes `create_board`/`archive_list`/`update_card_details`,
+   *  and only god's mission carries the never-write-to-Trello discipline) is
+   *  restricted from its first materialization, not from the moment the user
+   *  remembers to type an allow-list. */
+  defaultAgents?: string[];
+}
+
+/** One server's consent entry as it is stored in `config.mcpDefaults[id]`. */
+export interface McpConsentEntry {
+  enabled: boolean;
+  agents?: string[];
+  command?: string;
+  args?: string[];
 }
 
 /** Upstream repo of the Trello MCP server the installer clones, and the TAG it
@@ -169,7 +190,11 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
     spec: { command: '', args: [] },
     tier: 'write',
     defaultEnabled: false,
-    userConfigured: true
+    userConfigured: true,
+    // Spec decision 7: Trello access is "ristretto a un insieme esplicito di
+    // agenti … oggi ['god']". god's mission is the only place the never-write
+    // discipline is written down, so no other agent may hold these tools.
+    defaultAgents: ['god']
   }
 ];
 
@@ -185,9 +210,48 @@ export function isSafeReadonlyMcp(id: string): boolean {
 }
 
 /** Seed for `DEFAULTS.mcpDefaults` — derived from the catalog so the two never
- *  drift (safe-readonly ON, write/secret OFF). */
-export function defaultMcpDefaults(): Record<string, { enabled: boolean }> {
-  const out: Record<string, { enabled: boolean }> = {};
-  for (const e of MCP_CATALOG) out[e.id] = { enabled: e.defaultEnabled };
+ *  drift (safe-readonly ON, write/secret OFF, `defaultAgents` applied). */
+export function defaultMcpDefaults(): Record<string, McpConsentEntry> {
+  const out: Record<string, McpConsentEntry> = {};
+  for (const e of MCP_CATALOG) out[e.id] = seedMcpConsent(e.id);
   return out;
+}
+
+/** The consent entry to start from for `id` when the config has none yet. */
+export function seedMcpConsent(id: string): McpConsentEntry {
+  const entry = mcpCatalogEntry(id);
+  return {
+    enabled: entry?.defaultEnabled ?? false,
+    ...(entry?.defaultAgents?.length ? { agents: [...entry.defaultAgents] } : {})
+  };
+}
+
+/**
+ * Merge `patch` into the stored consent for `id`, materializing the entry when
+ * there is none — the single place a `config.mcpDefaults[id]` value is ever
+ * built, so the catalog's `defaultAgents` allow-list cannot be lost by writing
+ * through some other path.
+ *
+ * ABSENT ≠ EMPTY. A missing `agents` key means "the user has never expressed a
+ * choice" and takes the catalog default. An `agents: []` that is actually
+ * present is the user's deliberate "every agent" choice (that is precisely
+ * what the Agents field writes when they clear it) and is NEVER re-seeded — a
+ * later Install or toggle must not quietly re-narrow a list they widened on
+ * purpose.
+ */
+export function mergeMcpConsent(
+  id: string,
+  existing: McpConsentEntry | undefined,
+  patch: Partial<McpConsentEntry>
+): McpConsentEntry {
+  const seed = seedMcpConsent(id);
+  const merged: McpConsentEntry = { ...seed, ...existing, ...patch };
+  // An explicit `agents: undefined` is not a user choice — JSON cannot express
+  // it and only a caller spreading a partial can produce it. Treat it as absent
+  // (fall back to the seed) rather than as "every agent".
+  if (merged.agents === undefined) {
+    if (seed.agents) merged.agents = [...seed.agents];
+    else delete merged.agents;
+  }
+  return merged;
 }

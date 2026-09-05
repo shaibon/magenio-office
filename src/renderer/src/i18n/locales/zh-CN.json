@@ -879,6 +879,7 @@
     "agents": "允许使用的智能体",
     "agentsHint": "以逗号分隔的智能体 ID。留空表示所有智能体都可使用该服务器。",
     "install": "安装",
+    "installDest": "将安装到：{{path}}",
     "installing": "正在安装…",
     "installFailed": "安装失败：{{error}}",
     "presenceOk": "已就绪",
