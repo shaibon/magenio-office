@@ -8,11 +8,19 @@ const loadTs = require('./load-ts.cjs');
 
 const LOCALES = ['en', 'zh-CN', 'ar'];
 const KEYS = [
-  'command', 'commandHint', 'args', 'argsHint', 'agents', 'agentsHint',
+  'command', 'commandHint', 'commandPlaceholder',
+  'args', 'argsHint', 'argsPlaceholder',
+  'agents', 'agentsHint', 'agentsPlaceholder',
+  'setupTitle', 'setupIntro', 'setupAfter',
   'install', 'installDest', 'installing', 'installFailed', 'presenceOk',
   'presence.not_configured', 'presence.command_missing',
   'presence.entry_missing', 'presence.credentials_missing'
 ];
+
+// A placeholder shows a REAL example of what the field wants, so its value is
+// a literal path or id — not prose. Translating one would teach the user to
+// type a path that does not exist, which is worse than no example at all.
+const UNTRANSLATED_KEYS = ['commandPlaceholder', 'argsPlaceholder', 'agentsPlaceholder'];
 
 // Keys whose translated string must keep its i18next interpolation
 // placeholder verbatim — losing it during translation would silently drop
@@ -55,6 +63,61 @@ for (const locale of LOCALES) {
     }
   });
 }
+
+test('the example placeholders are identical in every locale', () => {
+  const en = read('en').mcpDefaults;
+  for (const locale of LOCALES.filter((l) => l !== 'en')) {
+    const other = read(locale).mcpDefaults;
+    for (const key of UNTRANSLATED_KEYS) {
+      assert.equal(
+        other[key], en[key],
+        `${locale} translated mcpDefaults.${key} — a placeholder is a literal example, not prose`
+      );
+    }
+  }
+});
+
+test('the first-run setup block leads with install and is gated by the install rule', () => {
+  // No DOM harness in this repo, so the rendering is covered by inspection.
+  // What is checked here is the property that matters: the setup call to
+  // action lives behind the SAME guard as the button it introduces, so a
+  // state install cannot fix (credentials_missing) never shows one, and the
+  // block sits ABOVE the manual fields it tells the user about.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/src/components/McpDefaultsSettings.tsx'), 'utf8');
+
+  for (const key of ['setupTitle', 'setupIntro', 'setupAfter']) {
+    assert.match(src, new RegExp(`mcpDefaults\\.${key}`), `the setup block must render ${key}`);
+  }
+
+  const setup = src.indexOf("mcpDefaults.setupTitle");
+  const commandField = src.indexOf("mcpDefaults.command'");
+  assert.ok(setup > -1 && commandField > -1);
+  assert.ok(
+    setup < commandField,
+    'the setup block must come before the manual fields — leading with three empty inputs is what sent users looking for the answer elsewhere'
+  );
+
+  // The guard: the setup block and the button are inside one canInstallMcp
+  // branch, so there is exactly one of them in the file.
+  assert.equal(
+    (src.match(/canInstallMcp\(entry\.id, presence\[entry\.id\]\)/g) ?? []).length,
+    1,
+    'the setup block and its install button must share a single canInstallMcp guard'
+  );
+});
+
+test('each configurable field offers an example placeholder', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/src/components/McpDefaultsSettings.tsx'), 'utf8');
+  for (const key of ['commandPlaceholder', 'argsPlaceholder', 'agentsPlaceholder']) {
+    assert.match(src, new RegExp(`placeholder=\\{t\\('mcpDefaults\\.${key}'\\)\\}`), `${key} must be wired to its field`);
+  }
+  assert.match(src, /placeholder\?: string/, 'ConsentField must accept a placeholder');
+  assert.equal(
+    (src.match(/placeholder=\{placeholder\}/g) ?? []).length,
+    2,
+    'ConsentField must pass the placeholder to BOTH its input and its textarea'
+  );
+});
 
 test('the component renders the extra fields only for user-configured entries', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/src/components/McpDefaultsSettings.tsx'), 'utf8');
