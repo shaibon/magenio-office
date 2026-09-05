@@ -10,7 +10,7 @@ function resolveTs(fromDir, request) {
   const base = request.startsWith('@shared/')
     ? path.resolve(__dirname, '..', 'src/shared', request.slice('@shared/'.length))
     : path.resolve(fromDir, request);
-  for (const candidate of [base, `${base}.ts`, `${base}.tsx`, path.join(base, 'index.ts')]) {
+  for (const candidate of [base, `${base}.ts`, path.join(base, 'index.ts')]) {
     if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
   }
   return null;
@@ -37,11 +37,7 @@ function loadFile(filename) {
       // builtin (`import path from 'node:path'`) compiles to `path_1.default`,
       // which is undefined at run time — the module loads fine and then explodes
       // on first use. Test harness only; no shipped code compiles through here.
-      esModuleInterop: true,
-      // Matches tsconfig.web's `jsx: "react-jsx"`, so a `.tsx` component can be
-      // loaded here too (for unit-testing a pure helper exported alongside it).
-      // Harmless for plain `.ts` files, which contain no JSX to transform.
-      jsx: ts.JsxEmit.ReactJSX
+      esModuleInterop: true
     },
     fileName: filename,
     reportDiagnostics: true

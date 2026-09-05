@@ -58,11 +58,19 @@ test('the component renders the extra fields only for user-configured entries', 
   assert.match(src, /userConfigured/, 'the extra fields must be gated on the catalog flag');
   assert.match(src, /mcpPresence/, 'the preflight state must be shown');
   assert.match(src, /mcpInstall/, 'the install action must be wired');
-  assert.match(src, /credentials_missing/, 'the install button must be hidden for credentials_missing');
+
+  // The credentials_missing rule itself lives in mcpInstallRule.ts (a plain
+  // .ts module, imported and applied by the component's install button) —
+  // exercised behaviourally below in "canInstallMcp: behaviour for every
+  // branch". Check both files together so this assertion still fails if
+  // the rule ever stops being wired into the component at all.
+  const ruleSrc = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/src/components/mcpInstallRule.ts'), 'utf8');
+  assert.match(src, /canInstallMcp/, 'the install button must be gated by the install rule');
+  assert.match(ruleSrc, /credentials_missing/, 'the install rule must account for credentials_missing');
 });
 
 test('canInstallMcp: behaviour for every branch', () => {
-  const { canInstallMcp } = loadTs('src/renderer/src/components/McpDefaultsSettings.tsx');
+  const { canInstallMcp } = loadTs('src/renderer/src/components/mcpInstallRule.ts');
 
   // Only trello ships an installer.
   assert.equal(canInstallMcp('some-other-entry', undefined), false, 'a non-trello entry must never show install');

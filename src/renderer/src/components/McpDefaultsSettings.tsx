@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { HarnessConfig } from '@/store/config';
 import { MCP_CATALOG, type McpTier } from '@shared/mcpCatalog';
+import { canInstallMcp } from './mcpInstallRule';
 
 export interface McpDefaultsSettingsProps {
   config: HarnessConfig;
@@ -27,33 +28,6 @@ const labelStyle: React.CSSProperties = {
   textTransform: 'uppercase'
 };
 
-/**
- * Whether the "Install" action should be offered for a user-configured MCP
- * catalog entry, given its latest preflight result. Pulled out as a pure,
- * exported function so it can be unit-tested directly (this repo has no DOM
- * test harness to drive the button through the real component).
- *
- * - Only `trello` ships an installer today (Task 7) — every other
- *   user-configured entry has no install action to offer at all.
- * - Never once the preflight reports `ok`: nothing left to fix.
- * - Never for `credentials_missing`: no install can supply a secret: only
- *   the user editing the server's own `.env` can.
- * - Yes for `not_configured`, `command_missing`, `entry_missing`: an install
- *   can resolve each of those.
- * - An absent/unknown reason (in particular: preflight hasn't run yet, or
- *   reports a reason this UI doesn't recognize) is treated the same as an
- *   installable failure and defaults to showing the button. Hiding it on an
- *   unrecognized reason would silently strand the user with no way to
- *   recover a broken install; showing it when it isn't needed is at worst a
- *   redundant click that reruns an install which then reports `ok`.
- */
-export function canInstallMcp(entryId: string, presence?: { ok: boolean; reason?: string }): boolean {
-  if (entryId !== 'trello') return false;
-  if (presence?.ok) return false;
-  if (presence?.reason === 'credentials_missing') return false;
-  return true;
-}
-
 interface ConsentFieldProps {
   value: string;
   onCommit: (value: string) => void;
@@ -66,32 +40,57 @@ interface ConsentFieldProps {
  * A blur-to-save text field for MCP consent (command / args / agents).
  *
  * Genuinely controlled: `draft` is local state seeded from `value` and kept
- * in sync with it by the effect below. The previous implementation used an
+ * in sync with it by the effect below. An earlier implementation used an
  * uncontrolled `<input defaultValue=.../>`: React applies `defaultValue`
  * only at mount, so once `onInstall` wrote a real command/args into
  * consent, the field kept showing the stale (usually blank) text it
  * mounted with — and an ordinary blur (click in, click out, type nothing)
  * would then write that stale text back over the value the install just
- * saved. Being controlled means the field always renders `value` once it
- * changes, so a no-op blur commits exactly what is already stored.
+ * saved.
  *
- * The resync effect skips while the field is focused, so an external value
- * change (another save landing) never clobbers text the user is actively
- * typing.
+ * The resync effect skips while the field is focused (`focusedRef`), so an
+ * external value change (another save landing) never clobbers text the
+ * user is actively typing. That suppression reopens the same hole on a
+ * timing overlap, though: focus the field, let a write land elsewhere
+ * (e.g. Install) while focused, then blur without typing — the resync was
+ * skipped, so `draft` is still the old value, and committing it on blur
+ * would silently overwrite what the write just stored.
+ *
+ * `editedRef` closes that hole: it is set only by `onChange`, i.e. only
+ * when the user actually typed. On blur, a commit fires *only* if
+ * `editedRef.current` is true — the user's own edit is the sole thing that
+ * can ever be written. If the user never edited, blur instead re-seeds
+ * `draft` from the current `value` (a plain re-sync, not a write), so the
+ * field catches up to whatever landed while it was focused. That makes the
+ * class of bug impossible regardless of timing: nothing this component
+ * writes was not typed by the user.
  */
 function ConsentField({ value, onCommit, multiline, rows, style }: ConsentFieldProps) {
   const [draft, setDraft] = useState(value);
   const focusedRef = useRef(false);
+  const editedRef = useRef(false);
 
   useEffect(() => {
     if (!focusedRef.current) setDraft(value);
   }, [value]);
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setDraft(e.target.value);
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    editedRef.current = true;
+    setDraft(e.target.value);
+  };
   const handleFocus = () => { focusedRef.current = true; };
   const handleBlur = () => {
     focusedRef.current = false;
-    onCommit(draft);
+    if (editedRef.current) {
+      editedRef.current = false;
+      onCommit(draft);
+    } else {
+      // The user never typed, so there is nothing of theirs to commit.
+      // The resync effect may have been suppressed for this field's whole
+      // focused span (see above), so `draft` can be behind `value` even
+      // though nothing was edited — catch it up here instead of writing.
+      setDraft(value);
+    }
   };
 
   return multiline ? (
