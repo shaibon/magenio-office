@@ -871,6 +871,22 @@
       "safeReadonlyNote": "These servers read data only, need no secrets, and are scoped to the agent workspace. They are enabled for every new agent.",
       "writeNote": "These servers can mutate state beyond the workspace. Off by default — enable only after reviewing.",
       "secretNote": "These servers require an API key or credentials. Off by default — add your credentials and enable after consent."
+    },
+    "command": "Launch command",
+    "commandHint": "Absolute path to the binary that runs the server (e.g. the bun executable).",
+    "args": "Arguments",
+    "argsHint": "One per line. The first one is the server's entry file.",
+    "agents": "Agents allowed",
+    "agentsHint": "Comma-separated agent ids. Leave empty to give this server to every agent.",
+    "install": "Install",
+    "installing": "Installing…",
+    "installFailed": "Install failed: {{error}}",
+    "presenceOk": "Ready",
+    "presence": {
+      "not_configured": "Not configured yet — set the launch command below, or install the server.",
+      "command_missing": "The launch command is not an executable file.",
+      "entry_missing": "The server's entry file is missing — it may need to be built.",
+      "credentials_missing": "The server has no credentials yet. {{detail}}"
     }
   },
   "devicePicker": {
