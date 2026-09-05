@@ -71,6 +71,21 @@ test('a non-trello entry is not credential-checked', () => {
   assert.deepEqual(result, { ok: true });
 });
 
+const TEMPLATE_DOT_ENV = [
+  '# Trello credentials — required',
+  'TRELLO_API_KEY=your-api-key-here',
+  'TRELLO_TOKEN=your-token-here',
+  '',
+  '# TRELLO_ORG_ID=optional-org-id',
+  ''
+].join('\n');
+
+const EXAMPLE_ENV = [
+  'TRELLO_API_KEY=<YOUR-API-KEY> # https://trello.com/app-key',
+  'TRELLO_TOKEN=<YOUR-APP-TOKEN> # https://trello.com/1/authorize?...',
+  'TRELLO_BOARD_ID=abc'
+].join('\n');
+
 function installDeps(over) {
   const calls = [];
   return {
@@ -79,8 +94,9 @@ function installDeps(over) {
       dirExistsNonEmpty: () => false,
       which: () => '/bin/bun',
       run: (cmd, args, cwd) => { calls.push({ cmd, args, cwd }); return { ok: true }; },
-      fileExists: () => true,
-      copyFile: (from, to) => { calls.push({ cmd: 'copy', args: [from, to] }); },
+      fileExists: () => false,
+      readText: () => null,
+      writeText: (p, text) => { calls.push({ cmd: 'write', args: [p, text] }); },
       ...over
     }
   };
@@ -125,4 +141,56 @@ test('install reports the failing step instead of leaving a half-built dir silen
   const result = await installTrelloMcp('/dest', deps);
   assert.equal(result.ok, false);
   assert.match(result.error, /build blew up/);
+});
+
+function seededEnvText(calls) {
+  const write = calls.find((c) => c.cmd === 'write' && c.args[0].endsWith('.env'));
+  assert.ok(write, 'installer never wrote a .env');
+  return write.args[1];
+}
+
+test('seeding from a .env.template blanks both required keys and preserves comments', async () => {
+  const { deps, calls } = installDeps({
+    fileExists: (p) => p.endsWith('.env.template'),
+    readText: (p) => (p.endsWith('.env.template') ? TEMPLATE_DOT_ENV : null)
+  });
+  const result = await installTrelloMcp('/dest', deps);
+  assert.equal(result.ok, true);
+  const seeded = seededEnvText(calls);
+  assert.equal(envAssignsNonEmpty(seeded, 'TRELLO_API_KEY'), false);
+  assert.equal(envAssignsNonEmpty(seeded, 'TRELLO_TOKEN'), false);
+  assert.match(seeded, /# Trello credentials — required/);
+  assert.match(seeded, /# TRELLO_ORG_ID=optional-org-id/);
+});
+
+test('seeding from an example.env blanks a placeholder hidden behind a trailing comment', async () => {
+  const { deps, calls } = installDeps({
+    fileExists: (p) => p.endsWith('example.env'),
+    readText: (p) => (p.endsWith('example.env') ? EXAMPLE_ENV : null)
+  });
+  const result = await installTrelloMcp('/dest', deps);
+  assert.equal(result.ok, true);
+  const seeded = seededEnvText(calls);
+  assert.equal(envAssignsNonEmpty(seeded, 'TRELLO_API_KEY'), false);
+  assert.equal(envAssignsNonEmpty(seeded, 'TRELLO_TOKEN'), false);
+});
+
+test('seeding preserves an unrelated key with its value intact', async () => {
+  const { deps, calls } = installDeps({
+    fileExists: (p) => p.endsWith('example.env'),
+    readText: (p) => (p.endsWith('example.env') ? EXAMPLE_ENV : null)
+  });
+  await installTrelloMcp('/dest', deps);
+  const seeded = seededEnvText(calls);
+  assert.equal(envAssignsNonEmpty(seeded, 'TRELLO_BOARD_ID'), true);
+  assert.match(seeded, /TRELLO_BOARD_ID=abc/);
+});
+
+test('with no template present, install still writes a .env with both required keys empty', async () => {
+  const { deps, calls } = installDeps();
+  const result = await installTrelloMcp('/dest', deps);
+  assert.equal(result.ok, true);
+  const seeded = seededEnvText(calls);
+  assert.equal(envAssignsNonEmpty(seeded, 'TRELLO_API_KEY'), false);
+  assert.equal(envAssignsNonEmpty(seeded, 'TRELLO_TOKEN'), false);
 });

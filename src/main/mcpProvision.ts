@@ -15,7 +15,7 @@
  *
  * Contract: docs/superpowers/specs/2026-09-05-trello-intake-design.md §C.
  */
-import { existsSync, accessSync, constants, readFileSync, readdirSync, copyFileSync } from 'node:fs';
+import { existsSync, accessSync, constants, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { TRELLO_MCP_REPO_URL, TRELLO_MCP_TAG } from '../shared/mcpCatalog';
@@ -70,6 +70,34 @@ export function envAssignsNonEmpty(text: string, key: string): boolean {
     if (value.length > 0) return true;
   }
   return false;
+}
+
+/**
+ * Rewrite every assignment to a key in `keys` so its value is empty, leaving
+ * everything else — comments, blank lines, unrelated keys, an `export `
+ * prefix — exactly as it was.
+ *
+ * A blanked line drops anything after `=`, including a trailing `# comment`
+ * (example.env's `KEY=<PLACEHOLDER> # url` shape): leaving the comment behind
+ * would make the line read back as `KEY= # url`, and `envAssignsNonEmpty`
+ * would see a non-empty value in the comment text.
+ */
+function blankEnvAssignments(text: string, keys: readonly string[]): string {
+  const keySet = new Set<string>(keys);
+  return text
+    .split(/\r?\n/)
+    .map((rawLine) => {
+      const trimmed = rawLine.trim();
+      if (!trimmed || trimmed.startsWith('#')) return rawLine;
+      const eq = rawLine.indexOf('=');
+      if (eq < 0) return rawLine;
+      const match = rawLine.slice(0, eq).match(/^(\s*)(export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*$/);
+      if (!match) return rawLine;
+      const [, indent, exportPrefix = '', key] = match;
+      if (!keySet.has(key)) return rawLine;
+      return `${indent}${exportPrefix}${key}=`;
+    })
+    .join('\n');
 }
 
 /**
@@ -131,7 +159,9 @@ export interface InstallDeps {
   which: (bin: string) => string | null;
   run: (cmd: string, args: string[], cwd?: string) => { ok: boolean; stderr?: string };
   fileExists: (p: string) => boolean;
-  copyFile: (from: string, to: string) => void;
+  /** File contents, or null when unreadable/absent. */
+  readText: (p: string) => string | null;
+  writeText: (p: string, text: string) => void;
 }
 
 /**
@@ -171,16 +201,25 @@ export async function installTrelloMcp(
   const build = deps.run(bun, ['run', 'build'], destDir);
   if (!build.ok) return { ok: false, error: `bun run build failed: ${build.stderr ?? 'unknown error'}` };
 
-  // Seed an EMPTY .env from whichever template the repo ships. Best-effort: a
-  // missing template is not a failed install, it just means the user creates
-  // the file themselves — the preflight tells them so either way.
+  // Seed a .env with the required keys blanked, regardless of what the
+  // upstream template ships. The real .env.template/example.env carry
+  // placeholder VALUES (e.g. "your-api-key-here"), not empty ones — copying
+  // them verbatim would let the preflight see a "configured" server that is
+  // actually running on placeholder credentials. So the installer itself is
+  // the one place that guarantees the keys start empty, independent of
+  // whatever the upstream repo does next.
+  let templateText: string | null = null;
   for (const template of ['.env.template', 'example.env']) {
     const from = join(destDir, template);
     if (deps.fileExists(from)) {
-      deps.copyFile(from, join(destDir, '.env'));
-      break;
+      templateText = deps.readText(from);
+      if (templateText !== null) break;
     }
   }
+  const seeded = templateText !== null
+    ? blankEnvAssignments(templateText, TRELLO_REQUIRED_ENV)
+    : TRELLO_REQUIRED_ENV.map((key) => `${key}=`).join('\n') + '\n';
+  deps.writeText(join(destDir, '.env'), seeded);
 
   return { ok: true, command: bun, args: [join(destDir, 'build', 'index.js')] };
 }
@@ -203,6 +242,9 @@ export function nodeInstallDeps(): InstallDeps {
     fileExists: (p) => {
       try { return existsSync(p); } catch { return false; }
     },
-    copyFile: (from, to) => copyFileSync(from, to)
+    readText: (p) => {
+      try { return readFileSync(p, 'utf8'); } catch { return null; }
+    },
+    writeText: (p, text) => writeFileSync(p, text, 'utf8')
   };
 }
