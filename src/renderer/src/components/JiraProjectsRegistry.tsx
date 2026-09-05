@@ -382,7 +382,15 @@ export function JiraProjectsRegistry() {
                   {tr('jiraProjects.trelloEnabled')}
                 </label>
 
-                <PixelButton variant="secondary" size="sm" onClick={() => patch({ trello: undefined, trelloUrl: '' })}>
+                <PixelButton
+                  variant="secondary" size="sm"
+                  onClick={() => {
+                    // Removing the subsection can leave a stale "bad URL" error
+                    // pointing at a field that no longer exists on screen.
+                    setErr('');
+                    patch({ trello: undefined, trelloUrl: '' });
+                  }}
+                >
                   {tr('jiraProjects.trelloRemove')}
                 </PixelButton>
               </>
