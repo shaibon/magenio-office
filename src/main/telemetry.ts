@@ -146,6 +146,16 @@ export class TelemetryCollector {
    *  has no input source of its own (hook payloads don't expose api errors). */
   private readonly apiErrorSubs = new Set<(agentId: string) => void>();
 
+  /** t-034 diagnostic (2026-09-05): a `--resume`d agent (thaw or a plain boot
+   *  restore) was observed to stop reporting live usage in fleet.json even
+   *  after it demonstrably ran a turn. Once-per-agent-per-process breadcrumbs
+   *  so the NEXT restart shows immediately whether OTLP metrics for a resumed
+   *  agent ever arrive here at all, and whether they're silently dropped for
+   *  missing agent.id/session.id — without logging per data point. Remove
+   *  once the root cause is confirmed and fixed. */
+  private readonly diagMetricSeen = new Set<string>();
+  private readonly diagMetricDropped = new Set<string>();
+
   constructor(opts: TelemetryCollectorOptions = {}) {
     this.host = opts.host ?? '127.0.0.1';
     this.port = opts.port ?? 0;
@@ -223,6 +233,10 @@ export class TelemetryCollector {
     }
     this.agentSessions.delete(agentId);
     this.spans.delete(agentId);
+    // t-034: let the next spawn's first metric (or drop) log again — the
+    // question is whether THIS respawn reattaches, not whether it ever did.
+    this.diagMetricSeen.delete(agentId);
+    this.diagMetricDropped.delete(agentId);
   }
 
   /** Recent tool spans for the per-agent waterfall (#7B.2), oldest→newest. */
@@ -308,7 +322,22 @@ export class TelemetryCollector {
             const attrs = flattenAttrs(dp.attributes);
             const agentId = str(attrs['agent.id']) || str(resAttrs['agent.id']);
             const sessionId = str(attrs['session.id']);
-            if (!agentId || !sessionId) continue;
+            if (!agentId || !sessionId) {
+              // t-034: a metric datapoint that never reaches `touched` below —
+              // if a resumed agent's metrics land here without a session.id,
+              // this is where they silently vanish. Once per agentId (or once
+              // for a wholly anonymous datapoint) per process lifetime.
+              const key = agentId || '(no-agent-id)';
+              if (!this.diagMetricDropped.has(key)) {
+                this.diagMetricDropped.add(key);
+                console.log(`[telemetry][t034] dropped metric datapoint — missing ${!agentId ? 'agent.id' : 'session.id'} (agentId=${agentId || '?'})`);
+              }
+              continue;
+            }
+            if (!this.diagMetricSeen.has(agentId)) {
+              this.diagMetricSeen.add(agentId);
+              console.log(`[telemetry][t034] first live metric this run for agentId=${agentId} sessionId=${sessionId} — telemetry (re)attached`);
+            }
             const accum = this.session(agentId, sessionId);
             const model = normalizeModel(str(attrs['model']));
             if (model) accum.model = model;
