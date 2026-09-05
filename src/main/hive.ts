@@ -43,6 +43,7 @@ import { preferredAgentRole } from '../shared/agentRole';
 import { mergeTaskLedger } from '../shared/taskLedger';
 import { expandTilde } from './fs';
 import { resolveGodName } from '../shared/godIdentity';
+import { checkMcpPresence, nodePresenceDeps } from './mcpProvision';
 
 /** The subset of HarnessConfig the hive consumes for the default-MCP merge.
  *  Kept as a local shape so hive.ts never imports the foundation-owned config
@@ -971,7 +972,7 @@ export class HiveManager {
     if (sock && shim) {
       env.HIVE_SOCK = sock;
       const settingsPath = join(dir, 'settings.json');
-      this.writeJson(settingsPath, this.hookSettings(shim, meta.cwd, opts.mcpDefaults, opts.theme, this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs)));
+      this.writeJson(settingsPath, this.hookSettings(shim, meta.id, meta.cwd, opts.mcpDefaults, opts.theme, this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs)));
       args.push('--settings', settingsPath);
     }
     return { args, env };
@@ -1152,7 +1153,7 @@ export class HiveManager {
     return Array.from(new Set(out));
   }
 
-  private hookSettings(shim: string, cwd: string, cfg: McpDefaultsMap, theme?: 'light' | 'dark', writableDirs: string[] = []): unknown {
+  private hookSettings(shim: string, agentId: string, cwd: string, cfg: McpDefaultsMap, theme?: 'light' | 'dark', writableDirs: string[] = []): unknown {
     // Bundled node, NOT bare `node` — see nodeLauncherPath(). Claude runs each of
     // these through `sh -c` with a stripped PATH, where `node` is often absent.
     const cmd = this.nodeRun(shim);
@@ -1160,7 +1161,7 @@ export class HiveManager {
       ...(matcher ? { matcher } : {}),
       hooks: [{ type: 'command', command: cmd }]
     });
-    const mcpServers = this.buildDefaultMcpServers(cwd, cfg);
+    const mcpServers = this.buildDefaultMcpServers(cwd, cfg, agentId);
     return {
       // Match the TUI's truecolor palette to the harness terminal theme —
       // PER SESSION, so the user's global Claude theme (their own terminals
@@ -1227,22 +1228,48 @@ export class HiveManager {
    */
   private buildDefaultMcpServers(
     cwd: string,
-    cfg: McpDefaultsMap
+    cfg: McpDefaultsMap,
+    agentId: string
   ): Record<string, { command: string; args: string[]; env?: Record<string, string> }> {
     const out: Record<string, { command: string; args: string[]; env?: Record<string, string> }> = {};
+    const presenceDeps = nodePresenceDeps();
     for (const e of MCP_CATALOG) {
-      const consented = cfg?.[e.id]?.enabled;
+      const consent = cfg?.[e.id];
+      const consented = consent?.enabled;
       const enabled = consented ?? e.defaultEnabled;
       if (!enabled) continue;
       // Defense-in-depth: a write/secret server requires an EXPLICIT opt-in; it can
       // never ride in on a default (the catalog already ships these OFF, but this
       // guards a hand-edited/partial mcpDefaults map too).
       if (e.tier !== 'safe-readonly' && consented !== true) continue;
-      // Replace the `<cwd>` placeholder (filesystem/git) with the agent cwd at merge
-      // time so these stay strictly workspace-scoped.
-      const args = e.spec.args.map((a) => (a === '<cwd>' ? cwd : a));
+      // Per-agent scoping: an empty or absent list means every agent, which is
+      // the behaviour every existing consent has.
+      if (consent?.agents?.length && !consent.agents.includes(agentId)) continue;
+
+      let command = e.spec.command;
+      let args = e.spec.args.map((a) => (a === '<cwd>' ? cwd : a));
+      // A consent may only supply a command for an entry that declares itself
+      // user-configured. Without this guard a hand-edited config.json could turn
+      // `filesystem` into an arbitrary binary launched inside every agent.
+      if (e.userConfigured) {
+        // `checkMcpPresence` alone decides whether this server can run — including
+        // the not-yet-configured case (`reason: 'not_configured'`). A second,
+        // separate "is it configured" guard here would silently `continue` without
+        // logging, which is exactly the failure this preflight exists to avoid: a
+        // declared-but-dead server disappears with no explanation.
+        const presence = checkMcpPresence(e.id, consent, presenceDeps);
+        if (!presence.ok) {
+          // A DECLARED-but-dead server is the worst outcome: the client retries
+          // and the agent silently has no tools. Omit it and say why.
+          console.error(`[hive] MCP '${e.id}' not wired for ${agentId}: ${presence.reason} — ${presence.detail ?? ''}`);
+          continue;
+        }
+        command = consent!.command!.trim();
+        args = [...consent!.args!];
+      }
+
       out[`munder-${e.id}`] = {
-        command: e.spec.command,
+        command,
         args,
         ...(e.spec.env ? { env: e.spec.env } : {})
       };
