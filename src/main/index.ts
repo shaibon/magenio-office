@@ -61,6 +61,7 @@ import type { SpawnFailReason } from './analytics';
 import { IntegrationBroker } from './integrationBroker';
 import * as integrations from './integrations';
 import * as jiraProjects from './jiraProjects';
+import { checkMcpPresence, nodePresenceDeps, installTrelloMcp, nodeInstallDeps } from './mcpProvision';
 import { secretRefFor, INTEGRATION_TEMPLATES } from '../shared/integrations';
 import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
@@ -3203,6 +3204,23 @@ ipcMain.handle('integrations:test', async (_evt, payload: unknown) => {
   const p = (payload ?? {}) as { id?: unknown; path?: unknown };
   if (typeof p.id !== 'string' || !p.id) return { ok: false, error: 'id required' };
   return integrations.probeRecord(p.id, typeof p.path === 'string' ? p.path : undefined);
+});
+
+// ─── IPC: MCP provisioning ──────────────────────────────────────────────────
+
+ipcMain.handle('mcp:presence', async (_evt, payload: unknown) => {
+  const p = (payload ?? {}) as { id?: unknown };
+  if (typeof p.id !== 'string' || !p.id) return { ok: false, reason: 'not_configured', detail: 'id required' };
+  return checkMcpPresence(p.id, readConfig().mcpDefaults?.[p.id], nodePresenceDeps());
+});
+
+ipcMain.handle('mcp:install', async (_evt, payload: unknown) => {
+  const p = (payload ?? {}) as { id?: unknown };
+  if (p.id !== 'trello') return { ok: false, error: 'only the trello MCP server has an installer' };
+  // The destination is derived HERE, never accepted from the renderer: an
+  // installer that clones wherever it is told is an arbitrary-write primitive.
+  const destDir = join(app.getPath('userData'), 'mcp', 'trello');
+  return installTrelloMcp(destDir, nodeInstallDeps());
 });
 
 // ─── IPC: config ────────────────────────────────────────────────────────────
