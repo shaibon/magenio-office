@@ -1346,7 +1346,17 @@
     "testOk": "✓ 有效",
     "testFailed": "✕",
     "backToList": "← Jira 项目",
-    "noProjects": "尚未配置 Jira 项目。"
+    "noProjects": "尚未配置 Jira 项目。",
+    "trelloTitle": "Trello 来源",
+    "trelloAdd": "添加 Trello 来源",
+    "trelloRemove": "移除 Trello 来源",
+    "trelloBoardUrl": "看板 URL",
+    "trelloBoardUrlHint": "粘贴看板 URL，例如 https://trello.com/b/781LrPy9/burdastyle",
+    "trelloBoardLabel": "看板名称",
+    "trelloLists": "接收列表",
+    "trelloListsHint": "每行一个列表名称，须与看板上显示的完全一致。这些列表中的卡片将成为该项目的 Issue。",
+    "trelloEnabled": "已启用接收",
+    "trelloBadUrl": "这不是有效的 Trello 看板 URL，格式应为 https://trello.com/b/<id>/<name>。"
   },
   "kanban": {
     "count": "{{count}} 项任务",

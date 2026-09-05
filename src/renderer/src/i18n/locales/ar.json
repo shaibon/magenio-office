@@ -1346,7 +1346,17 @@
     "testOk": "✓ صالح",
     "testFailed": "✕",
     "backToList": "← مشاريع Jira",
-    "noProjects": "لا توجد مشاريع Jira مهيأة بعد."
+    "noProjects": "لا توجد مشاريع Jira مهيأة بعد.",
+    "trelloTitle": "مصدر Trello",
+    "trelloAdd": "إضافة مصدر Trello",
+    "trelloRemove": "إزالة مصدر Trello",
+    "trelloBoardUrl": "رابط اللوحة",
+    "trelloBoardUrlHint": "الصق رابط اللوحة، مثل https://trello.com/b/781LrPy9/burdastyle",
+    "trelloBoardLabel": "اسم اللوحة",
+    "trelloLists": "قوائم الاستقبال",
+    "trelloListsHint": "اسم قائمة واحد في كل سطر، تمامًا كما يظهر على اللوحة. تتحول البطاقات في هذه القوائم إلى مشكلات في هذا المشروع.",
+    "trelloEnabled": "الاستقبال مفعّل",
+    "trelloBadUrl": "هذا ليس رابط لوحة Trello صالحًا. يجب أن يكون بالشكل https://trello.com/b/<id>/<name>."
   },
   "kanban": {
     "count": "{{count}} مهمة",
