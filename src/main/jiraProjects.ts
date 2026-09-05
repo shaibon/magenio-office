@@ -12,6 +12,7 @@ import {
   validateJiraKeyFormat,
   hasDuplicateKey
 } from '../shared/jiraProjects';
+import { validateTrelloIntake } from '../shared/trelloIntake';
 import { readConfig, writeConfig } from './config';
 
 export interface JiraValidationDeps {
@@ -74,6 +75,14 @@ export async function validateJiraProjectBinding(
     if (!deps.agentExists(agentId)) {
       return { ok: false, error: `Agent "${agentId}" does not exist or is archived.` };
     }
+  }
+
+  // Format only. Main has no route to Trello (the MCP lives agent-side), so a
+  // board or a list that does not exist surfaces at the first poll, named, not
+  // at save time.
+  if (binding.trello) {
+    const trelloError = validateTrelloIntake(binding.trello);
+    if (trelloError) return { ok: false, error: trelloError };
   }
 
   if (deps.testJiraKey) {

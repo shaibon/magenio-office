@@ -109,6 +109,9 @@ on one):
   either an `X-MD-Broker-Token: <token>` header or an
   `Authorization: Bearer <token>` header — both env vars are pre-set in your
   environment when this capability is available to you.
+  A binding may also carry a `trello` block (`{ boardShortLink, boardLabel,
+  intakeLists, enabled }`) naming the Trello board and lists that feed that Jira
+  project. It is read-only context: nothing in the harness ever writes to Trello.
 
 As additional brokered integrations land (calendar, mail, docs, web fetch, …),
 they follow the same shape: a brokered, credential-free call discoverable at run

@@ -15,7 +15,7 @@ import { initAutoUpdater, abortPendingRestart } from './updater';
 import { RealtimeFloorWatcher } from './realtimeFloorWatcher';
 import {
   readConfig, writeConfig, setAgentTokenCap, resetConfig, onConfigWritten, ensureHarnessHome, ensureClaudePermissionsAccepted,
-  modelForRole, OPS_STANDUP_MISSION, HEARTBEAT_MISSION, JIRA_POLL_MISSION, COMPACT_MAINTENANCE_MISSION, type HarnessConfig, type ScheduledMission
+  modelForRole, OPS_STANDUP_MISSION, HEARTBEAT_MISSION, JIRA_POLL_MISSION, TRELLO_INTAKE_MISSION, COMPACT_MAINTENANCE_MISSION, type HarnessConfig, type ScheduledMission
 } from './config';
 import { listDir, readFileText, readFileBinary, writeFileText, statAbs, expandTilde } from './fs';
 import { normalizeWeekly, weeklyDelayMs } from '../shared/weeklySchedule';
@@ -61,6 +61,7 @@ import type { SpawnFailReason } from './analytics';
 import { IntegrationBroker } from './integrationBroker';
 import * as integrations from './integrations';
 import * as jiraProjects from './jiraProjects';
+import { checkMcpPresence, nodePresenceDeps, installTrelloMcp, nodeInstallDeps } from './mcpProvision';
 import { secretRefFor, INTEGRATION_TEMPLATES } from '../shared/integrations';
 import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
@@ -953,6 +954,19 @@ function ensureDefaultMissions(): void {
     writeConfig({
       missions: has ? missions : [...missions, { ...JIRA_POLL_MISSION, lastFiredAt: Date.now() }],
       jiraPollSeeded: true
+    });
+  }
+
+  // Seed the Trello intake once. Shipped DISABLED like the Jira poll — it
+  // creates issues on a real tracker, so the user opts in from the Schedules
+  // panel once a board is bound to a project.
+  const cfgTrelloIntake = readConfig();
+  if (!cfgTrelloIntake.trelloIntakeSeeded) {
+    const missions = cfgTrelloIntake.missions ?? [];
+    const has = missions.some((m) => m.id === TRELLO_INTAKE_MISSION.id);
+    writeConfig({
+      missions: has ? missions : [...missions, { ...TRELLO_INTAKE_MISSION, lastFiredAt: Date.now() }],
+      trelloIntakeSeeded: true
     });
   }
 
@@ -3232,6 +3246,39 @@ ipcMain.handle('integrations:test', async (_evt, payload: unknown) => {
   const p = (payload ?? {}) as { id?: unknown; path?: unknown };
   if (typeof p.id !== 'string' || !p.id) return { ok: false, error: 'id required' };
   return integrations.probeRecord(p.id, typeof p.path === 'string' ? p.path : undefined);
+});
+
+// ─── IPC: MCP provisioning ──────────────────────────────────────────────────
+
+/**
+ * Where the Trello MCP server is installed. THE single derivation of that
+ * path: `mcp:install` clones into it and `mcp:presence` reports it so the UI
+ * can show the user the destination BEFORE they press Install (spec §E) — the
+ * one moment the app clones, builds and later executes third-party code. Two
+ * copies of this expression could drift and make the UI promise a directory
+ * the installer does not use, so there is only one.
+ *
+ * It lives here rather than in mcpProvision.ts because it needs `app`, and
+ * mcpProvision.ts is electron-free by design. The destination is derived in
+ * main and never accepted from the renderer: an installer that clones wherever
+ * it is told is an arbitrary-write primitive.
+ */
+function trelloMcpInstallDest(): string {
+  return join(app.getPath('userData'), 'mcp', 'trello');
+}
+
+ipcMain.handle('mcp:presence', async (_evt, payload: unknown) => {
+  const p = (payload ?? {}) as { id?: unknown };
+  if (typeof p.id !== 'string' || !p.id) return { ok: false, reason: 'not_configured', detail: 'id required' };
+  const presence = checkMcpPresence(p.id, readConfig().mcpDefaults?.[p.id], nodePresenceDeps());
+  // Only trello has an installer, so only trello has a destination to show.
+  return p.id === 'trello' ? { ...presence, installDest: trelloMcpInstallDest() } : presence;
+});
+
+ipcMain.handle('mcp:install', async (_evt, payload: unknown) => {
+  const p = (payload ?? {}) as { id?: unknown };
+  if (p.id !== 'trello') return { ok: false, error: 'only the trello MCP server has an installer' };
+  return installTrelloMcp(trelloMcpInstallDest(), nodeInstallDeps());
 });
 
 // ─── IPC: config ────────────────────────────────────────────────────────────

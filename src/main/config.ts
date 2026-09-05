@@ -151,6 +151,53 @@ export const JIRA_POLL_MISSION: ScheduledMission = {
   enabled: false
 };
 
+/** Trello → Jira intake. Reads the cards of each binding's intake lists from
+ *  Trello (through the `trello` MCP server, which only god receives) and creates
+ *  the matching Jira issue for the ones that do not have one yet. NEVER writes
+ *  to Trello: the link lives on the Jira side, as a label plus a remote link.
+ *  Shipped DISABLED — it creates issues on a real tracker. */
+export const TRELLO_INTAKE_MISSION: ScheduledMission = {
+  id: 'trello-intake',
+  label: 'Trello intake → Jira',
+  intervalMs: 900_000,
+  to: 'god',
+  body:
+    'Trello intake. Fetch the active project bindings from the loopback broker ' +
+    '(GET /jira-bindings via MD_BROKER_URL, with your MD_BROKER_TOKEN capability ' +
+    'header). Work ONLY on bindings whose `trello` field is present with ' +
+    'trello.enabled === true; ignore every other binding. For each such binding: ' +
+    '(1) using the trello MCP server, read the cards of every list named in ' +
+    'trello.intakeLists on the board trello.boardShortLink — match list names ' +
+    'EXACTLY; a name that is not on the board is reported as an error naming that ' +
+    'list, and you carry on with the others. ' +
+    '(2) For every card read, form the label trello-<shortLink> from the CARD\'s ' +
+    'shortLink (never its long id, never its title). ' +
+    '(3) Run ONE JQL for the binding: project = <binding.key> AND labels in ' +
+    '("trello-…", …) listing every label from step 2. This tells you which cards ' +
+    'already have an issue. ' +
+    '(4) IF THAT QUERY FAILS OR ITS RESULT IS AMBIGUOUS, ABORT THIS BINDING AND ' +
+    'CREATE NOTHING. A failed query is not "no duplicates" — treating it as one ' +
+    'recreates the whole backlog. This rule outranks everything else here. ' +
+    '(5) For each card whose label is absent from the result, create an issue in ' +
+    'project <binding.key> with: summary = the card title; description = the card ' +
+    'description, its checklist items, and the card URL; the label ' +
+    'trello-<shortLink>; and a remote issue link to the card URL whose globalId is ' +
+    'that same label. ' +
+    '(6) Create the issue UNASSIGNED and do not transition it. jira-poll only ' +
+    'claims assigned issues, so a human assigning it in Jira is the deliberate ' +
+    'gate between a client board and the fleet. Do not assign it yourself. ' +
+    '(7) Create at most 10 new issues per binding per cycle. If more cards ' +
+    'qualify, create the first 10 and report the remainder — a mis-pointed list ' +
+    'must not turn into 200 issues. ' +
+    '(8) Transcribe, do not interpret: the client\'s words reach Jira as written. ' +
+    'The issue is the starting point a human refines, not your rewrite of it. ' +
+    '(9) NEVER WRITE TO TRELLO — no comments, no card moves, no labels, no ' +
+    'archiving. The trello MCP server exposes write tools; you do not use them. ' +
+    'Report per binding: cards read, already tracked, created (with their keys), ' +
+    'and any list you could not find.',
+  enabled: false
+};
+
 /** The dedicated auto-compact MAINTENANCE schedule (maint-1). DECOUPLED from the
  *  ops standup so editing/replacing a standup can never silently disable
  *  compaction again (the bug this fixes). It fires ONLY the auto-compact signal —
@@ -291,8 +338,13 @@ export interface HarnessConfig {
   godModel?: string;
   /** Per-server consent state for the default MCP bundle, keyed by catalog id.
    *  Seeded from MCP_CATALOG (safe-readonly ON, write/secret OFF); the user flips
-   *  these in Settings. A server is wired into an agent only when enabled here. */
-  mcpDefaults?: { [id: string]: { enabled: boolean } };
+   *  these in Settings. A server is wired into an agent only when enabled here.
+   *  `agents` narrows a server to specific agent ids (absent/empty = every agent,
+   *  today's behaviour). `command`/`args` supply the launch command for catalog
+   *  entries flagged `userConfigured` — and are IGNORED for every other entry. */
+  mcpDefaults?: {
+    [id: string]: { enabled: boolean; agents?: string[]; command?: string; args?: string[] };
+  };
   /** Enable semantic memory (MemPalace CLI). No-op if mempalace isn't installed. */
   semanticMemory: boolean;
   /** Embedding model for the palace: lightweight 'minilm' or multilingual 'embeddinggemma'. */
@@ -310,6 +362,8 @@ export interface HarnessConfig {
   jiraProjectsImported?: boolean;
   /** Mirrors opsStandupSeeded/heartbeatSeeded for JIRA_POLL_MISSION. */
   jiraPollSeeded?: boolean;
+  /** Mirrors jiraPollSeeded for TRELLO_INTAKE_MISSION. */
+  trelloIntakeSeeded?: boolean;
   /** maint-1 guard for the dedicated auto-compact maintenance mission. UNLIKE the
    *  two above, this does NOT suppress re-add forever: once seeded (flag set), a
    *  later delete makes the mission reappear DISABLED on next boot (compaction is

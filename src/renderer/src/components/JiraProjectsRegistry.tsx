@@ -3,6 +3,8 @@ import { useTranslation } from 'react-i18next';
 import { jiraProjectsClient, type JiraProjectBinding, type JiraAssigneeAllowlistEntry } from '@/jiraProjects/jiraProjectsClient';
 import { integrationsClient } from '@/integrations/registryClient';
 import { authTypeNeedsSecret as needsSecret } from '@shared/integrations';
+import { parseTrelloBoardUrl, validateTrelloIntake, type TrelloIntakeBinding } from '@shared/trelloIntake';
+import { bindingFromDraft, draftFromBinding, emptyDraft, type Draft } from './jiraProjectDraft';
 import { PixelButton } from './PixelButton';
 
 // Jira project bindings — Settings → Connections, mounted right below
@@ -13,14 +15,9 @@ import { PixelButton } from './PixelButton';
 
 type View = 'list' | 'configure';
 
-interface Draft {
-  isNew: boolean;
-  key: string;
-  repo: string;
-  baseBranch: string;
-  agents: string[]; // agent ids, empty = any agent
-  enabled: boolean;
-}
+// `Draft` and the draft ⇄ binding conversions live in ./jiraProjectDraft — a
+// plain .ts module, so `bindingFromDraft` (the form's commit boundary, where
+// the intake list names are normalized) is reachable from node:test.
 
 interface TestResult { ok: boolean; error?: string }
 
@@ -35,25 +32,6 @@ interface JiraPollSettingsState {
  *  entry, god included (the server-side agentExists check always treats god
  *  as valid, so the UI shouldn't exclude it either). */
 interface AssignableAgent { id: string; name: string }
-
-function draftFromBinding(b: JiraProjectBinding): Draft {
-  return {
-    isNew: false, key: b.key, repo: b.repo, baseBranch: b.baseBranch,
-    agents: b.agents ?? [], enabled: b.enabled
-  };
-}
-function emptyDraft(): Draft {
-  return { isNew: true, key: '', repo: '', baseBranch: '', agents: [], enabled: true };
-}
-function bindingFromDraft(d: Draft): JiraProjectBinding {
-  return {
-    key: d.key.trim().toUpperCase(),
-    repo: d.repo.trim(),
-    baseBranch: d.baseBranch.trim(),
-    agents: d.agents.length > 0 ? d.agents : undefined,
-    enabled: d.enabled
-  };
-}
 
 const dispLabel: CSSProperties = { fontFamily: 'var(--cth-font-display)', fontSize: 8, lineHeight: '12px', color: 'var(--cth-ink-500)', textTransform: 'uppercase' };
 const fieldLabel: CSSProperties = { ...dispLabel, color: 'var(--cth-ink-700)' };
@@ -118,7 +96,17 @@ export function JiraProjectsRegistry() {
     if (!draft) return;
     setBusy(true); setErr('');
     try {
-      const res = await jiraProjectsClient.save(bindingFromDraft(draft));
+      // Validate the binding that is actually about to be SAVED, not the raw
+      // draft: `bindingFromDraft` trims the intake list names and drops the
+      // blank ones. Validating the draft instead would reject a trailing
+      // newline with "Intake list names cannot be empty." pointing at an
+      // invisible empty line the user cannot see to remove.
+      const binding = bindingFromDraft(draft);
+      if (binding.trello) {
+        const trelloError = validateTrelloIntake(binding.trello);
+        if (trelloError) { setErr(trelloError); return; }
+      }
+      const res = await jiraProjectsClient.save(binding);
       if (!res.ok) { setErr(res.error || tr('jiraProjects.couldNotSave')); return; }
       await refresh();
       goList();
@@ -292,6 +280,96 @@ export function JiraProjectsRegistry() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <span style={fieldLabel}>{tr('jiraProjects.baseBranch')}</span>
             <input value={draft.baseBranch} onChange={(e) => patch({ baseBranch: e.target.value })} style={inputStyle} />
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <span style={fieldLabel}>{tr('jiraProjects.trelloTitle')}</span>
+
+            {!draft.trello && (
+              <PixelButton
+                variant="secondary" size="sm"
+                onClick={() => patch({
+                  trello: { boardShortLink: '', boardLabel: '', intakeLists: [], enabled: true },
+                  trelloUrl: ''
+                })}
+              >
+                {tr('jiraProjects.trelloAdd')}
+              </PixelButton>
+            )}
+
+            {draft.trello && (
+              <>
+                <span style={fieldLabel}>{tr('jiraProjects.trelloBoardUrl')}</span>
+                <input
+                  value={draft.trelloUrl}
+                  onChange={(e) => {
+                    const url = e.target.value;
+                    const short = parseTrelloBoardUrl(url);
+                    // The slug is lowercase and hyphenated, so it is a starting
+                    // point for the label, never the final answer — the field
+                    // stays editable and the user is expected to fix the casing.
+                    const slug = url.split('/').filter(Boolean).pop() ?? '';
+                    const current = draft.trello as TrelloIntakeBinding;
+                    patch({
+                      trelloUrl: url,
+                      trello: {
+                        ...current,
+                        boardShortLink: short ?? '',
+                        boardLabel: current.boardLabel || (short ? slug : '')
+                      }
+                    });
+                    setErr(url && !short ? tr('jiraProjects.trelloBadUrl') : '');
+                  }}
+                  style={inputStyle}
+                />
+                <span style={hint}>{tr('jiraProjects.trelloBoardUrlHint')}</span>
+
+                <span style={fieldLabel}>{tr('jiraProjects.trelloBoardLabel')}</span>
+                <input
+                  value={draft.trello.boardLabel}
+                  onChange={(e) => patch({ trello: { ...(draft.trello as TrelloIntakeBinding), boardLabel: e.target.value } })}
+                  style={inputStyle}
+                />
+
+                <span style={fieldLabel}>{tr('jiraProjects.trelloLists')}</span>
+                <textarea
+                  rows={3}
+                  value={draft.trello.intakeLists.join('\n')}
+                  onChange={(e) => patch({
+                    trello: {
+                      ...(draft.trello as TrelloIntakeBinding),
+                      // Keep every line the user typed, blanks included: dropping
+                      // them here would make a trailing newline silently delete a
+                      // name mid-edit. validateTrelloIntake rejects blanks on save.
+                      intakeLists: e.target.value.split('\n')
+                    }
+                  })}
+                  style={inputStyle}
+                />
+                <span style={hint}>{tr('jiraProjects.trelloListsHint')}</span>
+
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, ...subText }}>
+                  <input
+                    type="checkbox"
+                    checked={draft.trello.enabled}
+                    onChange={(e) => patch({ trello: { ...(draft.trello as TrelloIntakeBinding), enabled: e.target.checked } })}
+                  />
+                  {tr('jiraProjects.trelloEnabled')}
+                </label>
+
+                <PixelButton
+                  variant="secondary" size="sm"
+                  onClick={() => {
+                    // Removing the subsection can leave a stale "bad URL" error
+                    // pointing at a field that no longer exists on screen.
+                    setErr('');
+                    patch({ trello: undefined, trelloUrl: '' });
+                  }}
+                >
+                  {tr('jiraProjects.trelloRemove')}
+                </PixelButton>
+              </>
+            )}
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>

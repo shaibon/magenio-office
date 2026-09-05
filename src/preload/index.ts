@@ -288,7 +288,7 @@ export interface HarnessConfig {
   godModel?: string;
   /** Per-server consent for the default MCP bundle, keyed by catalog id. Mirrors
    *  src/main/config.ts. */
-  mcpDefaults?: { [id: string]: { enabled: boolean } };
+  mcpDefaults?: { [id: string]: { enabled: boolean; agents?: string[]; command?: string; args?: string[] } };
   semanticMemory: boolean;
   embeddingModel: 'minilm' | 'embeddinggemma';
   missions?: ScheduledMission[];
@@ -1331,6 +1331,18 @@ const api = {
     ipcRenderer.invoke('integrations:remove', req),
   integrationsTest: (req: { id: string; path?: string }): Promise<{ ok: boolean; status?: number; error?: string }> =>
     ipcRenderer.invoke('integrations:test', req),
+  /** Can this MCP server actually run right now? Never returns a credential —
+   *  the detail names a missing key, never its value.
+   *  `installDest` is present only for entries that HAVE an installer (trello
+   *  today): the directory main would clone into, so the UI can show the
+   *  destination before the user presses Install. Main derives it; the
+   *  renderer only displays it and can never send one back. */
+  mcpPresence: (id: string): Promise<{ ok: boolean; reason?: string; detail?: string; installDest?: string }> =>
+    ipcRenderer.invoke('mcp:presence', { id }),
+  /** Clone + build a user-configured MCP server. The destination is chosen by
+   *  main, not here. */
+  mcpInstall: (id: string): Promise<{ ok: true; command: string; args: string[] } | { ok: false; error: string }> =>
+    ipcRenderer.invoke('mcp:install', { id }),
 
   // ─── Jira project bindings (Settings → Connections) ──────────────────────
   jiraProjectsList: (): Promise<JiraProjectBinding[]> =>

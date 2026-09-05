@@ -873,6 +873,23 @@
       "safeReadonlyNote": "These servers read data only, need no secrets, and are scoped to the agent workspace. They are enabled for every new agent.",
       "writeNote": "These servers can mutate state beyond the workspace. Off by default — enable only after reviewing.",
       "secretNote": "These servers require an API key or credentials. Off by default — add your credentials and enable after consent."
+    },
+    "command": "Launch command",
+    "commandHint": "Absolute path to the binary that runs the server (e.g. the bun executable).",
+    "args": "Arguments",
+    "argsHint": "One per line. The first one is the server's entry file.",
+    "agents": "Agents allowed",
+    "agentsHint": "Comma-separated agent ids. Leave empty to give this server to every agent.",
+    "install": "Install",
+    "installDest": "Will install into: {{path}}",
+    "installing": "Installing…",
+    "installFailed": "Install failed: {{error}}",
+    "presenceOk": "Ready",
+    "presence": {
+      "not_configured": "Not configured yet — set the launch command below, or install the server.",
+      "command_missing": "The launch command is not an executable file.",
+      "entry_missing": "The server's entry file is missing — it may need to be built.",
+      "credentials_missing": "The server has no credentials yet. {{detail}}"
     }
   },
   "devicePicker": {
@@ -1332,7 +1349,17 @@
     "testOk": "✓ Valid",
     "testFailed": "✕",
     "backToList": "← Jira projects",
-    "noProjects": "No Jira projects configured yet."
+    "noProjects": "No Jira projects configured yet.",
+    "trelloTitle": "Trello source",
+    "trelloAdd": "Add a Trello source",
+    "trelloRemove": "Remove the Trello source",
+    "trelloBoardUrl": "Board URL",
+    "trelloBoardUrlHint": "Paste the board URL, e.g. https://trello.com/b/781LrPy9/burdastyle",
+    "trelloBoardLabel": "Board name",
+    "trelloLists": "Intake lists",
+    "trelloListsHint": "One list name per line, exactly as it appears on the board. Cards in these lists become issues of this project.",
+    "trelloEnabled": "Intake enabled",
+    "trelloBadUrl": "That is not a Trello board URL. It must look like https://trello.com/b/<id>/<name>."
   },
   "kanban": {
     "count": "{{count}} tasks",
