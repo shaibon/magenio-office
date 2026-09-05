@@ -7,7 +7,7 @@ import { useStore, type Agent } from '@/store/store';
 import { type HarnessConfig } from '@/store/config';
 import { useRestoreTeam } from '@/hooks/useRestoreTeam';
 import { useRtl } from '@/i18n/useDirection';
-import { projectTag, repoLabelOf, jiraKeyFor, useResolvedRepoNames } from '@/hooks/useResolvedRepoNames';
+import { projectTag, projectTagCompact, repoLabelOf, jiraKeyFor, useResolvedRepoNames } from '@/hooks/useResolvedRepoNames';
 
 export interface AgentStripProps {
   /** Needed to rebuild a spawn command when a restorable agent predates the
@@ -287,7 +287,11 @@ export function AgentStrip({ config }: AgentStripProps) {
           />
           <div style={{
             position: 'fixed', right: restoreMenuPos.right, bottom: restoreMenuPos.bottom,
-            zIndex: 350, minWidth: 240, maxHeight: '50vh', overflowY: 'auto',
+            zIndex: 350, minWidth: 240,
+            // 23 restorable entries with long project labels can otherwise grow
+            // the menu off-screen; cap it so rows get a real width to truncate in.
+            maxWidth: 'min(420px, calc(100vw - 24px))',
+            maxHeight: '50vh', overflowY: 'auto',
             background: 'var(--cth-cream-50)',
             boxShadow: '0 0 0 2px var(--cth-ink-900), 3px 4px 0 0 rgba(26,19,32,0.22)',
             padding: 8, display: 'flex', flexDirection: 'column', gap: 6,
@@ -316,15 +320,19 @@ export function AgentStrip({ config }: AgentStripProps) {
                 style={{
                   display: 'flex', alignItems: 'center', gap: 6,
                   height: 26, padding: '0 4px 0 8px',
+                  minWidth: 0, maxWidth: '100%',
                   fontSize: 12, color: 'var(--cth-ink-900)',
                   background: 'var(--cth-paper-100)',
                   boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)'
                 }}
               >
-                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {a.name}{projectTag(a)}
+                <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {a.name}{projectTagCompact(a)}
                 </span>
-                <span style={{ fontSize: 11, color: 'var(--cth-ink-500)', whiteSpace: 'nowrap' }}>
+                <span style={{
+                  fontSize: 11, color: 'var(--cth-ink-500)', whiteSpace: 'nowrap',
+                  overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0, maxWidth: '40%'
+                }}>
                   {a.description ? a.description.slice(0, 24) : ''}
                 </span>
                 {isFrozen && (
@@ -334,7 +342,7 @@ export function AgentStrip({ config }: AgentStripProps) {
                     data-tip={t('agentControl.unfreezeTip')}
                     aria-label={t('agentControl.unfreezeAria')}
                     style={{
-                      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                      flexShrink: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                       height: 18, padding: '0 6px', lineHeight: 1, whiteSpace: 'nowrap',
                       fontSize: 10, color: 'var(--cth-ink-900)',
                       background: 'var(--cth-cream-50)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)',
@@ -347,7 +355,7 @@ export function AgentStrip({ config }: AgentStripProps) {
                   title={t('agentStrip.dismiss', { name: `${a.name}${projectTag(a)}` })}
                   aria-label={t('agentStrip.dismissAria', { name: `${a.name}${projectTag(a)}` })}
                   style={{
-                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                    flexShrink: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                     width: 18, height: 18, padding: 0, lineHeight: 1,
                     fontSize: 12, color: 'var(--cth-ink-500)',
                     background: 'transparent', border: 'none', cursor: 'pointer'

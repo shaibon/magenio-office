@@ -132,3 +132,15 @@ export function projectTag(agent: Agent): string {
   const key = jiraKeyFor(agent);
   return `${key ? ` - ${key}` : ''} · ${repoLabelOf(agent)}`;
 }
+
+/** Compact variant for DENSE lists (restore dropdown rows, fullscreen restore
+ *  chips): when the repo has a Jira binding, ` - KEY · repoLabel` says the same
+ *  project twice, so this shows only the key; without a binding it falls back
+ *  to the repo label. Full disambiguation stays available in tooltips/titles
+ *  via `projectTag`. Deliberately separate from `projectTag` — the long form is
+ *  still right for pickers, toasts and detail headers. */
+export function projectTagCompact(agent: Agent): string {
+  if (agent.isGod) return '';
+  const key = jiraKeyFor(agent);
+  return ` · ${key ?? repoLabelOf(agent)}`;
+}

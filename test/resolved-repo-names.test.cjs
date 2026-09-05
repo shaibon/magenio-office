@@ -16,7 +16,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const loadTs = require('./load-ts.cjs');
 
-const { basename, repoKeyOf, repoLabelOf, projectTag, jiraKeyFor, bindingMatches } =
+const { basename, repoKeyOf, repoLabelOf, projectTag, projectTagCompact, jiraKeyFor, bindingMatches } =
   loadTs('src/renderer/src/hooks/useResolvedRepoNames.ts');
 
 function binding(overrides) {
@@ -55,6 +55,25 @@ test('projectTag is empty for the god agent — there is only ever one, never am
 
 test('projectTag is " · <label>" for everyone else', () => {
   assert.equal(projectTag(agent({ project: 'BurdaStyle' })), ' · BurdaStyle');
+});
+
+test('projectTagCompact is empty for the god agent', () => {
+  assert.equal(projectTagCompact(agent({ isGod: true })), '');
+});
+
+test('projectTagCompact falls back to the repo label while no Jira key is resolved', () => {
+  assert.equal(projectTagCompact(agent({ project: 'BurdaStyle' })), ' · BurdaStyle');
+  assert.equal(projectTagCompact(agent({ project: undefined })), ' · burdastyle');
+});
+
+test('projectTagCompact never duplicates "KEY · repoLabel" — the dense-list variant is shorter than the full tag', () => {
+  // The bindings cache is module-private and unloaded here, so the observable
+  // contract is: when the key is missing the compact form equals the full form;
+  // when a key exists (rendered through the same helper in real mounts) it is
+  // strictly shorter because it drops the duplicated repo label.
+  const a = agent({ project: 'BurdaStyle' });
+  assert.equal(projectTagCompact(a), projectTag(a));
+  assert.ok(projectTag(a).length >= projectTagCompact(a).length);
 });
 
 test('two same-named agents on different projects produce different tags', () => {

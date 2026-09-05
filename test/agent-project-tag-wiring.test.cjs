@@ -28,7 +28,7 @@ const FILES = {
 
 test('the shared hook file exists and exports the pure functions + the hook', () => {
   const src = read('src/renderer/src/hooks/useResolvedRepoNames.ts');
-  for (const name of ['basename', 'repoKeyOf', 'repoLabelOf', 'useResolvedRepoNames', 'projectTag']) {
+  for (const name of ['basename', 'repoKeyOf', 'repoLabelOf', 'useResolvedRepoNames', 'projectTag', 'projectTagCompact']) {
     assert.match(src, new RegExp(`export function ${name}\\(`), `${name} is not exported`);
   }
 });
@@ -77,6 +77,41 @@ test('FullscreenTerminal resolves restorable agents too, not just the live roste
   const src = read(FILES.fullscreen);
   assert.match(src, /useResolvedRepoNames\(restorableAgents\)/,
     'the fullscreen restore chips never resolve the saved cwds of last session\'s (archived) agents — labels cannot come from repoRootByCwd');
+});
+
+test('dense restore lists show the compact tag visibly and keep the full tag in titles', () => {
+  const strip = read(FILES.strip);
+  const fullscreen = read(FILES.fullscreen);
+  // Full disambiguation is preserved in titles/aria (title strings use projectTag).
+  assert.match(strip, /title=\{t\('agentStrip\.restorable', \{ name: `\$\{a\.name\}\$\{projectTag\(a\)\}` \}\)\}/,
+    'AgentStrip row title lost the full project tag');
+  assert.match(fullscreen, /title=\{`\$\{a\.name\}\$\{projectTag\(a\)\} — restorable from last session`\}/,
+    'FullscreenTerminal chip title lost the full project tag');
+  // The visible row/chip text uses the compact variant, so a Jira-bound repo
+  // does not show ` - KEY · repoLabel` twice.
+  assert.match(strip, /\{a\.name\}\{projectTagCompact\(a\)\}/,
+    'AgentStrip visible label does not use projectTagCompact');
+  assert.match(fullscreen, /\{a\.name\}\{projectTagCompact\(a\)\}/,
+    'FullscreenTerminal visible chip text does not use projectTagCompact');
+});
+
+test('AgentStrip restore rows actually truncate: minWidth:0 on the ellipsis span + a menu width cap', () => {
+  const src = read(FILES.strip);
+  assert.match(src, /minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'/,
+    'the ellipsis label span still lacks minWidth:0 — flex min-width:auto disables ellipsis');
+  assert.match(src, /maxWidth: 'min\(420px, calc\(100vw - 24px\)\)'/,
+    'the restore menu has no maxWidth and can grow off-screen with long labels');
+});
+
+test('FullscreenTerminal restore chips are single-line, clipped, and bounded', () => {
+  const src = read(FILES.fullscreen);
+  const chipIdx = src.lastIndexOf('restorableAgents.map(');
+  assert.ok(chipIdx >= 0, 'restorableAgents.map( not found in FullscreenTerminal');
+  const block = src.slice(chipIdx, chipIdx + 1200);
+  assert.match(block, /minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'/,
+    'the chip label span still lacks minWidth:0/nowrap/ellipsis');
+  assert.match(src, /maxHeight: '32vh', overflowY: 'auto', alignContent: 'flex-start'/,
+    'the restore chip area is not height-capped, so 23 entries can eat the whole rail');
 });
 
 test('CommandCenter archived section resolves archived agents and tags their names', () => {

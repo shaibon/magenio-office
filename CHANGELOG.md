@@ -6,6 +6,7 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased] - [xx/xx/2026]
 
+- HIVE / agents: restore-team lists are readable again — dense lists (AgentStrip restore dropdown and fullscreen restore chips) use a compact `· KEY` tag instead of duplicating `- KEY · repoLabel`, rows/chips stay on one line with real ellipsis (flex `minWidth: 0`), the AgentStrip menu width is capped, and the fullscreen restore area is height-bounded and scrollable instead of eating the whole rail.
 - HIVE / agents: the project tag now appears everywhere an agent name is shown outside the grouped roster — floor cards (the inline name editor no longer swallows it), the Command Center archived list, and the fullscreen restore chips at the bottom of the rail, whose archived agents are now resolved through the same shared repo-label/Jira-key helper as live agents.
 - HIVE / agents: frozen agents now show a FROZEN badge on floor cards and in the fullscreen roster instead of reading as idle, with a tooltip explaining the parked/resume semantics.
 - HIVE / agents: registry.json and fleet.json now carry a shared per-agent project label (bound Jira key, else main-repo basename) and god's live roster shows it, so same-named agents are distinguishable outside the renderer.

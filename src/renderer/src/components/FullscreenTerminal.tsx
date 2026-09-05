@@ -17,7 +17,7 @@ import { CostHud } from '@/realtime/CostHud';
 import { useStore, type Agent } from '@/store/store';
 import { usePtyParser } from '@/hooks/usePtyParser';
 import { useRestoreTeam } from '@/hooks/useRestoreTeam';
-import { basename, repoKeyOf, repoLabelOf, useResolvedRepoNames, projectTag } from '@/hooks/useResolvedRepoNames';
+import { basename, repoKeyOf, repoLabelOf, useResolvedRepoNames, projectTag, projectTagCompact } from '@/hooks/useResolvedRepoNames';
 import { useTerminalFontSize } from './terminalFontSize';
 import { useHasTerminalDraft, disposeTerminal, reflowTerminal, notifyThemeChangeAll } from './terminalPool';
 import { useAppTheme, toggleAppTheme } from '@/design/theme';
@@ -467,7 +467,12 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
                 </PixelButton>
               )}
               {!autoRestoring && restorableAgents.length > 0 && (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                <div style={{
+                  display: 'flex', flexWrap: 'wrap', gap: 4,
+                  // 23 restorable agents one-per-row would eat the whole rail;
+                  // cap the restore area and scroll only that zone when needed.
+                  maxHeight: '32vh', overflowY: 'auto', alignContent: 'flex-start'
+                }}>
                   {restorableAgents.map((a: Agent) => (
                     <span
                       key={a.id}
@@ -475,18 +480,25 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
                       style={{
                         display: 'inline-flex', alignItems: 'center', gap: 2,
                         height: 20, padding: '0 2px 0 6px',
+                        minWidth: 0, maxWidth: '100%',
                         fontFamily: 'var(--cth-font-ui)', fontSize: 11,
                         color: 'var(--cth-ink-700)', background: 'var(--cth-paper-100)',
                         boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)'
                       }}
                     >
-                      {a.name}{projectTag(a)}
+                      {/* The text needs its own flex child: direct text in the
+                          inline-flex chip has no min-width to ellipsize against. */}
+                      <span style={{
+                        minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
+                      }}>
+                        {a.name}{projectTagCompact(a)}
+                      </span>
                       <button
                         onClick={() => useStore.getState().removeRestorableAgent(a.id)}
                         title={`Dismiss ${a.name}${projectTag(a)} — remove permanently from the restore list`}
                         aria-label={`Dismiss ${a.name}${projectTag(a)}`}
                         style={{
-                          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                          flexShrink: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                           width: 14, height: 14, padding: 0, lineHeight: 1,
                           fontFamily: 'var(--cth-font-ui)', fontSize: 11,
                           color: 'var(--cth-ink-500)', background: 'transparent',
