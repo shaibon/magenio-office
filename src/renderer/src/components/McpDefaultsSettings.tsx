@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { HarnessConfig } from '@/store/config';
 import { MCP_CATALOG, type McpTier } from '@shared/mcpCatalog';
@@ -27,6 +27,80 @@ const labelStyle: React.CSSProperties = {
   textTransform: 'uppercase'
 };
 
+/**
+ * Whether the "Install" action should be offered for a user-configured MCP
+ * catalog entry, given its latest preflight result. Pulled out as a pure,
+ * exported function so it can be unit-tested directly (this repo has no DOM
+ * test harness to drive the button through the real component).
+ *
+ * - Only `trello` ships an installer today (Task 7) — every other
+ *   user-configured entry has no install action to offer at all.
+ * - Never once the preflight reports `ok`: nothing left to fix.
+ * - Never for `credentials_missing`: no install can supply a secret: only
+ *   the user editing the server's own `.env` can.
+ * - Yes for `not_configured`, `command_missing`, `entry_missing`: an install
+ *   can resolve each of those.
+ * - An absent/unknown reason (in particular: preflight hasn't run yet, or
+ *   reports a reason this UI doesn't recognize) is treated the same as an
+ *   installable failure and defaults to showing the button. Hiding it on an
+ *   unrecognized reason would silently strand the user with no way to
+ *   recover a broken install; showing it when it isn't needed is at worst a
+ *   redundant click that reruns an install which then reports `ok`.
+ */
+export function canInstallMcp(entryId: string, presence?: { ok: boolean; reason?: string }): boolean {
+  if (entryId !== 'trello') return false;
+  if (presence?.ok) return false;
+  if (presence?.reason === 'credentials_missing') return false;
+  return true;
+}
+
+interface ConsentFieldProps {
+  value: string;
+  onCommit: (value: string) => void;
+  multiline?: boolean;
+  rows?: number;
+  style: React.CSSProperties;
+}
+
+/**
+ * A blur-to-save text field for MCP consent (command / args / agents).
+ *
+ * Genuinely controlled: `draft` is local state seeded from `value` and kept
+ * in sync with it by the effect below. The previous implementation used an
+ * uncontrolled `<input defaultValue=.../>`: React applies `defaultValue`
+ * only at mount, so once `onInstall` wrote a real command/args into
+ * consent, the field kept showing the stale (usually blank) text it
+ * mounted with — and an ordinary blur (click in, click out, type nothing)
+ * would then write that stale text back over the value the install just
+ * saved. Being controlled means the field always renders `value` once it
+ * changes, so a no-op blur commits exactly what is already stored.
+ *
+ * The resync effect skips while the field is focused, so an external value
+ * change (another save landing) never clobbers text the user is actively
+ * typing.
+ */
+function ConsentField({ value, onCommit, multiline, rows, style }: ConsentFieldProps) {
+  const [draft, setDraft] = useState(value);
+  const focusedRef = useRef(false);
+
+  useEffect(() => {
+    if (!focusedRef.current) setDraft(value);
+  }, [value]);
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setDraft(e.target.value);
+  const handleFocus = () => { focusedRef.current = true; };
+  const handleBlur = () => {
+    focusedRef.current = false;
+    onCommit(draft);
+  };
+
+  return multiline ? (
+    <textarea rows={rows} value={draft} onChange={handleChange} onFocus={handleFocus} onBlur={handleBlur} style={style} />
+  ) : (
+    <input value={draft} onChange={handleChange} onFocus={handleFocus} onBlur={handleBlur} style={style} />
+  );
+}
+
 export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
   const { t } = useTranslation();
   const [note, setNote] = useState('');
@@ -34,17 +108,46 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
   const enabledFor = (id: string): boolean =>
     config.mcpDefaults?.[id]?.enabled ?? MCP_CATALOG.find((e) => e.id === id)?.defaultEnabled ?? false;
 
+  // The most recently known `mcpDefaults`, used as the merge base for a new
+  // write instead of the `config` prop. Two writes fired back-to-back (e.g.
+  // tabbing from the command field to the args field) both happen before the
+  // first `updateConfig` round-trip refreshes `config`, so merging against
+  // the prop would make the second write silently revert the first. This
+  // ref is updated synchronously, before either write's first `await`, so
+  // the second write always merges on top of the first.
+  const mcpDefaultsRef = useRef(config.mcpDefaults);
+  useEffect(() => {
+    mcpDefaultsRef.current = config.mcpDefaults;
+  }, [config.mcpDefaults]);
+
+  // Serializes the actual `updateConfig` IPC calls. Merging against
+  // `mcpDefaultsRef` alone isn't enough: each write's payload is already a
+  // full, correctly-merged snapshot, but if two writes are in flight at once
+  // and complete out of order, the earlier (smaller) snapshot landing after
+  // the later (larger) one would still overwrite it. Chaining every write
+  // onto this queue guarantees they land in the order they were issued.
+  const writeQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+
+  /** Merge `patch` into consent entry `id` against the latest known state and
+   *  queue the write. Returns the real write promise (rejects on failure);
+   *  the queue itself is kept always-resolved so one failed write never
+   *  stalls the ones queued after it. */
+  const writeConsentPatch = (id: string, patch: Record<string, unknown>): Promise<unknown> => {
+    const base = mcpDefaultsRef.current ?? {};
+    const currentEntry = base[id] ?? { enabled: enabledFor(id) };
+    const mergedDefaults = { ...base, [id]: { ...currentEntry, ...patch } };
+    mcpDefaultsRef.current = mergedDefaults;
+
+    const run = () => window.cth.updateConfig({ mcpDefaults: mergedDefaults });
+    const result = writeQueueRef.current.then(run, run);
+    writeQueueRef.current = result.then(() => undefined, () => undefined);
+    return result;
+  };
+
   const toggle = async (id: string) => {
     const next = !enabledFor(id);
     try {
-      await window.cth.updateConfig({
-        // Spread the existing entry: enabled is no longer the only field, and
-        // replacing the object would wipe a configured command/args/agents.
-        mcpDefaults: {
-          ...(config.mcpDefaults ?? {}),
-          [id]: { ...(config.mcpDefaults?.[id] ?? {}), enabled: next }
-        }
-      });
+      await writeConsentPatch(id, { enabled: next });
       setNote(t('mcpDefaults.toggleNote', { id, state: next ? t('common.on') : t('common.off') }));
       setTimeout(() => setNote(''), 1800);
     } catch {
@@ -69,11 +172,8 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
 
   /** Merge a partial consent for one entry and re-run its preflight. */
   const patchConsent = async (id: string, p: { command?: string; args?: string[]; agents?: string[] }) => {
-    const current = config.mcpDefaults?.[id] ?? { enabled: enabledFor(id) };
     try {
-      await window.cth.updateConfig({
-        mcpDefaults: { ...(config.mcpDefaults ?? {}), [id]: { ...current, ...p } }
-      });
+      await writeConsentPatch(id, p);
       await refreshPresence();
     } catch {
       setNote(t('mcpDefaults.couldNotSave'));
@@ -163,20 +263,21 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
                           </span>
 
                           <label style={labelStyle}>{t('mcpDefaults.command')}</label>
-                          <input
-                            defaultValue={config.mcpDefaults?.[entry.id]?.command ?? ''}
-                            onBlur={(e) => { void patchConsent(entry.id, { command: e.target.value.trim() }); }}
+                          <ConsentField
+                            value={config.mcpDefaults?.[entry.id]?.command ?? ''}
+                            onCommit={(v) => { void patchConsent(entry.id, { command: v.trim() }); }}
                             style={{ width: '100%', padding: '6px 8px', background: 'var(--cth-paper-100)', border: 'none', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)', fontSize: 12, color: 'var(--cth-ink-900)' }}
                           />
                           <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{t('mcpDefaults.commandHint')}</span>
 
                           <label style={labelStyle}>{t('mcpDefaults.args')}</label>
-                          <textarea
+                          <ConsentField
+                            multiline
                             rows={2}
-                            defaultValue={(config.mcpDefaults?.[entry.id]?.args ?? []).join('\n')}
-                            onBlur={(e) => {
+                            value={(config.mcpDefaults?.[entry.id]?.args ?? []).join('\n')}
+                            onCommit={(v) => {
                               void patchConsent(entry.id, {
-                                args: e.target.value.split('\n').map((a) => a.trim()).filter(Boolean)
+                                args: v.split('\n').map((a) => a.trim()).filter(Boolean)
                               });
                             }}
                             style={{ width: '100%', padding: '6px 8px', background: 'var(--cth-paper-100)', border: 'none', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)', fontSize: 12, color: 'var(--cth-ink-900)' }}
@@ -184,22 +285,18 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
                           <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{t('mcpDefaults.argsHint')}</span>
 
                           <label style={labelStyle}>{t('mcpDefaults.agents')}</label>
-                          <input
-                            defaultValue={(config.mcpDefaults?.[entry.id]?.agents ?? []).join(', ')}
-                            onBlur={(e) => {
+                          <ConsentField
+                            value={(config.mcpDefaults?.[entry.id]?.agents ?? []).join(', ')}
+                            onCommit={(v) => {
                               void patchConsent(entry.id, {
-                                agents: e.target.value.split(',').map((a) => a.trim()).filter(Boolean)
+                                agents: v.split(',').map((a) => a.trim()).filter(Boolean)
                               });
                             }}
                             style={{ width: '100%', padding: '6px 8px', background: 'var(--cth-paper-100)', border: 'none', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)', fontSize: 12, color: 'var(--cth-ink-900)' }}
                           />
                           <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{t('mcpDefaults.agentsHint')}</span>
 
-                          {/* No install button for credentials_missing: no install can
-                              fix it, only the user editing the server's own .env. */}
-                          {entry.id === 'trello'
-                            && !presence[entry.id]?.ok
-                            && presence[entry.id]?.reason !== 'credentials_missing' && (
+                          {canInstallMcp(entry.id, presence[entry.id]) && (
                             <button
                               type="button"
                               disabled={installing === entry.id}
