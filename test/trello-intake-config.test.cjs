@@ -29,8 +29,8 @@ test('the mission body carries the rules that keep it from doing damage', () => 
   const body = TRELLO_INTAKE_MISSION.body;
   assert.match(body, /\/jira-bindings/, 'must read bindings from the broker');
   assert.match(body, /trello-<shortLink>/, 'must state the dedup label convention');
-  assert.match(body, /abort/i, 'must state the abort-on-failed-JQL rule');
-  assert.match(body, /\b10\b/, 'must state the per-cycle cap');
+  assert.match(body, /abort[\s\S]{0,60}create nothing/i, 'must state the abort-on-failed-JQL rule');
+  assert.match(body, /at most 10 new issues/i, 'must state the per-cycle cap');
   assert.match(body, /never write to trello/i, 'must state the read-only rule');
   assert.match(body, /unassigned/i, 'must state that the issue is created unassigned');
 });
