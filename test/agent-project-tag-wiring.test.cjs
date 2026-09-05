@@ -67,6 +67,27 @@ test('projectTag is used everywhere a bare agent name is shown in a flat/ambiguo
   const strip = read(FILES.strip);
   const stripHits = strip.match(/projectTag\(/g) ?? [];
   assert.ok(stripHits.length >= 4, `expected the restorable-agents name plus its title/aria-label toasts to use projectTag — found ${stripHits.length} uses`);
+
+  const fullscreen = read(FILES.fullscreen);
+  const fullscreenHits = fullscreen.match(/projectTag\(/g) ?? [];
+  assert.ok(fullscreenHits.length >= 4, `expected the fullscreen header AND the restorable chips at the bottom of the rail to use projectTag — found ${fullscreenHits.length} uses`);
+});
+
+test('FullscreenTerminal resolves restorable agents too, not just the live roster', () => {
+  const src = read(FILES.fullscreen);
+  assert.match(src, /useResolvedRepoNames\(restorableAgents\)/,
+    'the fullscreen restore chips never resolve the saved cwds of last session\'s (archived) agents — labels cannot come from repoRootByCwd');
+});
+
+test('CommandCenter archived section resolves archived agents and tags their names', () => {
+  const src = read(FILES.commandCenter);
+  assert.match(src, /useResolvedRepoNames\(archivedAgents\)/,
+    'the archived flat list never resolves archived agents\' saved cwds');
+  const archivedIdx = src.indexOf('archivedAgents.map(');
+  assert.ok(archivedIdx >= 0, 'archivedAgents.map( not found in CommandCenterPanel');
+  const block = src.slice(archivedIdx, archivedIdx + 1200);
+  assert.match(block, /projectTag\(a\)/,
+    'the archived list still renders a bare a.name — same-named archived agents stay ambiguous');
 });
 
 test('the fullscreen terminal header (the one spot with no other project context) shows the tag visibly', () => {
@@ -84,4 +105,13 @@ test('AgentDetailPanel and the fullscreen roster row read repoLabelOf, not the s
     assert.doesNotMatch(src, /\{agent\.project\}/,
       `${file} still displays the static agent.project directly — should read repoLabelOf(agent) instead`);
   }
+});
+
+test('the floor card forwards its nameTag into the inline name editor (regression: AgentNameEditor swallowed the tag)', () => {
+  const card = read('src/renderer/src/components/AgentCard.tsx');
+  assert.match(card, /<AgentNameEditor[\s\S]{0,300}?tag=\{nameTag && !isGod \? nameTag : undefined\}/,
+    'AgentCard must pass the resolved name tag into AgentNameEditor — otherwise the inline rename editor renders a bare name and the t-033 tag never appears on floor cards');
+  const editor = read('src/renderer/src/components/AgentNameEditor.tsx');
+  assert.match(editor, /tag\?: string/,
+    'AgentNameEditor does not accept a tag prop, so the floor card has nowhere to put the name tag');
 });

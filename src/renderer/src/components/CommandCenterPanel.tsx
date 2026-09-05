@@ -1018,6 +1018,10 @@ function FloorTab({ seed }: { seed: { text: string; seq: number } }) {
 function ArchivedSection() {
   const { t } = useTranslation();
   const archivedAgents = useStore((s) => s.archivedAgents);
+  // Archived agents are shown in ONE flat list here — the same collision the
+  // shared project tag exists for — and their saved cwds never resolve through
+  // the live-roster call above, so this section must run the resolver itself.
+  useResolvedRepoNames(archivedAgents);
   const removeArchivedAgent = useStore((s) => s.removeArchivedAgent);
   const [open, setOpen] = useState(false);
   if (archivedAgents.length === 0) return null;
@@ -1047,7 +1051,7 @@ function ArchivedSection() {
             <SpritePortrait character={a.character} scale={1} />
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontFamily: 'var(--cth-font-ui)', fontSize: 12, color: 'var(--cth-ink-700)' }}>{a.name}</div>
+            <div style={{ fontFamily: 'var(--cth-font-ui)', fontSize: 12, color: 'var(--cth-ink-700)' }}>{a.name}{projectTag(a)}</div>
             <div style={{ fontSize: 11, color: 'var(--cth-ink-500)', wordBreak: 'break-all' }}>{a.cwd}</div>
           </div>
           <button

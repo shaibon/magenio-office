@@ -7,6 +7,10 @@ export interface AgentNameEditorProps {
   /** Cards render names in their established all-caps display style. */
   uppercase?: boolean;
   fontSize?: number | string;
+  /** Short disambiguating label appended after the name (e.g. "· BURD").
+   *  Optional because some call sites (agent detail header) already show the
+   *  project on the line below the name, so doubling it there would be noise. */
+  tag?: string;
 }
 
 /** Inline display-name editor shared by the floor card and agent detail header. */
@@ -14,7 +18,8 @@ export function AgentNameEditor({
   name,
   onCommit,
   uppercase = false,
-  fontSize = 'var(--cth-text-display-sm)'
+  fontSize = 'var(--cth-text-display-sm)',
+  tag
 }: AgentNameEditorProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(name);
@@ -100,13 +105,13 @@ export function AgentNameEditor({
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, minWidth: 0, flex: 1 }}>
       <span
         onDoubleClick={(event) => { event.stopPropagation(); beginEditing(); }}
-        title={`${name} — double-click to rename`}
+        title={`${name}${tag ? ` · ${tag}` : ''} — double-click to rename`}
         style={{
           fontFamily: 'var(--cth-font-display)', fontSize,
           color: 'var(--cth-ink-900)',
           minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
         }}
-      >{uppercase ? name.toUpperCase() : name}</span>
+      >{uppercase ? name.toUpperCase() : name}{tag ? ` · ${tag}` : ''}</span>
       <button
         type="button"
         draggable={false}

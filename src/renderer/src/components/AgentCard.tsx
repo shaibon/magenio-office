@@ -220,7 +220,12 @@ export function AgentCard({
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'space-between', minWidth: 0 }}>
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, minWidth: 0, flex: 1 }}>
                 {onRename ? (
-                  <AgentNameEditor name={name} onCommit={onRename} uppercase />
+                  <AgentNameEditor
+                    name={name}
+                    onCommit={onRename}
+                    uppercase
+                    tag={nameTag && !isGod ? nameTag : undefined}
+                  />
                 ) : (
                   <span style={{
                     fontFamily: 'var(--cth-font-display)',

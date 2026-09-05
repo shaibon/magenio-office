@@ -102,6 +102,11 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
   const parser = usePtyParser(agent?.id ?? '__none__');
 
   const repoVersion = useResolvedRepoNames(agents);
+  // The restore chips at the bottom of this rail are a FLAT list of agents from
+  // last session — the exact place two same-named agents collide. They are
+  // archived rather than live, so their git roots resolve only if this hook is
+  // fed their saved cwds too (the live roster alone never covers them).
+  useResolvedRepoNames(restorableAgents);
   // Same persisted source of truth as AgentStrip: a frozen agent must not read
   // as idle in the fullscreen roster either.
   const frozenIds = new Set(config?.autoDeliveryPausedAgents ?? []);
@@ -454,7 +459,7 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
                   onClick={restoreTeam}
                   disabled={restoring}
                   style={{ width: '100%' }}
-                  title={t('fullscreenTerminal.respawnTitle', { names: restorableAgents.map((a: Agent) => a.name).join(', ') })}
+                  title={t('fullscreenTerminal.respawnTitle', { names: restorableAgents.map((a: Agent) => `${a.name}${projectTag(a)}`).join(', ') })}
                 >
                   <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
                     <Icon name="play" /> {restoring ? t('agentStrip.restoringTeam') : t('agentStrip.restoreTeam', { count: restorableAgents.length })}
@@ -466,7 +471,7 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
                   {restorableAgents.map((a: Agent) => (
                     <span
                       key={a.id}
-                      title={`${a.name} — restorable from last session`}
+                      title={`${a.name}${projectTag(a)} — restorable from last session`}
                       style={{
                         display: 'inline-flex', alignItems: 'center', gap: 2,
                         height: 20, padding: '0 2px 0 6px',
@@ -475,11 +480,11 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
                         boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)'
                       }}
                     >
-                      {a.name}
+                      {a.name}{projectTag(a)}
                       <button
                         onClick={() => useStore.getState().removeRestorableAgent(a.id)}
-                        title={`Dismiss ${a.name} — remove permanently from the restore list`}
-                        aria-label={`Dismiss ${a.name}`}
+                        title={`Dismiss ${a.name}${projectTag(a)} — remove permanently from the restore list`}
+                        aria-label={`Dismiss ${a.name}${projectTag(a)}`}
                         style={{
                           display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                           width: 14, height: 14, padding: 0, lineHeight: 1,
