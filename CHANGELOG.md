@@ -8,6 +8,7 @@ All notable changes to this project are documented here. The format is based on
 
 - HIVE / agents: frozen agents now show a FROZEN badge on floor cards and in the fullscreen roster instead of reading as idle, with a tooltip explaining the parked/resume semantics.
 - HIVE / agents: registry.json and fleet.json now carry a shared per-agent project label (bound Jira key, else main-repo basename) and god's live roster shows it, so same-named agents are distinguishable outside the renderer.
+- HIVE / agents: an orchestrator agent can now freeze and thaw a teammate itself, via `POST /agents/<id>/(thaw|freeze)` on the loopback broker. Freezing was previously reachable only from the UI, so parking an agent meant a human had to click to call it back; the endpoint performs the same two writes as that control (the in-memory delivery gate and the persisted list), because updating only the stored list leaves the running app frozen while the roster reports it thawed.
 
 ## [0.4.6] — 2026-08-27
 

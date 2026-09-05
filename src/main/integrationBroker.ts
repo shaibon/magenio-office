@@ -72,6 +72,23 @@ export interface IntegrationBrokerDeps {
    *  wired in by Task 10; absent means "no Jira bindings feature configured
    *  yet" (e.g. an older construction site), not an error. */
   getJiraBindings?: () => { bindings: JiraProjectBinding[]; poll: JiraPollSettings };
+  /** Freeze/thaw an agent's auto-delivery, for `POST /agents/<id>/(thaw|freeze)`.
+   *
+   *  WHY THIS EXISTS: freezing was only ever reachable from the UI (the
+   *  `control:autoDelivery` IPC), so an orchestrator agent could park work on a
+   *  frozen teammate but never call it back — every thaw needed a human to click.
+   *  That made "god or Pam can thaw an agent when needed" unsatisfiable in
+   *  practice. Editing the persisted list alone does NOT do it either: the gate
+   *  that actually withholds delivery lives in main's in-memory `control` map and
+   *  is loaded from config only at app-start, so a file edit leaves the running
+   *  app frozen while the roster reads back "thawed" — worse than not trying.
+   *  The implementation must therefore do BOTH, exactly like the IPC handler.
+   *
+   *  Like /jira-bindings this is app state, not a credentialed proxy, so any
+   *  valid capability token may call it regardless of allowedIds — the trust
+   *  boundary is the loopback bind plus the token. Optional: absent means the
+   *  host did not wire agent control (e.g. a unit-test broker), not an error. */
+  setAgentFrozen?: (agentId: string, frozen: boolean) => void;
 }
 
 /** True for IPv4 loopback (127.0.0.0/8) and IPv6 ::1 (incl. v4-mapped). Mirrors slack.ts. */
@@ -195,6 +212,34 @@ export class IntegrationBroker {
       const { bindings, poll } = this.deps.getJiraBindings?.() ?? { bindings: [], poll: DEFAULT_JIRA_POLL_SETTINGS };
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ bindings, poll }));
+      return;
+    }
+
+    // 2c) POST /agents/<agentId>/(thaw|freeze) — agent lifecycle control, so that
+    // an orchestrator agent can call a frozen teammate back without a human
+    // clicking. Same trust class as /jira-bindings above (app state, not a
+    // credentialed proxy): any valid token, no allowedIds check. Encoded in the
+    // PATH rather than a JSON body so it needs no body parsing and stays a
+    // single, unambiguous, idempotent call.
+    const agentCtl = /^\/agents\/([^/?#]+)\/(thaw|freeze)\/?(\?[^#]*)?$/.exec(rawUrl);
+    if (agentCtl) {
+      if (req.method !== 'POST') {
+        return IntegrationBroker.sendError(res, 405, 'method_not_allowed', 'use POST');
+      }
+      if (!this.deps.setAgentFrozen) {
+        return IntegrationBroker.sendError(res, 501, 'not_supported', 'agent control not wired');
+      }
+      const agentId = decodeURIComponent(agentCtl[1]);
+      const frozen = agentCtl[2] === 'freeze';
+      try {
+        this.deps.setAgentFrozen(agentId, frozen);
+      } catch (e) {
+        return IntegrationBroker.sendError(
+          res, 500, 'control_failed', e instanceof Error ? e.message : String(e)
+        );
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ agentId, frozen }));
       return;
     }
 

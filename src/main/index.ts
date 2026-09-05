@@ -387,7 +387,18 @@ const integrationBroker = new IntegrationBroker({
   getJiraBindings: () => ({
     bindings: jiraProjects.listBindings().filter((b) => b.enabled),
     poll: readConfig().jiraPoll
-  })
+  }),
+  // Deliberately the SAME two writes as the `control:autoDelivery` IPC handler:
+  // the in-memory gate that actually withholds delivery, AND the persisted list
+  // that survives a restart. Doing only the second is the trap — config is read
+  // into `control` at app-start only, so the running app would stay frozen while
+  // the roster (which re-reads config) reported it thawed.
+  setAgentFrozen: (agentId, frozen) => {
+    control.pauseAutoDelivery(agentId, frozen);
+    const current = new Set(readConfig().autoDeliveryPausedAgents ?? []);
+    if (frozen) current.add(agentId); else current.delete(agentId);
+    writeConfig({ autoDeliveryPausedAgents: Array.from(current).sort() });
+  }
 });
 
 /** BYOK backend model-providers whose API keys the non-Claude CLI engines
