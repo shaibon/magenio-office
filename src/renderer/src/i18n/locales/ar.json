@@ -1360,7 +1360,7 @@
     "trelloAdd": "إضافة مصدر Trello",
     "trelloRemove": "إزالة مصدر Trello",
     "trelloBoardUrl": "رابط اللوحة",
-    "trelloBoardUrlHint": "الصق رابط اللوحة، مثل https://trello.com/b/781LrPy9/burdastyle",
+    "trelloBoardUrlHint": "الصق رابط اللوحة، مثل https://trello.com/b/AbCd1234/my-board",
     "trelloBoardLabel": "اسم اللوحة",
     "trelloLists": "قوائم الاستقبال",
     "trelloListsHint": "اسم قائمة واحد في كل سطر، تمامًا كما يظهر على اللوحة. تتحول البطاقات في هذه القوائم إلى مشكلات في هذا المشروع.",

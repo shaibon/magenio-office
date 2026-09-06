@@ -21,15 +21,15 @@ function draft(over) {
     baseBranch: 'main',
     agents: [],
     enabled: true,
-    trelloUrl: 'https://trello.com/b/781LrPy9/burdastyle',
+    trelloUrl: 'https://trello.com/b/AbCd1234/my-board',
     ...over
   };
 }
 
 function trello(over) {
   return {
-    boardShortLink: '781LrPy9',
-    boardLabel: 'BurdaStyle',
+    boardShortLink: 'AbCd1234',
+    boardLabel: 'My Board',
     intakeLists: ['Approvati'],
     enabled: true,
     ...over
@@ -69,10 +69,10 @@ test('an all-blank list normalizes to none, which the validator still rejects', 
 
 test('the board short link and label are trimmed too, and the rest of the source is carried through', () => {
   const b = bindingFromDraft(draft({
-    trello: trello({ boardShortLink: ' 781LrPy9 ', boardLabel: ' BurdaStyle ', enabled: false })
+    trello: trello({ boardShortLink: ' AbCd1234 ', boardLabel: ' My Board ', enabled: false })
   }));
-  assert.equal(b.trello.boardShortLink, '781LrPy9');
-  assert.equal(b.trello.boardLabel, 'BurdaStyle');
+  assert.equal(b.trello.boardShortLink, 'AbCd1234');
+  assert.equal(b.trello.boardLabel, 'My Board');
   assert.equal(b.trello.enabled, false, 'the intake switch must survive normalization');
 });
 

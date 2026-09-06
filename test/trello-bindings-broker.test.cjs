@@ -25,7 +25,7 @@ async function read(broker) {
 }
 
 test('GET /jira-bindings carries the trello source through to god untouched', async () => {
-  const trello = { boardShortLink: '781LrPy9', boardLabel: 'BurdaStyle', intakeLists: ['Approvati'], enabled: true };
+  const trello = { boardShortLink: 'AbCd1234', boardLabel: 'My Board', intakeLists: ['Approvati'], enabled: true };
   const broker = makeBroker([{ key: 'BURD', repo: '/r/burd', baseBranch: 'develop', enabled: true, trello }]);
   await broker.start();
   const body = await read(broker);

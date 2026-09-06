@@ -49,7 +49,7 @@ test('a binding with no trello source still validates exactly as before', async 
 
 test('a well-formed trello source validates', async () => {
   const repo = initRepo();
-  const trello = { boardShortLink: '781LrPy9', boardLabel: 'BurdaStyle', intakeLists: ['Approvati'], enabled: true };
+  const trello = { boardShortLink: 'AbCd1234', boardLabel: 'My Board', intakeLists: ['Approvati'], enabled: true };
   const result = await validateJiraProjectBinding(bindingWith(trello, repo), [], deps);
   assert.deepEqual(result, { ok: true });
 });
@@ -64,7 +64,7 @@ test('a malformed trello short link is rejected with a message', async () => {
 
 test('a trello source with no intake list is rejected', async () => {
   const repo = initRepo();
-  const trello = { boardShortLink: '781LrPy9', boardLabel: 'X', intakeLists: [], enabled: true };
+  const trello = { boardShortLink: 'AbCd1234', boardLabel: 'X', intakeLists: [], enabled: true };
   const result = await validateJiraProjectBinding(bindingWith(trello, repo), [], deps);
   assert.equal(result.ok, false);
 });

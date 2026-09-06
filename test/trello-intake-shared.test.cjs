@@ -15,8 +15,8 @@ const {
 
 function binding(over) {
   return {
-    boardShortLink: '781LrPy9',
-    boardLabel: 'BurdaStyle',
+    boardShortLink: 'AbCd1234',
+    boardLabel: 'My Board',
     intakeLists: ['Approvati'],
     enabled: true,
     ...over
@@ -24,27 +24,27 @@ function binding(over) {
 }
 
 test('TRELLO_SHORTLINK_RE accepts an 8-char alphanumeric short link', () => {
-  assert.ok(TRELLO_SHORTLINK_RE.test('781LrPy9'));
+  assert.ok(TRELLO_SHORTLINK_RE.test('AbCd1234'));
   assert.ok(TRELLO_SHORTLINK_RE.test('kOGceP5w'));
 });
 
 test('TRELLO_SHORTLINK_RE rejects wrong lengths and punctuation', () => {
   assert.equal(TRELLO_SHORTLINK_RE.test('781LrPy'), false);
-  assert.equal(TRELLO_SHORTLINK_RE.test('781LrPy99'), false);
+  assert.equal(TRELLO_SHORTLINK_RE.test('AbCd12349'), false);
   assert.equal(TRELLO_SHORTLINK_RE.test('781LrP-9'), false);
 });
 
 test('parseTrelloBoardUrl extracts the short link with and without the slug', () => {
-  assert.equal(parseTrelloBoardUrl('https://trello.com/b/781LrPy9/burdastyle'), '781LrPy9');
-  assert.equal(parseTrelloBoardUrl('https://trello.com/b/781LrPy9'), '781LrPy9');
-  assert.equal(parseTrelloBoardUrl('https://trello.com/b/781LrPy9/burdastyle/'), '781LrPy9');
-  assert.equal(parseTrelloBoardUrl('https://www.trello.com/b/781LrPy9/x?filter=due'), '781LrPy9');
-  assert.equal(parseTrelloBoardUrl('  https://trello.com/b/781LrPy9/x  '), '781LrPy9');
+  assert.equal(parseTrelloBoardUrl('https://trello.com/b/AbCd1234/my-board'), 'AbCd1234');
+  assert.equal(parseTrelloBoardUrl('https://trello.com/b/AbCd1234'), 'AbCd1234');
+  assert.equal(parseTrelloBoardUrl('https://trello.com/b/AbCd1234/my-board/'), 'AbCd1234');
+  assert.equal(parseTrelloBoardUrl('https://www.trello.com/b/AbCd1234/x?filter=due'), 'AbCd1234');
+  assert.equal(parseTrelloBoardUrl('  https://trello.com/b/AbCd1234/x  '), 'AbCd1234');
 });
 
 test('parseTrelloBoardUrl refuses a card URL, a foreign host and junk', () => {
-  assert.equal(parseTrelloBoardUrl('https://trello.com/c/781LrPy9/42-card'), null);
-  assert.equal(parseTrelloBoardUrl('https://evil.example.com/b/781LrPy9/x'), null);
+  assert.equal(parseTrelloBoardUrl('https://trello.com/c/AbCd1234/42-card'), null);
+  assert.equal(parseTrelloBoardUrl('https://evil.example.com/b/AbCd1234/x'), null);
   assert.equal(parseTrelloBoardUrl('https://trello.com/b/short/x'), null);
   assert.equal(parseTrelloBoardUrl('not a url'), null);
   assert.equal(parseTrelloBoardUrl(''), null);
