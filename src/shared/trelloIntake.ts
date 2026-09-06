@@ -10,7 +10,7 @@
  */
 
 export interface TrelloIntakeBinding {
-  /** shortLink of the board, taken from its URL (e.g. "781LrPy9"). Immutable,
+  /** shortLink of the board, taken from its URL (e.g. "AbCd1234"). Immutable,
    *  and accepted by the Trello API anywhere a board id is accepted. */
   boardShortLink: string;
   /** Board name — DISPLAY ONLY, never identity (Trello boards get renamed). */
@@ -84,7 +84,7 @@ export function validateTrelloIntake(t: TrelloIntakeBinding): string | null {
   const short = (t.boardShortLink ?? '').trim();
   if (!short) return 'A Trello board URL is required.';
   if (!TRELLO_SHORTLINK_RE.test(short)) {
-    return 'The Trello board id must be the 8-character short link from the board URL (e.g. "781LrPy9").';
+    return 'The Trello board id must be the 8-character short link from the board URL (e.g. "AbCd1234").';
   }
   const raw = t.intakeLists ?? [];
   const trimmed = raw.map((n) => (n ?? '').trim());

@@ -1360,7 +1360,7 @@
     "trelloAdd": "Add a Trello source",
     "trelloRemove": "Remove the Trello source",
     "trelloBoardUrl": "Board URL",
-    "trelloBoardUrlHint": "Paste the board URL, e.g. https://trello.com/b/781LrPy9/burdastyle",
+    "trelloBoardUrlHint": "Paste the board URL, e.g. https://trello.com/b/AbCd1234/my-board",
     "trelloBoardLabel": "Board name",
     "trelloLists": "Intake lists",
     "trelloListsHint": "One list name per line, exactly as it appears on the board. Cards in these lists become issues of this project.",
