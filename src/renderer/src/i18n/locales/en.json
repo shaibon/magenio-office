@@ -65,7 +65,7 @@
     "freeze": "freeze",
     "freezeTip": "Hold queued messages for this agent only. It receives no automatic delivery, and a restart skips it during auto-restore. Reversible.",
     "freezeAria": "Freeze this agent — hold its queued messages",
-    "unfreeze": "frozen",
+    "unfreeze": "unfreeze",
     "unfreezeTip": "This agent is frozen: it gets no automatic delivery and is skipped on restart. Click to unfreeze and resume delivery.",
     "unfreezeAria": "Unfreeze this agent — resume its queued messages",
     "flashFrozen": "frozen — no auto-delivery, skipped on restart",
@@ -133,6 +133,11 @@
     "restorable": "{{name}} — restorable from last session",
     "dismiss": "Dismiss {{name}} — remove permanently from the restore list",
     "dismissAria": "Dismiss {{name}}",
+    "restoreRow": "restore",
+    "restoreRowTitle": "Restore {{name}} — bring it back to the floor with the same agent id, memory, inbox and workspace",
+    "restoreRowAria": "Restore {{name}} to the floor",
+    "restoringRow": "restoring…",
+    "restoreRowFailed": "Could not restore this agent.",
     "restoreAll": "restore all ({{count}})"
   },
   "sidebar": {

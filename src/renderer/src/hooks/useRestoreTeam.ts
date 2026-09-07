@@ -193,6 +193,32 @@ export async function restoreArchivedAgent(
   return { ok: false, error: outcome.error };
 }
 
+/** Explicitly bring ONE restorable agent back from the previous-session list.
+ *
+ *  Same helper `restoreTeam` uses per agent, but for a single row click: the
+ *  restorable entry keeps its original id, so `addAgent` reattaches memory,
+ *  inbox and the hive registry and clears the restorable copy. Unlike the
+ *  batch run, this path is the user pointing at ONE agent, so it also applies
+ *  to a frozen row — the explicit click is exactly the wake freeze allows.
+ */
+export async function restoreRestorableAgent(
+  a: Agent,
+  config?: HarnessConfig | null
+): Promise<{ ok: boolean; alreadyLive?: boolean; error?: string }> {
+  const outcome = await respawnAgent(a, config);
+  if (outcome.kind === 'restored') {
+    useStore.getState().addAgent(outcome.agent);
+    return { ok: true };
+  }
+  if (outcome.kind === 'already-live') {
+    // A live PTY with this id is already running — retire the stale restorable
+    // entry rather than reporting a phantom failure (same as batch restore).
+    useStore.getState().removeRestorableAgent(a.id);
+    return { ok: true, alreadyLive: true };
+  }
+  return { ok: false, error: outcome.error };
+}
+
 /**
  * @param config used only to rebuild a spawn command for a restorable agent
  *        persisted before the `command` field existed.

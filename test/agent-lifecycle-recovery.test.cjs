@@ -57,12 +57,20 @@ function archivedRow() {
   return between(section, 'archivedAgents.map((a) => {', '      })}');
 }
 
-test('useRestoreTeam exports one id-preserving respawn recipe + an archived-restore wrapper', () => {
+/** The whole restorable-dropdown row body, from map open to map close. */
+function restorableRow() {
+  const src = strip(read(FILES.strip));
+  return between(src, 'restorableAgents.map((a: Agent) => {', '            })}');
+}
+
+test('useRestoreTeam exports one id-preserving respawn recipe + per-list restore wrappers', () => {
   const src = strip(read(FILES.restore));
   assert.match(src, /export async function respawnAgent\(/,
     'respawnAgent must be exported so the Archived list can reuse Restore Team\'s spawn recipe');
   assert.match(src, /export async function restoreArchivedAgent\(/,
     'restoreArchivedAgent must be exported for the Archived-section restore button');
+  assert.match(src, /export async function restoreRestorableAgent\(/,
+    'restoreRestorableAgent must be exported for the restorable-dropdown per-row restore button');
 });
 
 test('the shared respawn recipe keeps the original id and re-enters the saved worktree/session', () => {
@@ -144,6 +152,31 @@ test('Archived list: a frozen archived row shows Unfreeze AND still has the rest
   const frozenBranch = row.slice(frozenBranchStart, frozenBranchEnd);
   assert.doesNotMatch(frozenBranch, /restoreArchivedAgent/,
     'restore is inside the frozen-only branch — an archived+FROZEN agent could still never be restored');
+});
+
+test('the Unfreeze ACTION label says the verb, not the FROZEN status, in every locale', () => {
+  for (const locale of ['en', 'ar', 'zh-CN']) {
+    const json = JSON.parse(read(`src/renderer/src/i18n/locales/${locale}.json`));
+    const action = json.agentControl.unfreeze;
+    const status = json.badge.frozen;
+    assert.ok(typeof action === 'string' && action.trim() !== '', `${locale}: agentControl.unfreeze is missing`);
+    assert.notEqual(action, status, `${locale}: the Unfreeze button still reads as the FROZEN status badge — it must say what it does`);
+    assert.notEqual(action, json.agentControl.freeze, `${locale}: freeze and unfreeze labels are identical`);
+  }
+});
+
+test('restorable dropdown: each row restores ONE agent via the shared helper, with busy + inline error', () => {
+  const row = restorableRow();
+  assert.match(row, /restoreRestorableAgent\(a, config\)/,
+    'the per-row restore button does not call the shared restoreRestorableAgent helper');
+  assert.match(row, /rowRestoreBusyId === a\.id/,
+    'the per-row restore button has no busy state — a slow spawn looks like a dead click');
+  assert.match(row, /rowRestoreErrors\[a\.id\]/,
+    'the per-row restore button has no inline error line');
+  assert.match(row, /removeRestorableAgent\(a\.id\)/,
+    'the per-row dismiss ✕ is still wired to removeRestorableAgent');
+  assert.match(row, /controlAutoDelivery\(a\.id,\s*false\)/,
+    'the frozen-row Unfreeze control disappeared from the dropdown');
 });
 
 test('config is threaded to the Command Center from every mount point', () => {

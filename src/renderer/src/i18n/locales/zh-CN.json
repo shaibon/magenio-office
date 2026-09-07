@@ -65,7 +65,7 @@
     "freeze": "冻结",
     "freezeTip": "仅为该智能体保留队列消息。它不会收到自动投递，重启自动恢复时会被跳过。可撤销。",
     "freezeAria": "冻结该智能体 — 保留其队列消息",
-    "unfreeze": "已冻结",
+    "unfreeze": "解除冻结",
     "unfreezeTip": "该智能体已冻结：不会收到自动投递，重启时会被跳过。点击可解除冻结并恢复投递。",
     "unfreezeAria": "解除该智能体的冻结 — 恢复其队列消息",
     "flashFrozen": "已冻结 — 无自动投递，重启时跳过",
@@ -133,6 +133,11 @@
     "restorable": "{{name}}——可从上次会话恢复",
     "dismiss": "忽略 {{name}}——从恢复列表中永久移除",
     "dismissAria": "忽略 {{name}}",
+    "restoreRow": "恢复",
+    "restoreRowTitle": "恢复 {{name}} — 以相同的智能体 ID、记忆、收件箱和工作区回到楼层",
+    "restoreRowAria": "将 {{name}} 恢复到楼层",
+    "restoringRow": "恢复中…",
+    "restoreRowFailed": "无法恢复该智能体。",
     "restoreAll": "全部恢复（{{count}}）"
   },
   "sidebar": {

@@ -5,7 +5,7 @@ import { PixelButton } from './PixelButton';
 import { Icon } from './Icon';
 import { useStore, type Agent } from '@/store/store';
 import { type HarnessConfig } from '@/store/config';
-import { useRestoreTeam } from '@/hooks/useRestoreTeam';
+import { useRestoreTeam, restoreRestorableAgent } from '@/hooks/useRestoreTeam';
 import { useRtl } from '@/i18n/useDirection';
 import { projectTag, projectTagCompact, repoLabelOf, jiraKeyFor, useResolvedRepoNames } from '@/hooks/useResolvedRepoNames';
 
@@ -45,6 +45,10 @@ export function AgentStrip({ config }: AgentStripProps) {
   const [restoreMenuPos, setRestoreMenuPos] = useState<{ right: number; bottom: number } | null>(null);
   const restoreBtnRef = useRef<HTMLSpanElement>(null);
   const restoreBusy = restoring || autoRestoring;
+  // Per-row restore in the dropdown: one agent at a time, with the same
+  // busy/error pattern as the Archived list in the Command Center.
+  const [rowRestoreBusyId, setRowRestoreBusyId] = useState<string | null>(null);
+  const [rowRestoreErrors, setRowRestoreErrors] = useState<Record<string, string>>({});
   useEffect(() => {
     if (restorableAgents.length === 0 || restoreBusy) setRestoreMenuOpen(false);
   }, [restorableAgents.length, restoreBusy]);
@@ -308,19 +312,18 @@ export function AgentStrip({ config }: AgentStripProps) {
             </span>
             {/* Per-agent dismiss wires straight to removeRestorableAgent
                 (filters + persistRestorable), so a dismissed agent never
-                reappears after reload. */}
+                reappears after reload. Each row also restores that ONE agent
+                now — the Boss's exact "I need this specific one back" case. */}
             {restorableAgents.map((a: Agent) => {
-              // A frozen agent has no live pty after a restart, so Restore Team
-              // deliberately never respawns it (partitionFrozenAgents) — it just
-              // sits here until the user clicks Unfreeze on this row (or restores
-              // an archived+frozen copy from the Command Center's Archived list).
               const isFrozen = !!config?.autoDeliveryPausedAgents?.includes(a.id);
+              const isBusy = rowRestoreBusyId === a.id;
+              const fullName = `${a.name}${projectTag(a)}`;
               return (
+              <div key={a.id} style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
               <span
-                key={a.id}
                 title={t('agentStrip.restorable', { name: `${a.name}${projectTag(a)}` })}
                 style={{
-                  display: 'flex', alignItems: 'center', gap: 6,
+                  display: 'flex', alignItems: 'center', gap: 4,
                   height: 26, padding: '0 4px 0 8px',
                   minWidth: 0, maxWidth: '100%',
                   fontSize: 12, color: 'var(--cth-ink-900)',
@@ -333,7 +336,7 @@ export function AgentStrip({ config }: AgentStripProps) {
                 </span>
                 <span style={{
                   fontSize: 11, color: 'var(--cth-ink-500)', whiteSpace: 'nowrap',
-                  overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0, maxWidth: '40%'
+                  overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0, maxWidth: '30%'
                 }}>
                   {a.description ? a.description.slice(0, 24) : ''}
                 </span>
@@ -345,13 +348,39 @@ export function AgentStrip({ config }: AgentStripProps) {
                     aria-label={t('agentControl.unfreezeAria')}
                     style={{
                       flexShrink: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                      height: 18, padding: '0 6px', lineHeight: 1, whiteSpace: 'nowrap',
+                      height: 18, padding: '0 5px', lineHeight: 1, whiteSpace: 'nowrap',
                       fontSize: 10, color: 'var(--cth-ink-900)',
                       background: 'var(--cth-cream-50)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)',
                       border: 'none', cursor: 'pointer'
                     }}
                   >{t('agentControl.unfreeze')}</button>
                 )}
+                <button
+                  onClick={async () => {
+                    if (rowRestoreBusyId) return;
+                    setRowRestoreBusyId(a.id);
+                    setRowRestoreErrors((prev) => ({ ...prev, [a.id]: '' }));
+                    const res = await restoreRestorableAgent(a, config);
+                    if (!res.ok) {
+                      setRowRestoreErrors((prev) => ({
+                        ...prev,
+                        [a.id]: res.error ?? t('agentStrip.restoreRowFailed')
+                      }));
+                    }
+                    setRowRestoreBusyId(null);
+                  }}
+                  disabled={isBusy}
+                  title={t('agentStrip.restoreRowTitle', { name: fullName })}
+                  aria-label={t('agentStrip.restoreRowAria', { name: fullName })}
+                  style={{
+                    flexShrink: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                    height: 18, padding: '0 5px', lineHeight: 1, whiteSpace: 'nowrap',
+                    fontSize: 10, color: 'var(--cth-ink-900)',
+                    background: isBusy ? 'var(--cth-cream-200)' : 'var(--cth-cream-50)',
+                    boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)',
+                    border: 'none', cursor: isBusy ? 'wait' : 'pointer'
+                  }}
+                >{isBusy ? t('agentStrip.restoringRow') : t('agentStrip.restoreRow')}</button>
                 <button
                   onClick={() => useStore.getState().removeRestorableAgent(a.id)}
                   title={t('agentStrip.dismiss', { name: `${a.name}${projectTag(a)}` })}
@@ -364,6 +393,13 @@ export function AgentStrip({ config }: AgentStripProps) {
                   }}
                 >✕</button>
               </span>
+              {rowRestoreErrors[a.id] && (
+                <span style={{
+                  fontSize: 10, color: 'var(--cth-coral)', padding: '0 8px',
+                  wordBreak: 'break-word', lineHeight: '14px'
+                }}>{rowRestoreErrors[a.id]}</span>
+              )}
+              </div>
               );
             })}
             <PixelButton
