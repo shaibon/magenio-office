@@ -165,6 +165,9 @@ export function AgentStrip({ config }: AgentStripProps) {
             }}
             note={a.note}
             onEditNote={a.isGod ? undefined : () => setNoteEditId(a.id)}
+            onUnfreeze={frozenIds.has(a.id)
+              ? () => { void window.cth.controlAutoDelivery(a.id, false); }
+              : undefined}
           />
           {/* The note itself lives INSIDE the card (its own row above the gauge).
               This is the transient EDITOR: a fixed popover ABOVE the card —
@@ -309,9 +312,8 @@ export function AgentStrip({ config }: AgentStripProps) {
             {restorableAgents.map((a: Agent) => {
               // A frozen agent has no live pty after a restart, so Restore Team
               // deliberately never respawns it (partitionFrozenAgents) — it just
-              // sits here with no way back. This was the only place it was still
-              // visible at all, so it is also the only place Unfreeze can be
-              // reached from once the app has restarted.
+              // sits here until the user clicks Unfreeze on this row (or restores
+              // an archived+frozen copy from the Command Center's Archived list).
               const isFrozen = !!config?.autoDeliveryPausedAgents?.includes(a.id);
               return (
               <span

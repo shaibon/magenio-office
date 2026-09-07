@@ -437,7 +437,7 @@ export function App() {
           minHeight: 0, display: 'flex', flexDirection: 'column'
         }}>
           {agent ? (
-            <AgentDetailPanel agent={agent} />
+            <AgentDetailPanel agent={agent} config={config} />
           ) : godStatus === 'booting' ? (
             <PixelPanel variant="default" noPadding style={{
               padding: 16, height: '100%',

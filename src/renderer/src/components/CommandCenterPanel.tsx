@@ -33,11 +33,13 @@ import {
   providerPreset,
   tokenizeCommand,
   AGENT_PROVIDER_PRESETS,
-  type AgentProvider
+  type AgentProvider,
+  type HarnessConfig
 } from '@/store/config';
 import { canReceiveInbox } from '@shared/agentProvider';
 import { isComposingKey } from '@shared/imeGuard';
 import { useRtl } from '@/i18n/useDirection';
+import { restoreArchivedAgent } from '@/hooks/useRestoreTeam';
 
 /** Michael's control surface. Shown instead of the plain terminal/files panel
  *  when the god agent is selected: terminal + queue, the floor roster (with
@@ -84,7 +86,13 @@ const TABS: { key: CCTab; labelKey: string; icon: Parameters<typeof Icon>[0]['na
  *  and renders the real terminal. The docked instance renders the "open in
  *  fullscreen" placeholder instead — two live xterms on one pty fight over its
  *  cols/rows and corrupt the display. */
-export function CommandCenterPanel({ agent, fullscreen = false }: { agent: Agent; fullscreen?: boolean }) {
+export function CommandCenterPanel({ agent, fullscreen = false, config }: {
+  agent: Agent;
+  fullscreen?: boolean;
+  /** Same config the floor strip gets: `autoDeliveryPausedAgents` is the
+   *  persisted source of truth for which archived/restorable agents are frozen. */
+  config?: HarnessConfig | null;
+}) {
   const { t } = useTranslation();
   const [tab, setTab] = useState<CCTab>('terminal');
   // The trigger-history ledger has nothing to say until an outside party can
@@ -320,7 +328,7 @@ export function CommandCenterPanel({ agent, fullscreen = false }: { agent: Agent
             <Centered>{t('commandCenter.noTerminal', { name: agent.name })}</Centered>
           )
         )}
-        {tab === 'floor' && <FloorTab seed={dispatchSeed} />}
+        {tab === 'floor' && <FloorTab seed={dispatchSeed} config={config} />}
         {tab === 'tasks' && <TasksKanban />}
         {tab === 'human' && <AskMeTab />}
         {tab === 'triggers' && <TriggersTab />}
@@ -344,7 +352,10 @@ export function CommandCenterPanel({ agent, fullscreen = false }: { agent: Agent
 
 // ─── Floor tab — roster, model, dispatch, dirs, assistant ────────────────────
 
-function FloorTab({ seed }: { seed: { text: string; seq: number } }) {
+function FloorTab({ seed, config }: {
+  seed: { text: string; seq: number };
+  config?: HarnessConfig | null;
+}) {
   const { t } = useTranslation();
   const rtl = useRtl();
   const agents = useStore((s) => s.agents);
@@ -940,7 +951,7 @@ function FloorTab({ seed }: { seed: { text: string; seq: number } }) {
         </div>
       </Section>
 
-      <ArchivedSection />
+      <ArchivedSection config={config} />
 
 
       <Section title={t('commandCenter.directories')}>
@@ -1015,7 +1026,7 @@ function FloorTab({ seed }: { seed: { text: string; seq: number } }) {
 
 // ─── Archived agents — retained + flagged, kept off the floor ────────────────
 
-function ArchivedSection() {
+function ArchivedSection({ config }: { config?: HarnessConfig | null }) {
   const { t } = useTranslation();
   const archivedAgents = useStore((s) => s.archivedAgents);
   // Archived agents are shown in ONE flat list here — the same collision the
@@ -1023,7 +1034,12 @@ function ArchivedSection() {
   // the live-roster call above, so this section must run the resolver itself.
   useResolvedRepoNames(archivedAgents);
   const removeArchivedAgent = useStore((s) => s.removeArchivedAgent);
+  const frozenIds = new Set(config?.autoDeliveryPausedAgents ?? []);
   const [open, setOpen] = useState(false);
+  // One row can be restoring at a time; the button flips to a busy label so a
+  // slow spawn (git probe + PTY boot) never looks like a dead click.
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [restoreErrors, setRestoreErrors] = useState<Record<string, string>>({});
   if (archivedAgents.length === 0) return null;
   return (
     <Section title={t('commandCenter.archived', { count: archivedAgents.length })}>
@@ -1037,7 +1053,10 @@ function ArchivedSection() {
           marginBottom: open ? 6 : 0
         }}
       >{open ? '▾' : '▸'} {open ? t('commandCenter.hideClosed') : t('commandCenter.showClosed')}</button>
-      {open && archivedAgents.map((a) => (
+      {open && archivedAgents.map((a) => {
+        const isFrozen = frozenIds.has(a.id);
+        const isBusy = busyId === a.id;
+        return (
         <div key={a.id} style={{
           display: 'flex', alignItems: 'center', gap: 8,
           padding: 6, marginBottom: 6, opacity: 0.7,
@@ -1051,15 +1070,65 @@ function ArchivedSection() {
             <SpritePortrait character={a.character} scale={1} />
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontFamily: 'var(--cth-font-ui)', fontSize: 12, color: 'var(--cth-ink-700)' }}>{a.name}{projectTag(a)}</div>
+            <div style={{ fontFamily: 'var(--cth-font-ui)', fontSize: 12, color: 'var(--cth-ink-700)' }}>
+              {a.name}{projectTag(a)}
+              {isFrozen && (
+                <span style={{ marginLeft: 6, fontSize: 10, color: 'var(--cth-ink-500)', textTransform: 'uppercase' }}>
+                  {t('badge.frozen')}
+                </span>
+              )}
+            </div>
             <div style={{ fontSize: 11, color: 'var(--cth-ink-500)', wordBreak: 'break-all' }}>{a.cwd}</div>
+            {restoreErrors[a.id] && (
+              <div style={{ fontSize: 11, color: 'var(--cth-coral)', marginTop: 2 }}>{restoreErrors[a.id]}</div>
+            )}
           </div>
-          <button
-            onClick={() => removeArchivedAgent(a.id)}
-            style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--cth-ink-500)', flexShrink: 0 }}
-          ><Icon name="x" /></button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+            {isFrozen && (
+              <PixelButton
+                variant="secondary"
+                size="sm"
+                onClick={() => void window.cth.controlAutoDelivery(a.id, false)}
+              >
+                <span
+                  className="cth-tip cth-tip-left cth-tip-wrap"
+                  data-tip={t('agentControl.unfreezeTip')}
+                  aria-label={t('agentControl.unfreezeAria')}
+                >{t('agentControl.unfreeze')}</span>
+              </PixelButton>
+            )}
+            <PixelButton
+              variant="secondary"
+              size="sm"
+              disabled={isBusy}
+              title={t('commandCenter.restoreArchivedTitle', { name: `${a.name}${projectTag(a)}` })}
+              aria-label={t('commandCenter.restoreArchivedAria', { name: `${a.name}${projectTag(a)}` })}
+              onClick={async () => {
+                if (busyId) return;
+                setBusyId(a.id);
+                setRestoreErrors((prev) => ({ ...prev, [a.id]: '' }));
+                const res = await restoreArchivedAgent(a, config);
+                if (!res.ok) {
+                  setRestoreErrors((prev) => ({
+                    ...prev,
+                    [a.id]: res.error ?? t('commandCenter.restoreArchivedFailed')
+                  }));
+                }
+                setBusyId(null);
+              }}
+            >
+              {isBusy ? t('commandCenter.restoringArchived') : t('commandCenter.restoreArchived')}
+            </PixelButton>
+            <button
+              onClick={() => removeArchivedAgent(a.id)}
+              title={t('commandCenter.removeArchivedTitle', { name: `${a.name}${projectTag(a)}` })}
+              aria-label={t('commandCenter.removeArchivedAria', { name: `${a.name}${projectTag(a)}` })}
+              style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--cth-ink-500)', flexShrink: 0 }}
+            ><Icon name="x" /></button>
+          </div>
         </div>
-      ))}
+        );
+      })}
     </Section>
   );
 }

@@ -18,14 +18,18 @@ import { GitTab } from './GitTab';
 import { Icon } from './Icon';
 import { AgentNameEditor } from './AgentNameEditor';
 import { useStore, type Agent } from '@/store/store';
+import type { HarnessConfig } from '@/store/config';
 import { usePtyParser } from '@/hooks/usePtyParser';
 import { repoLabelOf, useResolvedRepoNames } from '@/hooks/useResolvedRepoNames';
 
 export interface AgentDetailPanelProps {
   agent: Agent;
+  /** Needed for the Command Center's archived list to know which agents are
+   *  frozen (config.autoDeliveryPausedAgents). Same prop AgentStrip receives. */
+  config?: HarnessConfig | null;
 }
 
-export function AgentDetailPanel({ agent }: AgentDetailPanelProps) {
+export function AgentDetailPanel({ agent, config }: AgentDetailPanelProps) {
   const { t } = useTranslation();
   useResolvedRepoNames([agent]);
   const [openTerminalState, setOpenTerminalState] = useState<'idle' | 'opening' | 'ok' | 'error'>('idle');
@@ -95,7 +99,7 @@ export function AgentDetailPanel({ agent }: AgentDetailPanelProps) {
   const onPtyStream = usePtyParser(agent.id);
 
   // Michael gets the full command-center dashboard instead of the plain panel.
-  if (agent.isGod) return <CommandCenterPanel agent={agent} />;
+  if (agent.isGod) return <CommandCenterPanel agent={agent} config={config} />;
 
   const openTerminal = async () => {
     setOpenTerminalState('opening');

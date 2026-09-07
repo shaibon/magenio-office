@@ -526,7 +526,7 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
             // Column so the panel's `height: 100%` resolves against a definite
             // height and `align-items: stretch` gives it the full width.
             <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-              <CommandCenterPanel agent={agent} fullscreen />
+              <CommandCenterPanel agent={agent} fullscreen config={config} />
             </div>
           ) : (
             <>

@@ -503,7 +503,14 @@
     "openIssue": "GitHub Issue #{{num}}: {{title}}",
     "deliveryResumeAria": "Resume automatic delivery for the whole floor",
     "deliveryHoldAria": "Hold automatic delivery for the whole floor",
-    "openIdeAria": "Open the IDE"
+    "openIdeAria": "Open the IDE",
+    "restoreArchived": "restore",
+    "restoreArchivedTitle": "Restore {{name}} — bring it back to the floor with the same agent id, memory, inbox and workspace",
+    "restoreArchivedAria": "Restore {{name}} to the floor",
+    "restoringArchived": "restoring…",
+    "restoreArchivedFailed": "Could not restore this agent.",
+    "removeArchivedTitle": "Forget {{name}} — remove permanently from this archived list",
+    "removeArchivedAria": "Forget {{name}}"
   },
   "addAgent": {
     "title": "ADD AGENT",

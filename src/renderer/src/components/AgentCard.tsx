@@ -53,6 +53,10 @@ export interface AgentCardProps {
   /** Opens the note editor (the strip owns the editing overlay). When set, the
    *  card shows a small ✎ affordance on its note row. */
   onEditNote?: () => void;
+  /** Directly unfreeze this parked agent (window.cth.controlAutoDelivery(id,
+   *  false)). Only rendered while `frozen` is true, so a parked floor card has a
+   *  way back without needing a live detail panel. */
+  onUnfreeze?: () => void;
 }
 
 const fmtK = (n: number): string => `${Math.round(n / 1000)}k`;
@@ -65,7 +69,7 @@ const fmtK = (n: number): string => `${Math.round(n / 1000)}k`;
 export function AgentCard({
   name, character, accent, status, frozen, ptyId, project, nameTag, action, progress = 0,
   contextTokens, contextLimit, selected, isGod, onClick, onRename,
-  doingCount = 0, onTaskNoteClick, draggable, note, onEditNote
+  doingCount = 0, onTaskNoteClick, draggable, note, onEditNote, onUnfreeze
 }: AgentCardProps) {
   const { t } = useTranslation();
   const [hover, setHover] = useState(false);
@@ -247,11 +251,35 @@ export function AgentCard({
                   it was allowed to shrink, the browser resolved the overflow by
                   eating the NAME instead. Truncation should land on the longest,
                   most redundant thing, not on the identity. */}
-              <PixelBadge
-                status={badgeStatus}
-                title={badgeStatus === 'frozen' ? t('agentCard.frozenTitle') : undefined}
-                style={{ flexShrink: 0 }}
-              />
+              {badgeStatus === 'frozen' && onUnfreeze ? (
+                // The FROZEN chip itself is the Unfreeze control on the floor
+                // card: no extra row to squeeze into a 220px card, and a parked
+                // agent's most-needed action sits on the thing that names its
+                // state. Tooltip explains that the chip is clickable.
+                <span
+                  role="button"
+                  tabIndex={0}
+                  onClick={(e) => { e.stopPropagation(); onUnfreeze(); }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); e.preventDefault(); onUnfreeze(); }
+                  }}
+                  className="cth-tip cth-tip-left cth-tip-wrap"
+                  data-tip={t('agentControl.unfreezeTip')}
+                  aria-label={t('agentControl.unfreezeAria')}
+                  style={{ display: 'inline-flex', flexShrink: 0, cursor: 'pointer' }}
+                >
+                  <PixelBadge
+                    status="frozen"
+                    title={t('agentControl.unfreezeTip')}
+                  />
+                </span>
+              ) : (
+                <PixelBadge
+                  status={badgeStatus}
+                  title={badgeStatus === 'frozen' ? t('agentCard.frozenTitle') : undefined}
+                  style={{ flexShrink: 0 }}
+                />
+              )}
             </div>
 
             {/* Context line: action while working, repo while idle. */}

@@ -503,7 +503,14 @@
     "openIssue": "مشكلة GitHub رقم {{num}}: {{title}}",
     "deliveryResumeAria": "استأنف التسليم التلقائي للأرضية كلها",
     "deliveryHoldAria": "احتجز التسليم التلقائي للأرضية كلها",
-    "openIdeAria": "افتح بيئة التطوير"
+    "openIdeAria": "افتح بيئة التطوير",
+    "restoreArchived": "استعادة",
+    "restoreArchivedTitle": "استعادة {{name}} — إعادتها إلى الأرضية بنفس معرّف الوكيل والذاكرة وصندوق الوارد ومساحة العمل",
+    "restoreArchivedAria": "أعِد {{name}} إلى الأرضية",
+    "restoringArchived": "جارٍ الاستعادة…",
+    "restoreArchivedFailed": "تعذّرت استعادة هذا الوكيل.",
+    "removeArchivedTitle": "انسَ {{name}} — إزالة نهائية من قائمة المؤرشَفين",
+    "removeArchivedAria": "انسَ {{name}}"
   },
   "addAgent": {
     "title": "إضافة وكيل",
