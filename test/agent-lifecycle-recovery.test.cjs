@@ -54,7 +54,7 @@ function archivedRow() {
     'function ArchivedSection(',
     'function MemoryTab('
   );
-  return between(section, 'archivedAgents.map((a) => {', '      })}');
+  return between(section, 'rows.map((a) => {', '      })}');
 }
 
 /** The whole restorable-dropdown row body, from map open to map close. */

@@ -6,6 +6,7 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased] - [xx/xx/2026]
 
+- HIVE / agents: the Command Center's Archived list now recovers every agent registry.json knows that is not already on the floor — the renderer's archived/restorable caches are localStorage and can lose an agent that never passed through the floor's archive button. Registry-only rows get safe display defaults (character/accent/description) while preserving the original id and cwd, dedupe by id keeps renderer copies authoritative, and agents already in the restorable dropdown are not duplicated.
 - HIVE / agents: an archived agent can always come back — the Command Center's Archived list now has a restore button per row that unarchives and respawns the agent through the same id-preserving recipe as Restore Team (original id, saved worktree fallback, `resume: true`), with the destructive ✕ still separate. An archived agent that is ALSO frozen is no longer stranded: the same row shows Unfreeze, and the restore path deliberately ignores the frozen partition because only an explicit user action may wake it.
 - HIVE / agents: Unfreeze is reachable wherever a frozen agent is visible — the floor card's FROZEN badge is clickable, the Command Center's archived rows get their own Unfreeze button, and the restorable-team dropdown keeps its existing one.
 - HIVE / agents: the Unfreeze action now says what it does ("unfreeze" / localized verb) instead of reusing the FROZEN status label — the floor-card FROZEN badge still reads as the state.

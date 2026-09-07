@@ -116,10 +116,13 @@ test('FullscreenTerminal restore chips are single-line, clipped, and bounded', (
 
 test('CommandCenter archived section resolves archived agents and tags their names', () => {
   const src = read(FILES.commandCenter);
-  assert.match(src, /useResolvedRepoNames\(archivedAgents\)/,
+  // t-044 moved row assembly into useRegistryArchivedAgents so registry-only
+  // agents (which carry no static project) get the same git-root resolution.
+  const hook = read('src/renderer/src/hooks/useRegistryArchivedAgents.ts');
+  assert.match(hook, /useResolvedRepoNames\(rows\)/,
     'the archived flat list never resolves archived agents\' saved cwds');
-  const archivedIdx = src.indexOf('archivedAgents.map(');
-  assert.ok(archivedIdx >= 0, 'archivedAgents.map( not found in CommandCenterPanel');
+  const archivedIdx = src.indexOf('rows.map(');
+  assert.ok(archivedIdx >= 0, 'rows.map( not found in CommandCenterPanel');
   const block = src.slice(archivedIdx, archivedIdx + 1200);
   assert.match(block, /projectTag\(a\)/,
     'the archived list still renders a bare a.name — same-named archived agents stay ambiguous');

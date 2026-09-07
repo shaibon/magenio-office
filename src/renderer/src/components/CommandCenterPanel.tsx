@@ -40,6 +40,7 @@ import { canReceiveInbox } from '@shared/agentProvider';
 import { isComposingKey } from '@shared/imeGuard';
 import { useRtl } from '@/i18n/useDirection';
 import { restoreArchivedAgent } from '@/hooks/useRestoreTeam';
+import { useRegistryArchivedAgents } from '@/hooks/useRegistryArchivedAgents';
 
 /** Michael's control surface. Shown instead of the plain terminal/files panel
  *  when the god agent is selected: terminal + queue, the floor roster (with
@@ -1028,21 +1029,26 @@ function FloorTab({ seed, config }: {
 
 function ArchivedSection({ config }: { config?: HarnessConfig | null }) {
   const { t } = useTranslation();
-  const archivedAgents = useStore((s) => s.archivedAgents);
-  // Archived agents are shown in ONE flat list here — the same collision the
-  // shared project tag exists for — and their saved cwds never resolve through
-  // the live-roster call above, so this section must run the resolver itself.
-  useResolvedRepoNames(archivedAgents);
+  // Archived rows = the renderer's archivedAgents PLUS registry.json agents
+  // that are missing from the floor and from both renderer lists. The registry
+  // is the durable source; localStorage caches can silently lose an agent that
+  // never passed through archiveAgent() on the floor.
+  const rows = useRegistryArchivedAgents();
   const removeArchivedAgent = useStore((s) => s.removeArchivedAgent);
+  // The destructive ✕ only applies to rows the renderer ACTUALLY archived: it
+  // forgets a localStorage copy. A registry-recovered row was never in that
+  // cache, so an ✕ there would be a no-op (or worse, invite deleting a durable
+  // registry entry) — those rows only get Restore/Unfreeze.
+  const rendererArchivedIds = new Set(useStore((s) => s.archivedAgents).map((a) => a.id));
   const frozenIds = new Set(config?.autoDeliveryPausedAgents ?? []);
   const [open, setOpen] = useState(false);
   // One row can be restoring at a time; the button flips to a busy label so a
   // slow spawn (git probe + PTY boot) never looks like a dead click.
   const [busyId, setBusyId] = useState<string | null>(null);
   const [restoreErrors, setRestoreErrors] = useState<Record<string, string>>({});
-  if (archivedAgents.length === 0) return null;
+  if (rows.length === 0) return null;
   return (
-    <Section title={t('commandCenter.archived', { count: archivedAgents.length })}>
+    <Section title={t('commandCenter.archived', { count: rows.length })}>
       <button
         onClick={() => setOpen((v) => !v)}
         style={{
@@ -1053,7 +1059,7 @@ function ArchivedSection({ config }: { config?: HarnessConfig | null }) {
           marginBottom: open ? 6 : 0
         }}
       >{open ? '▾' : '▸'} {open ? t('commandCenter.hideClosed') : t('commandCenter.showClosed')}</button>
-      {open && archivedAgents.map((a) => {
+      {open && rows.map((a) => {
         const isFrozen = frozenIds.has(a.id);
         const isBusy = busyId === a.id;
         return (
@@ -1119,12 +1125,14 @@ function ArchivedSection({ config }: { config?: HarnessConfig | null }) {
             >
               {isBusy ? t('commandCenter.restoringArchived') : t('commandCenter.restoreArchived')}
             </PixelButton>
-            <button
-              onClick={() => removeArchivedAgent(a.id)}
-              title={t('commandCenter.removeArchivedTitle', { name: `${a.name}${projectTag(a)}` })}
-              aria-label={t('commandCenter.removeArchivedAria', { name: `${a.name}${projectTag(a)}` })}
-              style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--cth-ink-500)', flexShrink: 0 }}
-            ><Icon name="x" /></button>
+            {rendererArchivedIds.has(a.id) && (
+              <button
+                onClick={() => removeArchivedAgent(a.id)}
+                title={t('commandCenter.removeArchivedTitle', { name: `${a.name}${projectTag(a)}` })}
+                aria-label={t('commandCenter.removeArchivedAria', { name: `${a.name}${projectTag(a)}` })}
+                style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--cth-ink-500)', flexShrink: 0 }}
+              ><Icon name="x" /></button>
+            )}
           </div>
         </div>
         );
