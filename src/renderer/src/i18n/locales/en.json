@@ -1360,6 +1360,7 @@
     "addAssignee": "+ Add assignee",
     "saveProject": "Save project",
     "saveChanges": "Save changes",
+    "saveScopeHint": "This project is saved here — the Settings Save button does not save it.",
     "couldNotSave": "Could not save.",
     "removed": "Removed \"{{key}}\".",
     "test": "Test",
