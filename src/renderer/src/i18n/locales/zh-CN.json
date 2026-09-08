@@ -1360,6 +1360,7 @@
     "addAssignee": "+ 添加受理人",
     "saveProject": "保存项目",
     "saveChanges": "保存更改",
+    "saveScopeHint": "该项目在此处保存 — 设置页面的“保存”按钮不会保存它。",
     "couldNotSave": "无法保存。",
     "removed": "已移除“{{key}}”。",
     "test": "测试",

@@ -7,7 +7,7 @@ const path = require('node:path');
 
 const LOCALES = ['en', 'zh-CN', 'ar'];
 const KEYS = [
-  'trelloTitle', 'trelloAdd', 'trelloRemove', 'trelloBoardUrl', 'trelloBoardUrlHint',
+  'saveScopeHint', 'trelloTitle', 'trelloAdd', 'trelloRemove', 'trelloBoardUrl', 'trelloBoardUrlHint',
   'trelloBoardLabel', 'trelloLists', 'trelloListsHint', 'trelloEnabled', 'trelloBadUrl'
 ];
 

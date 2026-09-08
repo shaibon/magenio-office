@@ -394,8 +394,28 @@ export function JiraProjectsRegistry() {
             {tr('jiraProjects.enabled')}
           </label>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+          {/* The action row STICKS to the bottom of the settings scroll area.
+              This panel does not share the Settings modal's global Save: that
+              button writes staged `pending` config and then reports "Saved",
+              while a binding is persisted only through this button's own
+              `jiraProjects:upsert`. So a user who edits a binding, cannot see
+              this row (the configure form is taller than the viewport — more
+              so since the Trello source subsection was added), and presses the
+              global Save instead is told the save SUCCEEDED while their
+              binding was never written. Keeping this row permanently on screen
+              is what makes the two saves distinguishable at the moment of the
+              click. */}
+          <div style={{
+            position: 'sticky', bottom: 0, zIndex: 1,
+            display: 'flex', alignItems: 'center', gap: 8,
+            marginTop: 8, paddingTop: 10, paddingBottom: 10,
+            background: 'var(--cth-paper-100)',
+            boxShadow: '0 -1px 0 0 var(--cth-ink-100)'
+          }}>
             {err && <span style={{ marginRight: 'auto', fontSize: 12, color: 'var(--cth-danger, #6E1423)' }}>{err}</span>}
+            {!err && (
+              <span style={{ marginRight: 'auto', ...hint }}>{tr('jiraProjects.saveScopeHint')}</span>
+            )}
             <PixelButton variant="primary" size="sm" onClick={() => { void onSave(); }} disabled={busy}>
               {busy ? '…' : draft.isNew ? tr('jiraProjects.saveProject') : tr('jiraProjects.saveChanges')}
             </PixelButton>
