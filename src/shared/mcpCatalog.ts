@@ -62,15 +62,40 @@ export interface McpCatalogEntry {
    *  restricted from its first materialization, not from the moment the user
    *  remembers to type an allow-list. */
   defaultAgents?: string[];
+  /** t-056: like `defaultAgents` but by ROLE (see `isPmRole`), not by agent id —
+   *  survives a restore where ids change. Additive to `defaultAgents`: either
+   *  match is enough to include the agent. */
+  defaultRoles?: string[];
 }
 
 /** One server's consent entry as it is stored in `config.mcpDefaults[id]`. */
 export interface McpConsentEntry {
   enabled: boolean;
   agents?: string[];
+  /** t-056: role-based counterpart to `agents` (see `McpCatalogEntry.defaultRoles`). */
+  roles?: string[];
   command?: string;
   args?: string[];
 }
+
+/** t-056: exact write-mutating tool names of the pinned Trello MCP server build
+ *  (`bun .../magenio-mcp/trello-mcp/build/index.js`, verified live via
+ *  `tools/list` on 2026-09-17 — see hive/agents/god/mcpcall.cjs). `permissions.deny`
+ *  needs EXACT tool names, not glob patterns, so this is a literal list.
+ *  ponytail: a write tool added to that server later needs adding here by hand —
+ *  nothing derives this list automatically. */
+export const TRELLO_WRITE_TOOLS = [
+  'add_card_to_list', 'update_card_details', 'archive_card', 'watch_card', 'watch_list',
+  'move_card', 'add_list_to_board', 'archive_list', 'update_list', 'update_list_position',
+  'attach_image_to_card', 'attach_file_to_card', 'attach_data_to_card', 'attach_image_data_to_card',
+  'set_active_board', 'create_board', 'set_active_workspace',
+  'add_comment', 'update_comment', 'delete_comment',
+  'create_checklist', 'add_checklist_item', 'update_checklist_item', 'delete_checklist_item',
+  'assign_member_to_card', 'remove_member_from_card',
+  'create_label', 'update_label', 'delete_label',
+  'copy_card', 'copy_checklist', 'add_cards_to_list',
+  'update_card_custom_field', 'perform_system_repair'
+] as const;
 
 /** Upstream repo of the Trello MCP server the installer clones, and the TAG it
  *  is pinned to. Pinned deliberately: the app builds this third-party code and
@@ -194,7 +219,11 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
     // Spec decision 7: Trello access is "ristretto a un insieme esplicito di
     // agenti … oggi ['god']". god's mission is the only place the never-write
     // discipline is written down, so no other agent may hold these tools.
-    defaultAgents: ['god']
+    defaultAgents: ['god'],
+    // t-056: PMs (Pam) also read Trello, by role rather than by id. Their write
+    // tools are blocked at the settings layer (hookSettings' permissions.deny,
+    // TRELLO_WRITE_TOOLS above) rather than by prompt discipline alone.
+    defaultRoles: ['pm']
   }
 ];
 
@@ -222,7 +251,8 @@ export function seedMcpConsent(id: string): McpConsentEntry {
   const entry = mcpCatalogEntry(id);
   return {
     enabled: entry?.defaultEnabled ?? false,
-    ...(entry?.defaultAgents?.length ? { agents: [...entry.defaultAgents] } : {})
+    ...(entry?.defaultAgents?.length ? { agents: [...entry.defaultAgents] } : {}),
+    ...(entry?.defaultRoles?.length ? { roles: [...entry.defaultRoles] } : {})
   };
 }
 
@@ -252,6 +282,11 @@ export function mergeMcpConsent(
   if (merged.agents === undefined) {
     if (seed.agents) merged.agents = [...seed.agents];
     else delete merged.agents;
+  }
+  // Same ABSENT ≠ EMPTY treatment for `roles` (t-056).
+  if (merged.roles === undefined) {
+    if (seed.roles) merged.roles = [...seed.roles];
+    else delete merged.roles;
   }
   return merged;
 }

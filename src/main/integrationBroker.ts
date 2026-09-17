@@ -58,6 +58,9 @@ interface Capability {
   workerId: string;
   allowedIds: Set<string>;
   grantedAt: number;
+  /** t-056: a PM's broker access is read-only — every non-GET request is
+   *  rejected before route dispatch, regardless of which route it targets. */
+  readOnly: boolean;
 }
 
 export interface IntegrationBrokerDeps {
@@ -151,11 +154,12 @@ export class IntegrationBroker {
 
   /** Mint a per-worker capability token granting access to `allowedIds`. Any prior
    *  token for this worker is revoked first. The token is a random handle — never a
-   *  secret, never persisted. */
-  grant(workerId: string, allowedIds: string[]): string {
+   *  secret, never persisted. `readOnly` (t-056) restricts the token to GET only,
+   *  across every route — used for a PM's broker access. */
+  grant(workerId: string, allowedIds: string[], opts?: { readOnly?: boolean }): string {
     this.revoke(workerId);
     const token = randomBytes(32).toString('base64url');
-    this.byToken.set(token, { workerId, allowedIds: new Set(allowedIds), grantedAt: Date.now() });
+    this.byToken.set(token, { workerId, allowedIds: new Set(allowedIds), grantedAt: Date.now(), readOnly: !!opts?.readOnly });
     this.byWorker.set(workerId, token);
     return token;
   }
@@ -203,6 +207,13 @@ export class IntegrationBroker {
     // 2) Capability token.
     const cap = this.resolveCapability(IntegrationBroker.tokenFrom(req));
     if (!cap) return IntegrationBroker.sendError(res, 401, 'unauthorized', 'missing or invalid capability token');
+
+    // 2a) A read-only capability (t-056: PM broker access) may only ever GET.
+    // Checked before any route dispatch so it covers /i/<id>/<path> AND every
+    // other route uniformly, not just the integration proxy.
+    if (cap.readOnly && req.method !== 'GET') {
+      return IntegrationBroker.sendError(res, 403, 'forbidden', 'read-only capability: GET only');
+    }
 
     // 2b) GET /jira-bindings — config data, not an integration proxy, so any
     // valid token (not just ones scoped to a specific integration id) may read

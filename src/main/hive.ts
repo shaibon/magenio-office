@@ -37,9 +37,9 @@ import {
   bridgeOf,
   type AgentProvider
 } from '../shared/agentProvider';
-import { MCP_CATALOG } from '../shared/mcpCatalog';
+import { MCP_CATALOG, TRELLO_WRITE_TOOLS } from '../shared/mcpCatalog';
 import { selectBroadcastTargets } from '../shared/broadcast';
-import { preferredAgentRole } from '../shared/agentRole';
+import { preferredAgentRole, isPmRole } from '../shared/agentRole';
 import { mergeTaskLedger } from '../shared/taskLedger';
 import { expandTilde } from './fs';
 import { resolveGodName } from '../shared/godIdentity';
@@ -49,7 +49,7 @@ import { checkMcpPresence, nodePresenceDeps } from './mcpProvision';
  *  Kept as a local shape so hive.ts never imports the foundation-owned config
  *  module just for a type. */
 type McpDefaultsMap =
-  | { [id: string]: { enabled: boolean; agents?: string[]; command?: string; args?: string[] } }
+  | { [id: string]: { enabled: boolean; agents?: string[]; roles?: string[]; command?: string; args?: string[] } }
   | undefined;
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -977,7 +977,7 @@ export class HiveManager {
     if (sock && shim) {
       env.HIVE_SOCK = sock;
       const settingsPath = join(dir, 'settings.json');
-      this.writeJson(settingsPath, this.hookSettings(shim, meta.id, meta.cwd, opts.mcpDefaults, opts.theme, this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs)));
+      this.writeJson(settingsPath, this.hookSettings(shim, meta.id, meta.cwd, opts.mcpDefaults, opts.theme, this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs), meta));
       args.push('--settings', settingsPath);
     }
     return { args, env };
@@ -1158,7 +1158,15 @@ export class HiveManager {
     return Array.from(new Set(out));
   }
 
-  private hookSettings(shim: string, agentId: string, cwd: string, cfg: McpDefaultsMap, theme?: 'light' | 'dark', writableDirs: string[] = []): unknown {
+  private hookSettings(
+    shim: string,
+    agentId: string,
+    cwd: string,
+    cfg: McpDefaultsMap,
+    theme?: 'light' | 'dark',
+    writableDirs: string[] = [],
+    roleMeta?: Pick<AgentMeta, 'role' | 'capabilities' | 'isGod' | 'provider'>
+  ): unknown {
     // Bundled node, NOT bare `node` — see nodeLauncherPath(). Claude runs each of
     // these through `sh -c` with a stripped PATH, where `node` is often absent.
     const cmd = this.nodeRun(shim);
@@ -1166,7 +1174,14 @@ export class HiveManager {
       ...(matcher ? { matcher } : {}),
       hooks: [{ type: 'command', command: cmd }]
     });
-    const mcpServers = this.buildDefaultMcpServers(cwd, cfg, agentId);
+    const mcpServers = this.buildDefaultMcpServers(cwd, cfg, agentId, roleMeta);
+    // t-056: any non-god agent that received the Trello server (by id or by PM
+    // role — either path) gets its write tools hard-blocked here, not left to
+    // prompt discipline alone (only god's mission carries that discipline today).
+    // EXACT tool names only, no globs — see TRELLO_WRITE_TOOLS' own comment.
+    const trelloWriteDeny = mcpServers['munder-trello'] && !roleMeta?.isGod
+      ? TRELLO_WRITE_TOOLS.map((t) => `mcp__munder-trello__${t}`)
+      : [];
     return {
       // Match the TUI's truecolor palette to the harness terminal theme —
       // PER SESSION, so the user's global Claude theme (their own terminals
@@ -1201,10 +1216,13 @@ export class HiveManager {
       // Edit/Write tools; with only one the agent deadlocks on its own inbox.
       // failIfUnavailable stays false: a platform without a sandbox (Windows)
       // runs as before rather than refusing to spawn.
-      ...(writableDirs.length
+      ...(writableDirs.length || trelloWriteDeny.length
         ? {
-            sandbox: { enabled: true, filesystem: { allowWrite: writableDirs } },
-            permissions: { additionalDirectories: writableDirs }
+            ...(writableDirs.length ? { sandbox: { enabled: true, filesystem: { allowWrite: writableDirs } } } : {}),
+            permissions: {
+              ...(writableDirs.length ? { additionalDirectories: writableDirs } : {}),
+              ...(trelloWriteDeny.length ? { deny: trelloWriteDeny } : {})
+            }
           }
         : {}),
       hooks: {
@@ -1234,7 +1252,8 @@ export class HiveManager {
   private buildDefaultMcpServers(
     cwd: string,
     cfg: McpDefaultsMap,
-    agentId: string
+    agentId: string,
+    roleMeta?: Pick<AgentMeta, 'role' | 'capabilities' | 'isGod' | 'provider'>
   ): Record<string, { command: string; args: string[]; env?: Record<string, string> }> {
     const out: Record<string, { command: string; args: string[]; env?: Record<string, string> }> = {};
     const presenceDeps = nodePresenceDeps();
@@ -1248,8 +1267,17 @@ export class HiveManager {
       // guards a hand-edited/partial mcpDefaults map too).
       if (e.tier !== 'safe-readonly' && consented !== true) continue;
       // Per-agent scoping: an empty or absent list means every agent, which is
-      // the behaviour every existing consent has.
-      if (consent?.agents?.length && !consent.agents.includes(agentId)) continue;
+      // the behaviour every existing consent has. `roles` (t-056) is a second,
+      // additive way in — by role text (isPmRole), not by an id that changes
+      // across a restore. `permissions.deny` (only wired for Claude Code) is
+      // what makes a role-matched, non-god agent safe to hold this server at
+      // all — restrict the role path to `provider === 'claude'` so a PM on a
+      // provider that can't enforce that deny never receives it.
+      const idAllowed = !consent?.agents?.length || consent.agents.includes(agentId);
+      const roleAllowed = !!consent?.roles?.length
+        && isPmRole(roleMeta)
+        && (roleMeta?.provider ?? 'claude') === 'claude';
+      if (!idAllowed && !roleAllowed) continue;
 
       let command = e.spec.command;
       let args = e.spec.args.map((a) => (a === '<cwd>' ? cwd : a));

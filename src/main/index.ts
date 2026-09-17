@@ -69,6 +69,7 @@ import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, type WorkerWakeFacts } from './workerWake';
 import { inboxNudgeText } from '../shared/hiveNudge';
 import { resolveGodName } from '../shared/godIdentity';
+import { isPmRole } from '../shared/agentRole';
 import { fetchHireManifest, readHireManifestFiles } from './hire';
 import { parseHireDeepLink, type HireManifest } from '../shared/hire';
 import { ClosingTimeController } from './closingTime';
@@ -2873,8 +2874,13 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       // through pty:spawn -> spawnAgentCore, not the ephemeral-worker path (below,
       // ~processSpawnRequest) that already grants this to workers. Scoped to god
       // only — least privilege, not a blanket grant to every spawned agent.
-      if (opts.hive?.isGod && integrationBroker.running()) {
-        const token = integrationBroker.grant(opts.id, integrations.enabledIds());
+      // t-056: a PM (Pam) gets the same broker reach, by role (isPmRole), never
+      // by id — an id changes across a restore, a role string survives it — and
+      // READ-ONLY: `grant(..., { readOnly: true })` rejects every non-GET at the
+      // broker itself, so a PM can read Jira bindings but never mutate through it.
+      const isPm = isPmRole(opts.hive);
+      if ((opts.hive?.isGod || isPm) && integrationBroker.running()) {
+        const token = integrationBroker.grant(opts.id, integrations.enabledIds(), { readOnly: !opts.hive?.isGod });
         opts.env = { ...(opts.env ?? {}), MD_BROKER_URL: integrationBroker.url(), MD_BROKER_TOKEN: token };
       }
     } catch (e) {

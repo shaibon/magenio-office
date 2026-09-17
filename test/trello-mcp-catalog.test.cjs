@@ -28,17 +28,20 @@ test('trello is not a safe-readonly server', () => {
   assert.equal(isSafeReadonlyMcp('trello'), false);
 });
 
-test('defaultMcpDefaults seeds trello as disabled AND restricted to god', () => {
+test('defaultMcpDefaults seeds trello as disabled AND restricted to god + the pm role', () => {
   // Spec decision 7: Trello access is restricted to an explicit set of agents,
   // today ['god']. The safe configuration must be the default, not something
   // the user has to remember to type — an absent/empty allow-list means EVERY
   // agent, and this server exposes create_board/archive_list/update_card_details
   // while only god's mission carries the never-write-to-Trello discipline.
-  assert.deepEqual(defaultMcpDefaults().trello, { enabled: false, agents: ['god'] });
+  // t-056: `roles: ['pm']` is additive — a PM (Pam) reads it too, by role, with
+  // its write tools hard-blocked (hookSettings' permissions.deny), not by id.
+  assert.deepEqual(defaultMcpDefaults().trello, { enabled: false, agents: ['god'], roles: ['pm'] });
 });
 
 test('the trello entry declares its allow-list in the catalog, next to its tier', () => {
   assert.deepEqual(mcpCatalogEntry('trello').defaultAgents, ['god']);
+  assert.deepEqual(mcpCatalogEntry('trello').defaultRoles, ['pm']);
 });
 
 test('no other catalog entry is narrowed — every existing server still reaches every agent', () => {
@@ -50,56 +53,66 @@ test('no other catalog entry is narrowed — every existing server still reaches
   }
 });
 
-test('seedMcpConsent carries the catalog allow-list, and copies it', () => {
+test('seedMcpConsent carries the catalog allow-list (by id and by role), and copies both', () => {
   const seed = seedMcpConsent('trello');
-  assert.deepEqual(seed, { enabled: false, agents: ['god'] });
+  assert.deepEqual(seed, { enabled: false, agents: ['god'], roles: ['pm'] });
   seed.agents.push('worker-1');
+  seed.roles.push('everyone');
   assert.deepEqual(mcpCatalogEntry('trello').defaultAgents, ['god'], 'the catalog entry must not be mutable through a seed');
+  assert.deepEqual(mcpCatalogEntry('trello').defaultRoles, ['pm'], 'the catalog entry must not be mutable through a seed');
   assert.deepEqual(seedMcpConsent('unknown-entry'), { enabled: false });
 });
 
-test('mergeMcpConsent seeds the allow-list when materializing a consent', () => {
+test('mergeMcpConsent seeds the allow-lists when materializing a consent', () => {
   // The documented flow is install → tick enable. Whichever of those writes
-  // lands first must already carry the allow-list.
-  assert.deepEqual(mergeMcpConsent('trello', undefined, { enabled: true }), { enabled: true, agents: ['god'] });
+  // lands first must already carry the allow-lists.
+  assert.deepEqual(mergeMcpConsent('trello', undefined, { enabled: true }), { enabled: true, agents: ['god'], roles: ['pm'] });
   assert.deepEqual(
     mergeMcpConsent('trello', undefined, { command: '/bin/bun', args: ['/pkg/build/index.js'] }),
-    { enabled: false, agents: ['god'], command: '/bin/bun', args: ['/pkg/build/index.js'] }
+    { enabled: false, agents: ['god'], roles: ['pm'], command: '/bin/bun', args: ['/pkg/build/index.js'] }
   );
 });
 
-test('mergeMcpConsent seeds the allow-list onto an existing entry that has none', () => {
-  // A config written before the allow-list existed carries { enabled: false }
-  // and no `agents` key at all: absent is "never chosen", so it takes the default.
+test('mergeMcpConsent seeds the allow-lists onto an existing entry that has none', () => {
+  // A config written before the allow-lists existed carries { enabled: false }
+  // and no `agents`/`roles` key at all: absent is "never chosen", so each takes
+  // its own catalog default independently.
   assert.deepEqual(
     mergeMcpConsent('trello', { enabled: false }, { enabled: true }),
-    { enabled: true, agents: ['god'] }
+    { enabled: true, agents: ['god'], roles: ['pm'] }
   );
 });
 
 test('mergeMcpConsent never re-seeds an allow-list the user deliberately emptied', () => {
   // ABSENT ≠ EMPTY. Clearing the Agents field writes `agents: []` — a real
   // "every agent" choice. A later Install or toggle must leave it alone.
+  // `roles` is untouched in these existing entries, so it still seeds
+  // independently — the two allow-lists are cleared one at a time, not as a pair.
   assert.deepEqual(
     mergeMcpConsent('trello', { enabled: true, agents: [] }, { command: '/bin/bun' }),
-    { enabled: true, agents: [], command: '/bin/bun' }
+    { enabled: true, agents: [], roles: ['pm'], command: '/bin/bun' }
   );
   assert.deepEqual(
     mergeMcpConsent('trello', { enabled: false, agents: [] }, { enabled: true }),
-    { enabled: true, agents: [] }
+    { enabled: true, agents: [], roles: ['pm'] }
   );
-  // …and an explicit patch to [] is honoured on the spot.
-  assert.deepEqual(mergeMcpConsent('trello', undefined, { agents: [] }), { enabled: false, agents: [] });
+  // …and an explicit patch to [] is honoured on the spot, for either field.
+  assert.deepEqual(mergeMcpConsent('trello', undefined, { agents: [] }), { enabled: false, agents: [], roles: ['pm'] });
+  assert.deepEqual(mergeMcpConsent('trello', undefined, { roles: [] }), { enabled: false, agents: ['god'], roles: [] });
+  assert.deepEqual(
+    mergeMcpConsent('trello', { enabled: true, roles: [] }, { command: '/bin/bun' }),
+    { enabled: true, agents: ['god'], roles: [], command: '/bin/bun' }
+  );
 });
 
 test('mergeMcpConsent keeps a user-chosen allow-list and honours an explicit change', () => {
   assert.deepEqual(
     mergeMcpConsent('trello', { enabled: true, agents: ['god', 'pm'] }, { enabled: false }),
-    { enabled: false, agents: ['god', 'pm'] }
+    { enabled: false, agents: ['god', 'pm'], roles: ['pm'] }
   );
   assert.deepEqual(
     mergeMcpConsent('trello', { enabled: true, agents: ['god'] }, { agents: ['god', 'pm'] }),
-    { enabled: true, agents: ['god', 'pm'] }
+    { enabled: true, agents: ['god', 'pm'], roles: ['pm'] }
   );
 });
 
