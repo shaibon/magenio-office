@@ -2,6 +2,9 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
 
 const {
@@ -12,7 +15,14 @@ const {
   seedMcpConsent,
   mergeMcpConsent,
   TRELLO_MCP_REPO_URL,
-  TRELLO_MCP_TAG
+  TRELLO_MCP_TAG,
+  TRELLO_READ_TOOLS,
+  TRELLO_WRITE_TOOLS,
+  TRELLO_KNOWN_TOOLS,
+  trelloToolId,
+  trelloDeniedToolIds,
+  isTrelloTool,
+  isTrelloReadOnlyCall
 } = loadTs('src/shared/mcpCatalog.ts');
 
 test('the trello entry exists, is user-configured and ships off', () => {
@@ -142,4 +152,73 @@ test('every other catalog entry keeps a non-empty command', () => {
     if (entry.userConfigured) continue;
     assert.ok(entry.spec.command.length > 0, `${entry.id} lost its command`);
   }
+});
+
+// ─── t-056 review fix: the tool classification is fail-closed ─────────────────
+
+/** The BUILT Trello MCP server on this machine, if it is installed — the same
+ *  bundle the app launches (`bun <install>/build/index.js`). Declared in the
+ *  catalog comment and in the app's install path (<userData>/mcp/trello). */
+function installedTrelloBuild() {
+  const candidates = [
+    process.env.MD_TRELLO_MCP_BUILD,
+    path.join(os.homedir(), 'HarnessAgents', 'hive', 'agents', 'god', 'mcp', 'trello', 'build', 'index.js'),
+    '/Users/shaibon/www/magenio-mcp/trello-mcp/build/index.js'
+  ].filter(Boolean);
+  return candidates.find((p) => { try { return fs.statSync(p).isFile(); } catch { return false; } });
+}
+
+test('every tool of the pinned build is classified exactly once (read XOR write)', () => {
+  const read = new Set(TRELLO_READ_TOOLS);
+  const write = new Set(TRELLO_WRITE_TOOLS);
+  for (const tool of read) {
+    assert.equal(write.has(tool), false, `${tool} is classified both read and write`);
+  }
+  assert.equal(new Set(TRELLO_KNOWN_TOOLS).size, TRELLO_KNOWN_TOOLS.length, 'duplicate name in the known set');
+  assert.deepEqual([...TRELLO_KNOWN_TOOLS].sort(), [...read, ...write].sort(), 'the known set is not read ∪ write');
+});
+
+test('the settings deny list covers every known write and nothing else', () => {
+  const denied = trelloDeniedToolIds();
+  assert.deepEqual([...denied].sort(), TRELLO_WRITE_TOOLS.map(trelloToolId).sort());
+  for (const tool of TRELLO_READ_TOOLS) {
+    assert.equal(denied.includes(trelloToolId(tool)), false, `a read tool must never be denied: ${tool}`);
+  }
+});
+
+test('the runtime policy is an ALLOW-list: an unrecognised Trello tool is denied', () => {
+  // Read tools: allowed, bare name or namespaced id alike.
+  assert.equal(isTrelloReadOnlyCall('get_card'), true);
+  assert.equal(isTrelloReadOnlyCall(trelloToolId('get_card')), true);
+  assert.equal(isTrelloReadOnlyCall('search_cards'), true);
+  // Known writes: denied.
+  for (const tool of TRELLO_WRITE_TOOLS) {
+    assert.equal(isTrelloReadOnlyCall(tool), false, tool);
+    assert.equal(isTrelloReadOnlyCall(trelloToolId(tool)), false, tool);
+  }
+  // The fail-closed half: a tool this catalog has never heard of — a write added
+  // by a newer server build — is denied, not waved through. The settings-level
+  // deny list could not do this, which is why the PreToolUse hook is the guard.
+  assert.equal(isTrelloReadOnlyCall('create_widget'), false);
+  assert.equal(isTrelloReadOnlyCall(trelloToolId('create_widget')), false);
+  assert.equal(isTrelloReadOnlyCall(''), false);
+  assert.equal(isTrelloReadOnlyCall(undefined), false);
+  // And the policy only claims Trello tools in the first place.
+  assert.equal(isTrelloTool(trelloToolId('anything_at_all')), true);
+  assert.equal(isTrelloTool('get_card'), true);
+  assert.equal(isTrelloTool('mcp__other-server__get_card'), false);
+  assert.equal(isTrelloTool('Bash'), false);
+});
+
+test('the pinned server build exposes nothing unclassified', { skip: !installedTrelloBuild() }, () => {
+  // The completeness guard: it reads the BUILT server on this machine and fails
+  // if it registers a tool the catalog does not classify, so a server bump that
+  // adds a tool cannot ship silently — whoever raises TRELLO_MCP_TAG must
+  // classify what the new build exposes. Skipped where the build is absent (CI).
+  const source = fs.readFileSync(installedTrelloBuild(), 'utf8');
+  const known = new Set(TRELLO_KNOWN_TOOLS);
+  const exposed = new Set([...source.matchAll(/registerTool\(\s*["']([a-zA-Z0-9_]+)["']/g)].map((m) => m[1]));
+  assert.ok(exposed.size > 0, 'no tool registrations found — the build layout changed, so this guard is blind');
+  const unclassified = [...exposed].filter((t) => !known.has(t)).sort();
+  assert.deepEqual(unclassified, [], `unclassified Trello tool(s): ${unclassified.join(', ')}`);
 });

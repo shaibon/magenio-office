@@ -19,6 +19,7 @@ import type { ControlRegistry } from './control';
 import type { CircuitBreaker } from './breaker';
 import { estimateCostUsd } from './pricing';
 import { validateHookEvent } from '../shared/hookEvents';
+import { isTrelloTool, isTrelloReadOnlyCall } from '../shared/mcpCatalog';
 
 interface HookPayload {
   hook_event_name?: string;
@@ -227,6 +228,29 @@ export class HookServer {
       this.notify(agentId ?? 'Agent', 'finished — idle');
       this.emit(agentId, event, p);
       return {};
+    }
+
+    // t-056 — Trello write policy, FAIL-CLOSED. A non-god agent that received the
+    // Trello server may call only the classified READ tools. Deliberately an
+    // allow-list: a write tool added by a newer server build is not on it and is
+    // denied here, where the settings-level deny list (which can only name tools
+    // it already knows) would have let it through. The policy itself is recorded
+    // in memory when that spawn's settings were written, so the agent cannot edit
+    // the record that constrains it.
+    if (event === 'PreToolUse' && agentId && this.hive.isTrelloWriteBlocked(agentId)) {
+      const tool = p.tool_name ?? '';
+      if (isTrelloTool(tool) && !isTrelloReadOnlyCall(tool)) {
+        const reason = `Trello writes are blocked for this agent (read-only allow-list): ${tool}`;
+        this.emitControl(agentId, p.tool_name, reason);
+        this.emit(agentId, event, p);
+        return {
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: 'deny',
+            permissionDecisionReason: reason
+          }
+        };
+      }
     }
 
     // 7C.1 — HITL gate: deny a tool call at the PreToolUse boundary when the

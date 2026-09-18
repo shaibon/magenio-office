@@ -181,6 +181,25 @@ export class IntegrationBroker {
     return undefined;
   }
 
+  /** t-056 — what a READ-ONLY capability may still do.
+   *
+   *  GET is the general read. HEAD is deliberately NOT allowed: the proxy would
+   *  forward it and a downstream server may treat it as a different verb.
+   *
+   *  Exactly one write is excepted, `POST /agents/<id>/thaw`: t-040 requires a PM
+   *  to be able to call a parked teammate back without a human, and thaw is the
+   *  recovery direction. `freeze` is NOT excepted — a read-only token cannot park
+   *  anyone. */
+  private static readOnlyAllows(req: IncomingMessage, rawUrl: string): boolean {
+    // The proxy forwards headers verbatim, and a downstream server that honours
+    // X-HTTP-Method-Override would execute the OVERRIDDEN verb — a write dressed
+    // as a permitted GET. A read-only token may not carry the header at all.
+    if (req.headers['x-http-method-override']) return false;
+    if (req.method === 'GET') return true;
+    if (req.method !== 'POST') return false;
+    return /^\/agents\/[^/?#]+\/thaw\/?(\?[^#]*)?$/.test(rawUrl);
+  }
+
   private static sendError(res: ServerResponse, status: number, code: string, message: string): void {
     if (res.headersSent) { try { res.end(); } catch { /* noop */ } return; }
     res.writeHead(status, { 'content-type': 'application/json' });
@@ -208,11 +227,17 @@ export class IntegrationBroker {
     const cap = this.resolveCapability(IntegrationBroker.tokenFrom(req));
     if (!cap) return IntegrationBroker.sendError(res, 401, 'unauthorized', 'missing or invalid capability token');
 
-    // 2a) A read-only capability (t-056: PM broker access) may only ever GET.
-    // Checked before any route dispatch so it covers /i/<id>/<path> AND every
-    // other route uniformly, not just the integration proxy.
-    if (cap.readOnly && req.method !== 'GET') {
-      return IntegrationBroker.sendError(res, 403, 'forbidden', 'read-only capability: GET only');
+    // 2a) A read-only capability (t-056: PM broker access) may only read. Checked
+    // before any route dispatch so it covers /i/<id>/<path> AND every other route
+    // uniformly, not just the integration proxy. Exactly one write is excepted:
+    // the agent-control THAW post, because a PM must be able to wake a parked
+    // teammate without a human (t-040); the freeze direction stays forbidden.
+    //
+    // An X-HTTP-Method-Override header is treated as a write regardless: the
+    // proxy forwards headers verbatim, and a downstream server that honours the
+    // override would turn a permitted GET into a write.
+    if (cap.readOnly && !IntegrationBroker.readOnlyAllows(req, req.url ?? '')) {
+      return IntegrationBroker.sendError(res, 403, 'forbidden', 'read-only capability: GET only (thaw excepted)');
     }
 
     // 2b) GET /jira-bindings — config data, not an integration proxy, so any

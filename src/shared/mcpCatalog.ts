@@ -78,12 +78,34 @@ export interface McpConsentEntry {
   args?: string[];
 }
 
-/** t-056: exact write-mutating tool names of the pinned Trello MCP server build
- *  (`bun .../magenio-mcp/trello-mcp/build/index.js`, verified live via
- *  `tools/list` on 2026-09-17 — see hive/agents/god/mcpcall.cjs). `permissions.deny`
- *  needs EXACT tool names, not glob patterns, so this is a literal list.
- *  ponytail: a write tool added to that server later needs adding here by hand —
- *  nothing derives this list automatically. */
+/** t-056 — the READ-ONLY tools of the pinned Trello MCP server build
+ *  (`bun .../magenio-mcp/trello-mcp/build/index.js`). This is an ALLOW-list, and
+ *  it is the load-bearing half of the classification: the runtime guard
+ *  (`HiveManager.isTrelloWriteBlocked` + the PreToolUse hook) blocks every Trello
+ *  tool that is NOT named here. A write tool added to a future server build is
+ *  therefore blocked the moment it appears, without anyone editing a list —
+ *  which is what a hand-written deny-list could not do.
+ *
+ *  `download_attachment` is classified READ: it fetches a file and mutates
+ *  nothing on the board (where that file lands is the agent's own sandbox's
+ *  business, not Trello's). */
+export const TRELLO_READ_TOOLS = [
+  'download_attachment',
+  'find_checklist_items_by_description',
+  'get_acceptance_criteria', 'get_active_board_info', 'get_board_custom_fields',
+  'get_board_labels', 'get_board_members', 'get_card', 'get_card_comments',
+  'get_card_history', 'get_cards_by_list_id', 'get_checklist_by_name',
+  'get_checklist_items', 'get_health', 'get_health_detailed', 'get_health_metadata',
+  'get_health_performance', 'get_lists', 'get_my_cards', 'get_recent_activity',
+  'list_boards', 'list_boards_in_workspace', 'list_workspaces', 'search_cards'
+] as const;
+
+/** t-056 — the write-mutating tools of the same build. Kept as an explicit list
+ *  because `permissions.deny` in the agent's settings file needs EXACT tool
+ *  names, not glob patterns: this is the in-settings half of the block, written
+ *  as `mcp__munder-trello__<name>`. The allow-list above is what makes the pair
+ *  fail-closed; this list only stops the known writes before the model asks
+ *  (defense in depth). */
 export const TRELLO_WRITE_TOOLS = [
   'add_card_to_list', 'update_card_details', 'archive_card', 'watch_card', 'watch_list',
   'move_card', 'add_list_to_board', 'archive_list', 'update_list', 'update_list_position',
@@ -96,6 +118,49 @@ export const TRELLO_WRITE_TOOLS = [
   'copy_card', 'copy_checklist', 'add_cards_to_list',
   'update_card_custom_field', 'perform_system_repair'
 ] as const;
+
+/** Every tool `tools/list` returns for the pinned build (58 = 34 write + 24 read).
+ *  The completeness set: the catalog test asserts each name is classified exactly
+ *  once and — when the built server is present on this machine — that the server
+ *  exposes nothing outside it, so an unclassified tool fails the suite instead of
+ *  shipping silently. Raise it only together with the pin, classifying anything
+ *  the new build added. */
+export const TRELLO_KNOWN_TOOLS = [...TRELLO_READ_TOOLS, ...TRELLO_WRITE_TOOLS] as const;
+
+/** The server id the agents' MCP tools are namespaced under. */
+export const TRELLO_MCP_SERVER_ID = 'munder-trello';
+
+/** The `mcp__<server>__<tool>` id Claude Code uses in settings/permission rules. */
+export function trelloToolId(tool: string): string {
+  return `mcp__${TRELLO_MCP_SERVER_ID}__${tool}`;
+}
+
+/** The exact-name deny list written into a non-god agent's settings.json. */
+export function trelloDeniedToolIds(): string[] {
+  return TRELLO_WRITE_TOOLS.map((t) => trelloToolId(t));
+}
+
+/** Is this a tool of the Trello server at all (either a namespaced id or one of
+ *  the bare names this build is known to expose)? Decides whether the fail-closed
+ *  policy below applies to a call. */
+export function isTrelloTool(toolName: string | undefined | null): boolean {
+  const name = (toolName ?? '').trim();
+  if (!name) return false;
+  if (name.startsWith(`mcp__${TRELLO_MCP_SERVER_ID}__`)) return true;
+  return (TRELLO_KNOWN_TOOLS as readonly string[]).includes(name);
+}
+
+/** The runtime decision, fail-closed: for an agent whose Trello writes are
+ *  blocked, a Trello call is allowed ONLY when it names a read tool. Anything
+ *  unrecognised — a tool a newer build added, a typo, an empty name — is denied,
+ *  and an empty name is denied too (no name, no read). */
+export function isTrelloReadOnlyCall(toolName: string | undefined | null): boolean {
+  const raw = (toolName ?? '').trim();
+  if (!raw) return false;
+  const prefix = `mcp__${TRELLO_MCP_SERVER_ID}__`;
+  const bare = raw.startsWith(prefix) ? raw.slice(prefix.length) : raw;
+  return (TRELLO_READ_TOOLS as readonly string[]).includes(bare);
+}
 
 /** Upstream repo of the Trello MCP server the installer clones, and the TAG it
  *  is pinned to. Pinned deliberately: the app builds this third-party code and

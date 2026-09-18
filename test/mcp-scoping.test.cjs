@@ -18,7 +18,28 @@ const { HiveManager } = loadTs('src/main/hive.ts');
 
 test.after(() => fs.rmSync(userData, { recursive: true, force: true }));
 
-const hive = new HiveManager(() => userData);
+const PM_ROLE = 'Project manager: routes tasks, tracks Jira, gates QA sign-off, reports to the Boss';
+const PM = { role: PM_ROLE, capabilities: ['project-management'] };
+
+// t-056 review fix: the role that grants the role-scoped server is read from the
+// app-owned privileged-role ledger (userData/agent-roles.json) — NOT from the
+// `roleMeta` handed to build() — so the ledger has to be seeded here, before the
+// first read (it is read once per process). `roleMeta` still carries the
+// provider/isGod facts and the pre-existing id-scoped path.
+const hive = new HiveManager(() => userData, undefined, () => userData);
+fs.writeFileSync(
+  path.join(userData, 'agent-roles.json'),
+  JSON.stringify({
+    version: 1,
+    roles: {
+      'pam-1': PM_ROLE,
+      'pam-9999-a-brand-new-restore-id': PM_ROLE,
+      // Deliberately recorded as a PM: the isGod exclusion below must be what
+      // keeps god out, not a hole in the ledger.
+      'a-god-shaped-id': PM_ROLE
+    }
+  })
+);
 const cwd = '/tmp/agent-cwd';
 
 // `buildDefaultMcpServers` is private in TypeScript only — at run time it is a
@@ -27,8 +48,6 @@ const cwd = '/tmp/agent-cwd';
 function build(cfg, agentId, roleMeta) {
   return hive['buildDefaultMcpServers'](cwd, cfg, agentId, roleMeta);
 }
-
-const PM = { role: 'Project manager: routes tasks, tracks Jira, gates QA sign-off, reports to the Boss', capabilities: ['project-management'] };
 
 /** A fully installed, credentialed Trello server on disk, so the preflight passes. */
 function installedTrello() {
@@ -130,6 +149,28 @@ test('a PM on a non-claude provider never receives the role-scoped server (permi
   assert.equal(build(cfg, 'pam-1', { ...PM, provider: 'codex' })['munder-trello'], undefined);
   assert.ok(build(cfg, 'pam-1', { ...PM, provider: 'claude' })['munder-trello'], 'an explicit claude provider still works');
   assert.ok(build(cfg, 'pam-1', PM)['munder-trello'], 'an unset provider defaults to claude (today\'s only interactive-agent default)');
+});
+
+test('a PM-looking roleMeta is NOT enough — only the app-owned ledger grants the role path', () => {
+  // The review fix in one test. `roleMeta` is registry-derived at spawn (the
+  // floor roster's description round-trips through registry.json, which agents
+  // can write): an agent that writes `role: PM` there must gain nothing. The
+  // ledger is what the app itself recorded, in a directory agents cannot write.
+  const { command, args } = installedTrello();
+  const cfg = { trello: { enabled: true, agents: ['god'], roles: ['pm'], command, args } };
+  assert.equal(
+    build(cfg, 'worker-1-pretending', PM)['munder-trello'],
+    undefined,
+    'a PM role in the spawn meta must not grant the server on its own'
+  );
+  assert.equal(build(cfg, 'worker-1-pretending', { role: 'PM', capabilities: ['project manager'] })['munder-trello'], undefined);
+  // Same agent id, same meta — the only difference is the ledger entry.
+  fs.writeFileSync(
+    path.join(userData, 'agent-roles.json'),
+    JSON.stringify({ version: 1, roles: { 'pam-1': PM_ROLE, 'pam-9999-a-brand-new-restore-id': PM_ROLE, 'a-god-shaped-id': PM_ROLE, 'worker-1-pretending': PM_ROLE } })
+  );
+  const hive2 = new HiveManager(() => userData, undefined, () => userData);
+  assert.ok(hive2['buildDefaultMcpServers'](cwd, cfg, 'worker-1-pretending', PM)['munder-trello'], 'an app-recorded PM role does grant it');
 });
 
 // ─── t-056: hookSettings blocks Trello write tools for every non-god agent ────

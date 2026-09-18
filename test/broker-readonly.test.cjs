@@ -1,9 +1,14 @@
 'use strict';
 
-// t-056: a PM (Pam) gets a broker capability that is GET-only — grant(..., {
-// readOnly: true }) — checked once, before any route dispatch, so it covers
+// t-056: a PM (Pam) gets a broker capability that is READ-ONLY — grant(...,
+// { readOnly: true }) — checked once, before any route dispatch, so it covers
 // every route uniformly (the integration proxy, /jira-bindings, agent control),
 // not just the one the PM is expected to use today.
+//
+// t-056 review fix: exactly ONE write is excepted, the agent-control THAW post.
+// The read-only token exists so a PM can read Jira bindings and bring a parked
+// teammate back (t-040) without a human; it must not be able to freeze anyone,
+// and it must not be able to smuggle a write through in a header.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -31,15 +36,42 @@ test('a read-only token may GET /jira-bindings', async () => {
   broker.stop();
 });
 
-test('a read-only token cannot POST to the agent-control route', async () => {
+test('a read-only token MAY POST the agent-control thaw (t-040: a PM can wake a parked teammate)', async () => {
   const { broker, calls } = makeBroker();
   await broker.start();
   const token = broker.grant('pam-1', [], { readOnly: true });
   const res = await fetch(`${broker.url()}/agents/andy-mtiqqouu/thaw`, {
     method: 'POST', headers: { 'x-md-broker-token': token }
   });
+  assert.equal(res.status, 200);
+  assert.deepEqual(calls, [{ agentId: 'andy-mtiqqouu', frozen: false }]);
+  broker.stop();
+});
+
+test('a read-only token cannot POST the agent-control FREEZE (thaw is the only exception)', async () => {
+  const { broker, calls } = makeBroker();
+  await broker.start();
+  const token = broker.grant('pam-1', [], { readOnly: true });
+  const res = await fetch(`${broker.url()}/agents/andy-mtiqqouu/freeze`, {
+    method: 'POST', headers: { 'x-md-broker-token': token }
+  });
   assert.equal(res.status, 403);
   assert.deepEqual(calls, [], 'the dep must never be reached for a rejected write');
+  broker.stop();
+});
+
+test('a read-only token cannot smuggle a write through X-HTTP-Method-Override', async () => {
+  const { broker } = makeBroker();
+  await broker.start();
+  const token = broker.grant('pam-1', ['jira'], { readOnly: true });
+  // A permitted GET, but the proxy forwards the header verbatim and a downstream
+  // server that honours the override would execute the write instead.
+  const res = await fetch(`${broker.url()}/i/jira/rest/api/3/issue`, {
+    headers: { 'x-md-broker-token': token, 'x-http-method-override': 'POST' }
+  });
+  assert.equal(res.status, 403);
+  const body = await res.json();
+  assert.match(body.error, /read-only/);
   broker.stop();
 });
 
