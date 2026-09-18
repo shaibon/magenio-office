@@ -37,9 +37,10 @@ import {
   bridgeOf,
   type AgentProvider
 } from '../shared/agentProvider';
-import { MCP_CATALOG } from '../shared/mcpCatalog';
+import { MCP_CATALOG, trelloDeniedToolIds } from '../shared/mcpCatalog';
 import { selectBroadcastTargets } from '../shared/broadcast';
-import { preferredAgentRole } from '../shared/agentRole';
+import { preferredAgentRole, isPmRole } from '../shared/agentRole';
+import { emptyRoleLedger, ledgerRole, normalizeRoleLedger, rememberLedgerRole, type RoleLedger } from '../shared/roleLedger';
 import { mergeTaskLedger } from '../shared/taskLedger';
 import { expandTilde } from './fs';
 import { resolveGodName } from '../shared/godIdentity';
@@ -49,7 +50,7 @@ import { checkMcpPresence, nodePresenceDeps } from './mcpProvision';
  *  Kept as a local shape so hive.ts never imports the foundation-owned config
  *  module just for a type. */
 type McpDefaultsMap =
-  | { [id: string]: { enabled: boolean; agents?: string[]; command?: string; args?: string[] } }
+  | { [id: string]: { enabled: boolean; agents?: string[]; roles?: string[]; command?: string; args?: string[] } }
   | undefined;
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -361,8 +362,26 @@ export class HiveManager {
    */
   constructor(
     private getHome: () => string | null,
-    private emit?: (channel: string, payload: unknown) => boolean | void
+    private emit?: (channel: string, payload: unknown) => boolean | void,
+    /** t-056: the app-owned data dir (Electron userData) holding the privileged
+     *  role ledger. It MUST be a directory agents cannot write — deliberately not
+     *  one of `sandboxWritableDirs()`' entries — because it is the only source of
+     *  the role that grants the broker token and the role-scoped Trello server.
+     *  Defaults to "no dir" so a headless/test caller gets NO role privilege
+     *  rather than a permissive default: fail-closed. */
+    private getAppDataDir: () => string | null = () => null
   ) {}
+
+  /** agentId → the spawn-time Trello policy: this agent holds the server but may
+   *  only call its read tools. In memory, written when the settings file is built,
+   *  never read from disk — so it cannot be edited by the agent it constrains. The
+   *  PreToolUse hook (hooks.ts) consults it; that is what makes the tool block
+   *  fail-closed instead of a list of names someone has to keep up to date. */
+  private trelloWriteBlocked = new Set<string>();
+
+  /** The role ledger, read once per process. Lazy so a caller that never spawns
+   *  (tests, headless) never touches the disk. */
+  private roleLedgerCache: RoleLedger | null = null;
 
   private routerTimer: NodeJS.Timeout | null = null;
 
@@ -725,8 +744,20 @@ export class HiveManager {
     const reg = this.registry();
     const prev = reg.agents[meta.id];
     if (meta.cwd) meta = { ...meta, cwd: expandTilde(meta.cwd) };
+    /** t-056: the role the SPAWN REQUEST carried, captured BEFORE the registry
+     *  fallback below can fold `prev.role` into it. Only this value may become a
+     *  privilege — `prev.role` comes from registry.json, which sits in a
+     *  directory the agents can write. */
+    const requestedRole = meta.role;
     const role = preferredAgentRole(meta.role, prev?.role, !!meta.isGod);
     meta = { ...meta, role };
+
+    // t-056: record the requested role in the app-owned ledger, ONCE per agent
+    // id. That ledger — not registry.json — is what grants the broker token and
+    // the role-scoped Trello server (see shared/roleLedger.ts). First sighting
+    // only: an id that already has an entry keeps it, so an agent editing its own
+    // registry role after this point changes nothing.
+    this.rememberPrivilegedRole(meta.id, requestedRole);
 
     const identity = join(dir, 'identity.md');
     writeFileSync(identity, this.identityText(meta), 'utf8'); // refresh on each spawn
@@ -977,7 +1008,7 @@ export class HiveManager {
     if (sock && shim) {
       env.HIVE_SOCK = sock;
       const settingsPath = join(dir, 'settings.json');
-      this.writeJson(settingsPath, this.hookSettings(shim, meta.id, meta.cwd, opts.mcpDefaults, opts.theme, this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs)));
+      this.writeJson(settingsPath, this.hookSettings(shim, meta.id, meta.cwd, opts.mcpDefaults, opts.theme, this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs), meta));
       args.push('--settings', settingsPath);
     }
     return { args, env };
@@ -1158,7 +1189,70 @@ export class HiveManager {
     return Array.from(new Set(out));
   }
 
-  private hookSettings(shim: string, agentId: string, cwd: string, cfg: McpDefaultsMap, theme?: 'light' | 'dark', writableDirs: string[] = []): unknown {
+  // ─── t-056: the privileged role ledger ─────────────────────────────────────
+  // Broker/Trello privilege is decided from THIS ledger, never from
+  // registry.json (see shared/roleLedger.ts for why). The file lives in the
+  // app's own data directory, outside every agent's writable set.
+
+  private roleLedgerPath(): string | null {
+    const dir = this.getAppDataDir?.();
+    return dir ? join(dir, 'agent-roles.json') : null;
+  }
+
+  private roleLedger(): RoleLedger {
+    if (this.roleLedgerCache) return this.roleLedgerCache;
+    const path = this.roleLedgerPath();
+    // No app-data dir (headless/tests) → an EMPTY ledger. Never a fallback to
+    // registry.json: no ledger entry means no privilege (fail-closed).
+    this.roleLedgerCache = path
+      ? normalizeRoleLedger(this.readJson<unknown>(path, emptyRoleLedger()))
+      : emptyRoleLedger();
+    return this.roleLedgerCache;
+  }
+
+  /** Record the role a SPAWN REQUEST carried, once per agent id. Blank and
+   *  status-caption roles are ignored — they are run state, not a job. */
+  private rememberPrivilegedRole(agentId: string, role: string | undefined | null): void {
+    const path = this.roleLedgerPath();
+    if (!path) return;
+    const ledger = this.roleLedger();
+    if (!rememberLedgerRole(ledger, agentId, role, { onlyIfAbsent: true })) return;
+    try {
+      mkdirSync(dirname(path), { recursive: true });
+      this.writeJson(path, ledger);
+    } catch (e) {
+      console.error('[hive] could not record the privileged-role ledger:', e);
+    }
+  }
+
+  /** The durable role this app recorded for an agent ('' when it has none).
+   *  NEVER reads registry.json. */
+  privilegedRole(agentId: string): string {
+    return ledgerRole(this.roleLedger(), agentId);
+  }
+
+  /** Is this agent a PM by the APP'S OWN record? The one privileged-role
+   *  question, used for the broker token and the role-scoped Trello server. */
+  isPrivilegedPm(agentId: string): boolean {
+    return isPmRole({ role: this.privilegedRole(agentId) });
+  }
+
+  /** PreToolUse policy for the Trello server: true when this agent holds it but
+   *  is limited to its read tools. Set as the settings file is built, held in
+   *  memory — the agent cannot edit the record that constrains it. */
+  isTrelloWriteBlocked(agentId: string): boolean {
+    return this.trelloWriteBlocked.has(agentId);
+  }
+
+  private hookSettings(
+    shim: string,
+    agentId: string,
+    cwd: string,
+    cfg: McpDefaultsMap,
+    theme?: 'light' | 'dark',
+    writableDirs: string[] = [],
+    roleMeta?: Pick<AgentMeta, 'role' | 'capabilities' | 'isGod' | 'provider'>
+  ): unknown {
     // Bundled node, NOT bare `node` — see nodeLauncherPath(). Claude runs each of
     // these through `sh -c` with a stripped PATH, where `node` is often absent.
     const cmd = this.nodeRun(shim);
@@ -1166,7 +1260,18 @@ export class HiveManager {
       ...(matcher ? { matcher } : {}),
       hooks: [{ type: 'command', command: cmd }]
     });
-    const mcpServers = this.buildDefaultMcpServers(cwd, cfg, agentId);
+    const mcpServers = this.buildDefaultMcpServers(cwd, cfg, agentId, roleMeta);
+    // t-056: any non-god agent that received the Trello server (by id or by PM
+    // role — either path) has its write tools blocked here, not left to prompt
+    // discipline alone (only god's mission carries that discipline today).
+    // EXACT tool names only, no globs. This settings-level list is defense in
+    // depth: it stops the KNOWN writes before the model asks. The fail-closed
+    // half is the allow-list enforced at PreToolUse (hooks.ts consults
+    // isTrelloWriteBlocked below), which also covers a write tool a newer server
+    // build might add — a name this list cannot know.
+    const trelloWriteDeny = mcpServers['munder-trello'] && !roleMeta?.isGod ? trelloDeniedToolIds() : [];
+    if (trelloWriteDeny.length) this.trelloWriteBlocked.add(agentId);
+    else this.trelloWriteBlocked.delete(agentId);
     return {
       // Match the TUI's truecolor palette to the harness terminal theme —
       // PER SESSION, so the user's global Claude theme (their own terminals
@@ -1201,10 +1306,13 @@ export class HiveManager {
       // Edit/Write tools; with only one the agent deadlocks on its own inbox.
       // failIfUnavailable stays false: a platform without a sandbox (Windows)
       // runs as before rather than refusing to spawn.
-      ...(writableDirs.length
+      ...(writableDirs.length || trelloWriteDeny.length
         ? {
-            sandbox: { enabled: true, filesystem: { allowWrite: writableDirs } },
-            permissions: { additionalDirectories: writableDirs }
+            ...(writableDirs.length ? { sandbox: { enabled: true, filesystem: { allowWrite: writableDirs } } } : {}),
+            permissions: {
+              ...(writableDirs.length ? { additionalDirectories: writableDirs } : {}),
+              ...(trelloWriteDeny.length ? { deny: trelloWriteDeny } : {})
+            }
           }
         : {}),
       hooks: {
@@ -1234,7 +1342,8 @@ export class HiveManager {
   private buildDefaultMcpServers(
     cwd: string,
     cfg: McpDefaultsMap,
-    agentId: string
+    agentId: string,
+    roleMeta?: Pick<AgentMeta, 'role' | 'capabilities' | 'isGod' | 'provider'>
   ): Record<string, { command: string; args: string[]; env?: Record<string, string> }> {
     const out: Record<string, { command: string; args: string[]; env?: Record<string, string> }> = {};
     const presenceDeps = nodePresenceDeps();
@@ -1248,8 +1357,22 @@ export class HiveManager {
       // guards a hand-edited/partial mcpDefaults map too).
       if (e.tier !== 'safe-readonly' && consented !== true) continue;
       // Per-agent scoping: an empty or absent list means every agent, which is
-      // the behaviour every existing consent has.
-      if (consent?.agents?.length && !consent.agents.includes(agentId)) continue;
+      // the behaviour every existing consent has. `roles` (t-056) is a second,
+      // additive way in — by role text, not by an id that changes across a
+      // restore. That text comes from the app-owned privileged-role ledger
+      // (isPrivilegedPm), NOT from registry.json, which lives in a directory the
+      // agents can write: reading a privilege out of it is exactly the
+      // self-promotion this review flagged. `permissions.deny` + the PreToolUse
+      // allow-list (only wired for Claude Code) are what make a role-matched,
+      // non-god agent safe to hold this server at all — so the role path is
+      // restricted to `provider === 'claude'`: a PM on a provider that cannot
+      // enforce the block never receives the server.
+      const idAllowed = !consent?.agents?.length || consent.agents.includes(agentId);
+      const roleAllowed = !!consent?.roles?.length
+        && !roleMeta?.isGod
+        && this.isPrivilegedPm(agentId)
+        && (roleMeta?.provider ?? 'claude') === 'claude';
+      if (!idAllowed && !roleAllowed) continue;
 
       let command = e.spec.command;
       let args = e.spec.args.map((a) => (a === '<cwd>' ? cwd : a));

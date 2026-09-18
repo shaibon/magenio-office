@@ -240,7 +240,12 @@ const hive = new HiveManager(
     const wc = liveWebContents();
     if (!wc) return false;
     try { wc.send(channel, payload); return true; } catch { return false; }
-  }
+  },
+  // t-056: the app-owned privileged-role ledger lives in userData — OUTSIDE the
+  // agents' sandbox-writable set — so the role that grants the broker token and
+  // the role-scoped Trello server can never be self-assigned through
+  // registry.json. See shared/roleLedger.ts.
+  () => app.getPath('userData')
 );
 // #7C — operator control state (pause/gate/steer/halt), read by the HookServer
 // when deciding hook returns.
@@ -2873,8 +2878,16 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       // through pty:spawn -> spawnAgentCore, not the ephemeral-worker path (below,
       // ~processSpawnRequest) that already grants this to workers. Scoped to god
       // only — least privilege, not a blanket grant to every spawned agent.
-      if (opts.hive?.isGod && integrationBroker.running()) {
-        const token = integrationBroker.grant(opts.id, integrations.enabledIds());
+      // t-056: a PM (Pam) gets the same broker reach, by role, never by id — an id
+      // changes across a restore, a role string survives it — and READ-ONLY:
+      // `grant(..., { readOnly: true })` rejects every non-GET at the broker
+      // itself (the one exception being the thaw POST a PM needs, t-040). The role
+      // is read from the app-owned role ledger (HiveManager.isPrivilegedPm), NOT
+      // from registry.json: that file sits in a directory agents can write, and an
+      // agent promoting itself to PM there must grant it nothing.
+      const isPm = hive.isPrivilegedPm(opts.id);
+      if ((opts.hive?.isGod || isPm) && integrationBroker.running()) {
+        const token = integrationBroker.grant(opts.id, integrations.enabledIds(), { readOnly: !opts.hive?.isGod });
         opts.env = { ...(opts.env ?? {}), MD_BROKER_URL: integrationBroker.url(), MD_BROKER_TOKEN: token };
       }
     } catch (e) {

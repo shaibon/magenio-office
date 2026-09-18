@@ -34,6 +34,17 @@ export function preferredAgentRole(
   return isGod ? 'orchestrator (god)' : 'agent';
 }
 
+/** t-056: is this agent a PM (a "Pam")? Matched by keyword against the durable
+ *  role/capabilities text, the same way `modelForRole` (config.ts) already picks
+ *  cheap-model helpers — there is no structured role enum, `role` is free text
+ *  set at hire. Never by agent id: an id changes across a restore, a role
+ *  string survives it. god is excluded even if its text somehow matched. */
+export function isPmRole(meta: { role?: string | null; capabilities?: string[] | null; isGod?: boolean } | undefined | null): boolean {
+  if (!meta || meta.isGod) return false;
+  const hay = `${meta.role ?? ''} ${(meta.capabilities ?? []).join(' ')}`.toLowerCase();
+  return /\b(pm|project manager)\b/.test(hay);
+}
+
 /** Role to send on spawn/restart. Omit a transient roster caption so the hive
  *  registry can keep the last real hire role. */
 export function roleForHiveSpawn(agent: {
