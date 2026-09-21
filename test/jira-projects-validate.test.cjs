@@ -192,3 +192,17 @@ test('removeBinding removes by key case-insensitively and is a no-op otherwise',
   assert.deepEqual(removeBinding('GHOST'), []); // no-op, doesn't throw
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('magentoMcpConfig must be an absolute path to an existing file', async () => {
+  const repo = initRepo();
+  const deps = { isRepo, getBranches, agentExists: () => true };
+  const base = { key: 'MAGX', repo, baseBranch: 'develop', enabled: true };
+  const file = path.join(repo, 'm.json');
+  fs.writeFileSync(file, '{}');
+  assert.equal((await validateJiraProjectBinding({ ...base, magentoMcpConfig: file }, [], deps)).ok, true);
+  assert.equal((await validateJiraProjectBinding(base, [], deps)).ok, true, 'optional');
+  const rel = await validateJiraProjectBinding({ ...base, magentoMcpConfig: 'm.json' }, [], deps);
+  assert.match(rel.error, /absolute/);
+  const gone = await validateJiraProjectBinding({ ...base, magentoMcpConfig: path.join(repo, 'x.json') }, [], deps);
+  assert.match(gone.error, /does not exist/);
+});

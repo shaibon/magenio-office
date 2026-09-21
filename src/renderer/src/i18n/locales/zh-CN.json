@@ -1347,6 +1347,8 @@
     "keyHint": "例如“BURD”。创建后不可更改。",
     "repo": "仓库路径",
     "baseBranch": "基础分支",
+    "magentoConfig": "Magento MCP 配置（可选）",
+    "magentoConfigHint": "此项目的 magento-mcp JSON 的绝对路径。只有该项目的代理能使用生产 Magento 服务器；留空 = 不挂载。代理无法读取该文件。",
     "agents": "代理",
     "agentsHint": "留空表示任意代理。",
     "enabled": "已启用",

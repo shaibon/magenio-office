@@ -7,6 +7,7 @@
  * against throwaway repos (see test/jira-projects-validate.test.cjs).
  */
 import { existsSync } from 'node:fs';
+import { isAbsolute } from 'node:path';
 import {
   type JiraProjectBinding,
   validateJiraKeyFormat,
@@ -83,6 +84,12 @@ export async function validateJiraProjectBinding(
   if (binding.trello) {
     const trelloError = validateTrelloIntake(binding.trello);
     if (trelloError) return { ok: false, error: trelloError };
+  }
+
+  const magento = binding.magentoMcpConfig?.trim();
+  if (magento) {
+    if (!isAbsolute(magento)) return { ok: false, error: `Magento MCP config must be an absolute path: ${magento}` };
+    if (!existsSync(magento)) return { ok: false, error: `Magento MCP config file does not exist: ${magento}` };
   }
 
   if (deps.testJiraKey) {
