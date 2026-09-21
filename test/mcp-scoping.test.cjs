@@ -45,8 +45,8 @@ const cwd = '/tmp/agent-cwd';
 // `buildDefaultMcpServers` is private in TypeScript only — at run time it is a
 // plain method, and calling it directly is far more precise than reconstructing
 // a whole spawn just to read one block of the settings file.
-function build(cfg, agentId, roleMeta) {
-  return hive['buildDefaultMcpServers'](cwd, cfg, agentId, roleMeta);
+function build(cfg, agentId, roleMeta, magentoConfig) {
+  return hive['buildDefaultMcpServers'](cwd, cfg, agentId, roleMeta, magentoConfig);
 }
 
 /** A fully installed, credentialed Trello server on disk, so the preflight passes. */
@@ -203,4 +203,66 @@ test('hookSettings adds no permissions block at all when Trello is not enabled',
   const cfg = { 'sequential-thinking': { enabled: true } };
   const settings = hookSettingsFor(cfg, 'pam-1', PM);
   assert.equal(settings.permissions, undefined);
+});
+
+// ─── t-063: Magento production MCP — per-project scoping + credential isolation ──
+
+const { magentoConfigForProject, magentoDeniedReadPaths, MAGENTO_CONFIG_DIR } = loadTs('src/main/magentoMcp.ts');
+
+function installedMagento() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'md-mcp-magento-'));
+  fs.mkdirSync(path.join(root, 'dist'));
+  fs.writeFileSync(path.join(root, 'dist', 'index.js'), '// server');
+  const command = path.join(root, 'node');
+  fs.writeFileSync(command, '#!/bin/sh\n');
+  fs.chmodSync(command, 0o755);
+  return { command, args: [path.join(root, 'dist', 'index.js')], root };
+}
+
+const BINDINGS = [
+  { key: 'BURD', repo: '/r/burd', baseBranch: 'develop', enabled: true, magentoMcpConfig: '/cfg/burd.json' },
+  { key: 'BRAVI', repo: '/r/bravi', baseBranch: 'develop', enabled: true, magentoMcpConfig: '/cfg/bravi.json' },
+  { key: 'RISTO', repo: '/r/risto', baseBranch: 'develop', enabled: true }
+];
+
+test('magento: an agent gets --config of ITS project only', () => {
+  const { command, args } = installedMagento();
+  const cfg = { magento: { enabled: true, command, args } };
+  const burd = build(cfg, 'a1', undefined, magentoConfigForProject('BURD', BINDINGS))['munder-magento'];
+  assert.deepEqual(burd.args, [args[0], '--config', '/cfg/burd.json']);
+  assert.ok(!JSON.stringify(burd).includes('bravi'), "another project's config must never appear");
+});
+
+test('magento: no project, no config, or disabled binding → server not mounted', () => {
+  const { command, args } = installedMagento();
+  const cfg = { magento: { enabled: true, command, args } };
+  for (const project of [undefined, 'RISTO', 'NOPE']) {
+    assert.equal(build(cfg, 'a1', undefined, magentoConfigForProject(project, BINDINGS))['munder-magento'], undefined);
+  }
+  const off = [{ ...BINDINGS[0], enabled: false }];
+  assert.equal(magentoConfigForProject('BURD', off), undefined);
+});
+
+test('magento: default (no consent) and a missing entry file are not mounted', () => {
+  assert.equal(build({}, 'a1', undefined, '/cfg/burd.json')['munder-magento'], undefined);
+  const { command } = installedMagento();
+  const cfg = { magento: { enabled: true, command, args: ['/nowhere/dist/index.js'] } };
+  assert.equal(build(cfg, 'a1', undefined, '/cfg/burd.json')['munder-magento'], undefined);
+});
+
+test('magento: deny list covers config dir, every config and referenced ssh keys', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-magento-cfg-'));
+  const c1 = path.join(dir, 'burd.json');
+  fs.writeFileSync(c1, JSON.stringify({ ssh: { privateKey: '~/.ssh/burd' } }));
+  const bindings = [{ ...BINDINGS[0], magentoMcpConfig: c1 }, BINDINGS[1]];
+  const deny = magentoDeniedReadPaths(bindings);
+  assert.ok(deny.includes(MAGENTO_CONFIG_DIR));
+  assert.ok(deny.includes(c1) && deny.includes('/cfg/bravi.json'), 'unreadable config is still denied');
+  assert.ok(deny.includes(path.join(os.homedir(), '.ssh', 'burd')), '~ is expanded');
+
+  const s = hive['hookSettings']('shim.cjs', 'a1', cwd, {}, undefined, [], undefined, { config: c1, denyRead: deny });
+  assert.deepEqual(s.sandbox.filesystem.denyRead, deny);
+  assert.ok(s.permissions.deny.includes(`Read(${c1})`));
+  const plain = hive['hookSettings']('shim.cjs', 'a1', cwd, {}, undefined, [], undefined, undefined);
+  assert.equal(plain.sandbox, undefined, 'no magento bindings → settings unchanged');
 });

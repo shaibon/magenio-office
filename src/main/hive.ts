@@ -707,6 +707,10 @@ export class HiveManager {
       /** Consent state for the default-MCP bundle (W3). Threaded from the live
        *  HarnessConfig by the caller; undefined → catalog defaults apply. */
       mcpDefaults?: { [id: string]: { enabled: boolean } };
+      /** Magento production MCP scoping, resolved by the caller (async project
+       *  lookup lives in main/index.ts): the agent's OWN project config path
+       *  (undefined → server not mounted) and every path agents must not read. */
+      magento?: { config?: string; denyRead: string[] };
       /** App-resources `skills/` source dir (W3). The bundled read-only skills are
        *  copied into the agent's `.claude/skills/` per spawn; undefined or missing
        *  is a no-op (tolerated until Kevin populates the resource dir). */
@@ -1008,7 +1012,7 @@ export class HiveManager {
     if (sock && shim) {
       env.HIVE_SOCK = sock;
       const settingsPath = join(dir, 'settings.json');
-      this.writeJson(settingsPath, this.hookSettings(shim, meta.id, meta.cwd, opts.mcpDefaults, opts.theme, this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs), meta));
+      this.writeJson(settingsPath, this.hookSettings(shim, meta.id, meta.cwd, opts.mcpDefaults, opts.theme, this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs), meta, opts.magento));
       args.push('--settings', settingsPath);
     }
     return { args, env };
@@ -1251,7 +1255,8 @@ export class HiveManager {
     cfg: McpDefaultsMap,
     theme?: 'light' | 'dark',
     writableDirs: string[] = [],
-    roleMeta?: Pick<AgentMeta, 'role' | 'capabilities' | 'isGod' | 'provider'>
+    roleMeta?: Pick<AgentMeta, 'role' | 'capabilities' | 'isGod' | 'provider'>,
+    magento?: { config?: string; denyRead: string[] }
   ): unknown {
     // Bundled node, NOT bare `node` — see nodeLauncherPath(). Claude runs each of
     // these through `sh -c` with a stripped PATH, where `node` is often absent.
@@ -1260,7 +1265,12 @@ export class HiveManager {
       ...(matcher ? { matcher } : {}),
       hooks: [{ type: 'command', command: cmd }]
     });
-    const mcpServers = this.buildDefaultMcpServers(cwd, cfg, agentId, roleMeta);
+    const mcpServers = this.buildDefaultMcpServers(cwd, cfg, agentId, roleMeta, magento?.config);
+    // Credential isolation for the Magento MCP: no agent may read any project's
+    // magento config or the SSH keys it names (the MCP process itself runs outside
+    // the Bash sandbox). Bash children via sandbox.filesystem.denyRead, the Read
+    // tool via permissions.deny.
+    const magentoDeny = magento?.denyRead ?? [];
     // t-056: any non-god agent that received the Trello server (by id or by PM
     // role — either path) has its write tools blocked here, not left to prompt
     // discipline alone (only god's mission carries that discipline today).
@@ -1306,12 +1316,24 @@ export class HiveManager {
       // Edit/Write tools; with only one the agent deadlocks on its own inbox.
       // failIfUnavailable stays false: a platform without a sandbox (Windows)
       // runs as before rather than refusing to spawn.
-      ...(writableDirs.length || trelloWriteDeny.length
+      ...(writableDirs.length || trelloWriteDeny.length || magentoDeny.length
         ? {
-            ...(writableDirs.length ? { sandbox: { enabled: true, filesystem: { allowWrite: writableDirs } } } : {}),
+            ...(writableDirs.length || magentoDeny.length
+              ? {
+                  sandbox: {
+                    enabled: true,
+                    filesystem: {
+                      ...(writableDirs.length ? { allowWrite: writableDirs } : {}),
+                      ...(magentoDeny.length ? { denyRead: magentoDeny } : {})
+                    }
+                  }
+                }
+              : {}),
             permissions: {
               ...(writableDirs.length ? { additionalDirectories: writableDirs } : {}),
-              ...(trelloWriteDeny.length ? { deny: trelloWriteDeny } : {})
+              ...(trelloWriteDeny.length || magentoDeny.length
+                ? { deny: [...trelloWriteDeny, ...magentoDeny.flatMap((p) => [`Read(${p})`, `Read(${p}/**)`])] }
+                : {})
             }
           }
         : {}),
@@ -1343,7 +1365,8 @@ export class HiveManager {
     cwd: string,
     cfg: McpDefaultsMap,
     agentId: string,
-    roleMeta?: Pick<AgentMeta, 'role' | 'capabilities' | 'isGod' | 'provider'>
+    roleMeta?: Pick<AgentMeta, 'role' | 'capabilities' | 'isGod' | 'provider'>,
+    magentoConfig?: string
   ): Record<string, { command: string; args: string[]; env?: Record<string, string> }> {
     const out: Record<string, { command: string; args: string[]; env?: Record<string, string> }> = {};
     const presenceDeps = nodePresenceDeps();
@@ -1394,6 +1417,15 @@ export class HiveManager {
         }
         command = consent!.command!.trim();
         args = [...consent!.args!];
+        // Magento: one process per project. No project config → fail closed (no
+        // server); never a config other than the agent's own project's.
+        if (e.id === 'magento') {
+          if (!magentoConfig) {
+            console.error(`[hive] MCP 'magento' not wired for ${agentId}: no project Magento config`);
+            continue;
+          }
+          args = [args[0], '--config', magentoConfig];
+        }
       }
 
       out[`munder-${e.id}`] = {
