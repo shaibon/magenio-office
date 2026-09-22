@@ -34,7 +34,10 @@ const ALL_OFF = Object.fromEntries(MCP_CATALOG.map((e) => [e.id, { enabled: fals
 test.after(() => fs.rmSync(userData, { recursive: true, force: true }));
 
 const hive = new HiveManager(() => userData);
+// A repo-shaped cwd: `git` is scoped to the agent cwd, and t-067 mounts it only
+// inside a git working tree, so the scoping assertion below needs a real one.
 const CWD = fs.mkdtempSync(path.join(os.tmpdir(), 'md-codex-cwd-'));
+fs.writeFileSync(path.join(CWD, '.git'), 'gitdir: /elsewhere/.git/worktrees/x\n');
 test.after(() => fs.rmSync(CWD, { recursive: true, force: true }));
 
 /** A fully installed user-configured server on disk, so the preflight passes. */
@@ -129,9 +132,23 @@ test('the write tier is withheld from a non-god codex agent (no hook-side block 
   assert.equal(tables(cfg, 'god', { isGod: true }).includes('munder-trello'), true);
 });
 
-test('the secret tier is NOT withheld: a read-only keyed server still reaches codex', () => {
-  const toml = tables({ 'search-with-key': { enabled: true } }, 'jim-1');
-  assert.match(toml, /\[mcp_servers\.munder-search-with-key\]/);
+test('the secret tier is NOT withheld by the codex filter (only the write tier is)', () => {
+  // codexMcpServers drops the `write` tier for a non-god agent and nothing else:
+  // Magento — a secret-tier, read-only, per-project server — still reaches codex
+  // (the tests above assert that end to end). `search-with-key` is a SEPARATE case:
+  // it is a secret-tier server whose key is still the catalog's empty placeholder,
+  // so t-067's empty-env rule skips it for both providers while it stays unset.
+  const kept = codexMcpServers(
+    { 'munder-magento': { command: 'node', args: ['x.js'] }, 'munder-filesystem': { command: 'npx', args: [] } },
+    { isGod: false }
+  );
+  assert.ok(kept['munder-magento'], 'a secret-tier server is not withheld');
+  assert.ok(kept['munder-filesystem'], 'and neither is a safe-readonly one');
+
+  const installed = installedServer();
+  const toml = tables({ 'search-with-key': { enabled: true }, magento: { enabled: true, ...installed } }, 'jim-1', {}, '/tmp/p.json');
+  assert.equal(toml.includes('munder-search-with-key'), false, 'empty key -> not mounted (t-067)');
+  assert.match(toml, /\[mcp_servers\.munder-magento\]/, 'a configured secret-tier server still reaches codex');
 });
 
 test('codexMcpServers keeps every safe-readonly server and drops only the write tier', () => {
