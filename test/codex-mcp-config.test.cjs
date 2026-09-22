@@ -151,10 +151,81 @@ test('the secret tier is NOT withheld by the codex filter (only the write tier i
   assert.match(toml, /\[mcp_servers\.munder-magento\]/, 'a configured secret-tier server still reaches codex');
 });
 
-test('codexMcpServers keeps every safe-readonly server and drops only the write tier', () => {
+test('codexMcpServers keeps the sandboxed servers and drops the write tier for a non-god agent', () => {
   const s = { 'munder-time': { command: 'uvx', args: ['t'] }, 'munder-trello': { command: 'bun', args: ['x'] } };
   assert.deepEqual(Object.keys(codexMcpServers(s, { isGod: false })), ['munder-time']);
   assert.deepEqual(Object.keys(codexMcpServers(s, { isGod: true })).sort(), ['munder-time', 'munder-trello']);
+});
+
+/** The servers withheld from a non-god codex agent because their tools put
+ *  caller-supplied text on the wire to something the hive does not control. */
+const EGRESS_SERVERS = ['fetch', 'context7'];
+
+test('the unsandboxed egress servers are withheld from a non-god codex agent', () => {
+  // t-070 review: with the tools pre-approved, a `fetch`/`context7` call is an
+  // egress channel no human sees. codex has no PreToolUse allow-list, so the only
+  // safe option on that provider is not to mount them.
+  const s = {};
+  for (const id of EGRESS_SERVERS) s[`munder-${id}`] = { command: 'uvx', args: [id] };
+  s['munder-time'] = { command: 'uvx', args: ['t'] };
+  assert.deepEqual(Object.keys(codexMcpServers(s, { isGod: false })), ['munder-time']);
+  assert.deepEqual(Object.keys(codexMcpServers(s, { isGod: true })).sort(),
+    ['munder-context7', 'munder-fetch', 'munder-time']);
+
+  const cfg = { time: { enabled: true } };
+  for (const id of EGRESS_SERVERS) cfg[id] = { enabled: true };
+  const toml = tables(cfg, 'jim-1');
+  for (const id of EGRESS_SERVERS) {
+    assert.equal(toml.includes(`munder-${id}`), false, `a non-god codex agent never gets ${id}`);
+    assert.match(tables({ [id]: { enabled: true } }, 'god', { isGod: true }), new RegExp(`\\[mcp_servers\\.munder-${id}\\]`));
+  }
+  assert.match(toml, /\[mcp_servers\.munder-time\]/, 'the other servers are unaffected');
+});
+
+test('the egress exclusion is codex-only: the Claude path still mounts them', () => {
+  // The guard lives in codexMcpServers, not in the shared catalog builder — the
+  // Claude path has the allow-list + permission prompts that make them usable.
+  const cfg = { ...ALL_OFF };
+  for (const id of EGRESS_SERVERS) cfg[id] = { enabled: true };
+  const map = hive['buildDefaultMcpServers'](CWD, cfg, 'jim-claude', { role: 'dev', provider: 'claude' });
+  for (const id of EGRESS_SERVERS) assert.ok(map[`munder-${id}`], `the Claude path is untouched by a codex-only guard (${id})`);
+});
+
+// ─── t-070: the tools must be CALLABLE, not just visible ─────────────────────
+
+test('every managed server is mounted pre-approved: codex never waits for a human', () => {
+  const toml = codexMcpToml({ 'munder-time': { command: 'uvx', args: ['mcp-server-time'] } });
+  assert.match(toml, /default_tools_approval_mode = "approve"/);
+});
+
+test('the pre-approval lands in the SERVER table, before any env sub-table', () => {
+  const toml = codexMcpToml({
+    'munder-search': { command: 'npx', args: ['-y', 'pkg'], env: { BRAVE_API_KEY: 'k' } }
+  });
+  const mode = toml.indexOf('default_tools_approval_mode');
+  const env = toml.indexOf('[mcp_servers.munder-search.env]');
+  assert.ok(mode > 0, 'the mode is written');
+  assert.ok(mode < env, 'a key after the env header would land in the env table');
+});
+
+test('the value is the one codex 0.155.1 accepts, and the only one that never prompts', () => {
+  // Verified on the binary: a bogus value fails with
+  // "unknown variant `zzz`, expected one of `auto`, `prompt`, `writes`, `approve`".
+  const toml = codexMcpToml({ 'munder-magento': { command: 'node', args: ['x.js'] } });
+  assert.match(toml, /default_tools_approval_mode = "approve"/);
+  assert.equal(/default_tools_approval_mode = "(auto|prompt|writes)"/.test(toml), false);
+});
+
+test('the write tier keeps codex\'s own gating — no pre-approval on write tools', () => {
+  const toml = codexMcpToml({ 'munder-trello': { command: 'bun', args: ['x'] } });
+  assert.match(toml, /\[mcp_servers\.munder-trello\]/, 'the table itself is still rendered');
+  assert.equal(toml.includes('default_tools_approval_mode'), false,
+    'the codex path has no PreToolUse allow-list, so its own gating is the only control');
+});
+
+test('a real codex agent config carries the pre-approval end to end', () => {
+  const toml = tables({ time: { enabled: true } }, 'jim-1');
+  assert.match(toml, /\[mcp_servers\.munder-time\][\s\S]*default_tools_approval_mode = "approve"/);
 });
 
 // ─── the wiring (the spawn path really uses the generator) ───────────────────
