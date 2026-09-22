@@ -45,6 +45,7 @@ import { mergeTaskLedger } from '../shared/taskLedger';
 import { expandTilde } from './fs';
 import { resolveGodName } from '../shared/godIdentity';
 import { checkMcpPresence, nodePresenceDeps } from './mcpProvision';
+import { codexMcpServers, codexMcpToml } from '../shared/codexMcp';
 
 /** The subset of HarnessConfig the hive consumes for the default-MCP merge.
  *  Kept as a local shape so hive.ts never imports the foundation-owned config
@@ -945,7 +946,7 @@ export class HiveManager {
             if (desc.shim === 'agy') this.installAgyHooks();
             else if (desc.shim === 'deepcode') this.installDeepcodeSettings(meta, opts.autoMode ?? true, opts.model);
             else if (desc.shim === 'codex') {
-              env.CODEX_HOME = this.installCodexHooks(dir, meta.id);
+              env.CODEX_HOME = this.installCodexHooks(dir, meta.id, this.codexMcpTables(meta, opts));
               // Codex refuses to run hooks from a config dir without persisted
               // "hook trust" (normally an interactive gate). Our hooks.json is
               // hive-authored inside an isolated CODEX_HOME, so we bypass that gate
@@ -2382,6 +2383,27 @@ export class HiveManager {
     return settingsPath;
   }
 
+  /**
+   * t-065 — the codex counterpart of the Claude path's `mcp.json`.
+   *
+   * Same source map (`buildDefaultMcpServers`: consent ∩ catalog, `munder-*`
+   * namespacing, filesystem/git scoped to the agent cwd, Magento resolved per
+   * project and fail-closed without a binding), rendered as the `[mcp_servers.*]`
+   * tables codex actually reads instead of the JSON file Claude Code needs
+   * `--mcp-config` for. The role-based consent path inside
+   * `buildDefaultMcpServers` is already restricted to `provider === 'claude'`, so
+   * a codex agent can only ever receive a server by plain enablement or by an
+   * explicit agent-id allow-list; `codexMcpServers` withholds the `write` tier
+   * from a non-god agent on top of that. Returns '' when nothing is enabled.
+   */
+  private codexMcpTables(
+    meta: Pick<AgentMeta, 'id' | 'cwd' | 'role' | 'capabilities' | 'isGod' | 'provider'>,
+    opts: { mcpDefaults?: McpDefaultsMap; magento?: { config?: string } }
+  ): string {
+    const servers = this.buildDefaultMcpServers(meta.cwd, opts.mcpDefaults, meta.id, meta, opts.magento?.config);
+    return codexMcpToml(codexMcpServers(servers, { isGod: !!meta.isGod }));
+  }
+
   /** Codex lifecycle-hook bridge → full hive parity for a `codex` worker (live
    *  status + Stop→inbox-drain), the codex counterpart of installAgyHooks().
    *
@@ -2395,13 +2417,18 @@ export class HiveManager {
    *  ISOLATION: rather than mutate the user's global Codex configuration (which
    *  also holds their login), we point this worker at a PER-AGENT CODEX_HOME
    *  (`<dir>/.codex`, alongside Claude's settings.json) holding our own config.toml
-   *  with `[hooks]` tables — so the hooks fire ONLY for hive workers and a personal
+   *  hook `[hooks]` tables and the default MCP servers' `[mcp_servers]` tables —
+   *  so both fire ONLY for hive workers and a personal
    *  `codex` run is untouched. Rollout directories are linked into that isolated
    *  home from namespaced paths under the standard global scan roots. The user's
    *  ~/.codex/auth.json is linked in and their config.toml is copied + extended
    *  (login + model/provider/trust settings still apply).
+   *  `mcpTables` is the pre-rendered TOML block from `codexMcpTables()` (t-065):
+   *  codex reads external servers from `config.toml` only, so the default-MCP
+   *  bundle reaches a codex agent through this file and nowhere else. Empty when
+   *  nothing is enabled, in which case the file is byte-identical to before.
    *  Returns the CODEX_HOME path for the caller to put in the worker's env. */
-  private installCodexHooks(dir: string, agentId: string): string {
+  private installCodexHooks(dir: string, agentId: string, mcpTables = ''): string {
     const home = join(dir, '.codex');
     try {
       mkdirSync(home, { recursive: true });
@@ -2471,6 +2498,11 @@ export class HiveManager {
           config += `\n[[hooks.${ev}]]\n[[hooks.${ev}.hooks]]\ntype = "command"\ncommand = ${JSON.stringify(command)}\ntimeout = 30\n`;
         }
       }
+      // t-065: the default-MCP bundle, in the only surface codex reads it from.
+      // Appended AFTER the hooks so a server name can never land inside a
+      // `[[hooks.*]]` table, and appended to (never replacing) the user's seeded
+      // config, whose own `[mcp_servers.*]` entries stay intact and visible.
+      config += mcpTables;
       writeFileSync(join(home, 'config.toml'), config, 'utf8');
 
       // Keep each worker's CODEX_HOME isolated while putting its rollout data
