@@ -1075,6 +1075,19 @@ export class HiveManager {
       const settingsPath = join(dir, 'settings.json');
       this.writeJson(settingsPath, this.hookSettings(shim, meta.id, meta.cwd, opts.mcpDefaults, opts.theme, this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs), meta, opts.magento));
       args.push('--settings', settingsPath);
+      // Claude Code ignores `mcpServers` inside --settings (see hookSettings) —
+      // it only reads MCP server definitions from a file passed via
+      // --mcp-config. Same catalog, same scoping (buildDefaultMcpServers is the
+      // single source both this and hookSettings' Trello-deny check read from),
+      // just handed to Claude through the flag it actually honors. Omitted
+      // entirely when no server is enabled, so a plain worker spawns with no
+      // --mcp-config at all.
+      const mcpServers = this.buildDefaultMcpServers(meta.cwd, opts.mcpDefaults, meta.id, meta, opts.magento?.config);
+      if (Object.keys(mcpServers).length) {
+        const mcpConfigPath = join(dir, 'mcp.json');
+        this.writeJson(mcpConfigPath, { mcpServers });
+        args.push('--mcp-config', mcpConfigPath);
+      }
     }
     return { args, env };
   }
@@ -1356,11 +1369,13 @@ export class HiveManager {
       // listens. The terminal reports the current theme the moment the CLI enables
       // 2031, so startup still matches without pinning anything.
       ...(theme ? { theme: 'auto' } : {}),
-      // W3 — default skills/MCP bundle. Written into the PER-SESSION settings file
-      // only (never ~/.claude), so the user's own MCP servers are never clobbered;
-      // Claude merges this additively. Omitted entirely when empty so a settings
-      // file with no enabled servers is unchanged from before.
-      ...(Object.keys(mcpServers).length ? { mcpServers } : {}),
+      // W3 — default skills/MCP bundle. Claude Code does NOT load `mcpServers`
+      // from --settings (verified live: god's and Pam's settings both carried
+      // munder-* entries here and neither session ever saw the tools) — it only
+      // reads it from --mcp-config. The caller that writes this settings.json
+      // (the function that pushes `--settings`) writes a sibling mcp.json and
+      // pushes `--mcp-config` for it; this file carries permissions/sandbox
+      // deny only.
       // The status line gets the session status JSON after every response —
       // including context_window.{total_input_tokens,context_window_size},
       // the only clean programmatic source for the session's REAL context
