@@ -42,7 +42,7 @@ import { selectBroadcastTargets } from '../shared/broadcast';
 import { preferredAgentRole, isPmRole } from '../shared/agentRole';
 import { emptyRoleLedger, ledgerRole, normalizeRoleLedger, rememberLedgerRole, type RoleLedger } from '../shared/roleLedger';
 import { mergeTaskLedger } from '../shared/taskLedger';
-import { expandTilde } from './fs';
+import { expandTilde, isInsideGitRepo } from './fs';
 import { resolveGodName } from '../shared/godIdentity';
 import { checkMcpPresence, nodePresenceDeps } from './mcpProvision';
 import { codexMcpServers, codexMcpToml } from '../shared/codexMcp';
@@ -1473,6 +1473,18 @@ export class HiveManager {
         && this.isPrivilegedPm(agentId)
         && (roleMeta?.provider ?? 'claude') === 'claude';
       if (!idAllowed && !roleAllowed) continue;
+
+      // t-067: `git` is scoped to the agent's own cwd at spawn, so a cwd that is
+      // not inside a git working tree makes the server die on startup ("not a
+      // valid Git repository"). The client then retries against a process that
+      // will never come up, and the agent silently has no git tools. god's cwd is
+      // the hive ROOT, which is not a repo — so this was dead on every one of his
+      // spawns while looking perfectly configured. Fail closed and say why, the
+      // same way a declared-but-dead userConfigured server is handled below.
+      if (e.id === 'git' && !isInsideGitRepo(cwd)) {
+        console.error(`[hive] MCP 'git' not wired for ${agentId}: ${cwd} is not inside a git repository`);
+        continue;
+      }
 
       let command = e.spec.command;
       let args = e.spec.args.map((a) => (a === '<cwd>' ? cwd : a));
