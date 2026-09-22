@@ -289,6 +289,17 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
     // tools are blocked at the settings layer (hookSettings' permissions.deny,
     // TRELLO_WRITE_TOOLS above) rather than by prompt discipline alone.
     defaultRoles: ['pm']
+  },
+  {
+    id: 'magento',
+    label: 'Magento production (read-only)',
+    description: 'Read-only analysis of a production Magento store (logs, bin/magento, SQL SELECT, REST GET). Scoped per project: each agent sees only its own project\'s store, set as the "Magento MCP config" on the Jira project binding. You supply node + the magento-mcp dist/index.js.',
+    // Placeholder: userConfigured entries take command/args from the consent map
+    // (command = node, args[0] = <repo>/dist/index.js). `--config` is appended per agent.
+    spec: { command: '', args: [] },
+    tier: 'secret',
+    defaultEnabled: false,
+    userConfigured: true
   }
 ];
 

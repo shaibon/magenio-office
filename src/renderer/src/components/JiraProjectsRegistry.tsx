@@ -282,6 +282,12 @@ export function JiraProjectsRegistry() {
             <input value={draft.baseBranch} onChange={(e) => patch({ baseBranch: e.target.value })} style={inputStyle} />
           </div>
 
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={fieldLabel}>{tr('jiraProjects.magentoConfig')}</span>
+            <input value={draft.magentoMcpConfig} onChange={(e) => patch({ magentoMcpConfig: e.target.value })} placeholder="/Users/you/.config/magenio/acme.json" style={inputStyle} />
+            <span style={hint}>{tr('jiraProjects.magentoConfigHint')}</span>
+          </div>
+
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             <span style={fieldLabel}>{tr('jiraProjects.trelloTitle')}</span>
 

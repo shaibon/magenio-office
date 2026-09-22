@@ -25,6 +25,10 @@ export interface JiraProjectBinding {
    *  Jira binding and not a registry of its own — that makes a Trello source
    *  pointing at a deleted Jira project unrepresentable. */
   trello?: TrelloIntakeBinding;
+  /** Absolute path to this project's magento-mcp config JSON (holds DB/REST/SSH
+   *  credentials). Absent = the Magento production MCP is NOT mounted for this
+   *  project's agents (fail closed). */
+  magentoMcpConfig?: string;
   /** Exclude a project from the poll without deleting it. */
   enabled: boolean;
 }

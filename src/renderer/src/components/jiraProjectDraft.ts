@@ -18,6 +18,8 @@ export interface Draft {
   key: string;
   repo: string;
   baseBranch: string;
+  /** Absolute path to the project's magento-mcp config JSON; '' = none. */
+  magentoMcpConfig: string;
   agents: string[]; // agent ids, empty = any agent
   enabled: boolean;
   /** Trello source, or undefined when this project has none. The raw URL is
@@ -30,6 +32,7 @@ export interface Draft {
 export function draftFromBinding(b: JiraProjectBinding): Draft {
   return {
     isNew: false, key: b.key, repo: b.repo, baseBranch: b.baseBranch,
+    magentoMcpConfig: b.magentoMcpConfig ?? '',
     agents: b.agents ?? [], enabled: b.enabled,
     trello: b.trello,
     trelloUrl: b.trello ? `https://trello.com/b/${b.trello.boardShortLink}` : ''
@@ -37,7 +40,7 @@ export function draftFromBinding(b: JiraProjectBinding): Draft {
 }
 
 export function emptyDraft(): Draft {
-  return { isNew: true, key: '', repo: '', baseBranch: '', agents: [], enabled: true, trelloUrl: '' };
+  return { isNew: true, key: '', repo: '', baseBranch: '', magentoMcpConfig: '', agents: [], enabled: true, trelloUrl: '' };
 }
 
 /**
@@ -62,6 +65,7 @@ export function bindingFromDraft(d: Draft): JiraProjectBinding {
     baseBranch: d.baseBranch.trim(),
     agents: d.agents.length > 0 ? d.agents : undefined,
     enabled: d.enabled,
+    ...(d.magentoMcpConfig?.trim() ? { magentoMcpConfig: d.magentoMcpConfig.trim() } : {}),
     ...(d.trello
       ? {
         trello: {

@@ -1347,6 +1347,8 @@
     "keyHint": "e.g. \"BURD\". Cannot be changed after creation.",
     "repo": "Repo path",
     "baseBranch": "Base branch",
+    "magentoConfig": "Magento MCP config (optional)",
+    "magentoConfigHint": "Absolute path to this project's magento-mcp JSON. Only this project's agents get the production Magento server; empty = not mounted. Never readable by agents.",
     "agents": "Agents",
     "agentsHint": "Leave empty for any agent.",
     "enabled": "Enabled",
