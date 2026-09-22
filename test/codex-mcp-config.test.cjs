@@ -151,10 +151,31 @@ test('the secret tier is NOT withheld by the codex filter (only the write tier i
   assert.match(toml, /\[mcp_servers\.munder-magento\]/, 'a configured secret-tier server still reaches codex');
 });
 
-test('codexMcpServers keeps every safe-readonly server and drops only the write tier', () => {
+test('codexMcpServers keeps the sandboxed servers and drops the write tier for a non-god agent', () => {
   const s = { 'munder-time': { command: 'uvx', args: ['t'] }, 'munder-trello': { command: 'bun', args: ['x'] } };
   assert.deepEqual(Object.keys(codexMcpServers(s, { isGod: false })), ['munder-time']);
   assert.deepEqual(Object.keys(codexMcpServers(s, { isGod: true })).sort(), ['munder-time', 'munder-trello']);
+});
+
+test('munder-fetch is withheld from a non-god codex agent (unsandboxed network egress)', () => {
+  // t-070 review: with the tools pre-approved, a `fetch` call is an egress
+  // channel no human sees. codex has no PreToolUse allow-list, so the only safe
+  // option on that provider is not to mount it.
+  const s = { 'munder-fetch': { command: 'uvx', args: ['mcp-server-fetch'] }, 'munder-time': { command: 'uvx', args: ['t'] } };
+  assert.deepEqual(Object.keys(codexMcpServers(s, { isGod: false })), ['munder-time']);
+  assert.deepEqual(Object.keys(codexMcpServers(s, { isGod: true })).sort(), ['munder-fetch', 'munder-time']);
+
+  const toml = tables({ fetch: { enabled: true }, time: { enabled: true } }, 'jim-1');
+  assert.equal(toml.includes('munder-fetch'), false, 'a non-god codex agent never gets it');
+  assert.match(toml, /\[mcp_servers\.munder-time\]/, 'the other servers are unaffected');
+  assert.match(tables({ fetch: { enabled: true } }, 'god', { isGod: true }), /\[mcp_servers\.munder-fetch\]/);
+});
+
+test('the fetch exclusion is codex-only: the Claude path still mounts it', () => {
+  // The guard lives in codexMcpServers, not in the shared catalog builder — the
+  // Claude path has the allow-list + permission prompts that make fetch usable.
+  const map = hive['buildDefaultMcpServers'](CWD, { ...ALL_OFF, fetch: { enabled: true } }, 'jim-claude', { role: 'dev', provider: 'claude' });
+  assert.ok(map['munder-fetch'], 'the Claude path is untouched by a codex-only guard');
 });
 
 // ─── t-070: the tools must be CALLABLE, not just visible ─────────────────────

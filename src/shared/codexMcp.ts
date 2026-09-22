@@ -29,17 +29,29 @@ export interface CodexMcpServer {
 /** Namespace every catalog id carries, same as the Claude path. */
 const MANAGED_PREFIX = 'munder-';
 
+/** Catalog ids withheld from a NON-god codex agent regardless of tier — servers
+ *  whose tools reach outside the codex sandbox. Kept as a named list so the rule
+ *  is one place to read and one place to extend. */
+const NON_GOD_CODEX_WITHHELD = new Set(['fetch']);
+
 /**
  * The subset of the Claude-side map a CODEX agent may hold.
  *
- * Everything is shared except one guard. The `write` tier (Trello today) is only
- * safe where the Claude path's PreToolUse allow-list enforces it (t-056) — codex
- * has no equivalent hook-side enforcement, so a NON-god codex agent never
- * receives a write-capable server: fail closed rather than hand out a server
- * whose safety mechanism does not exist on this provider. This is the same
- * reasoning `buildDefaultMcpServers` already applies to its role path, which is
- * likewise restricted to `provider === 'claude'` ("a provider that cannot enforce
- * the block never receives the server").
+ * Everything is shared except two guards, both fail-closed on the provider that
+ * cannot enforce them. The `write` tier (Trello today) is only safe where the
+ * Claude path's PreToolUse allow-list enforces it (t-056) — codex has no
+ * equivalent hook-side enforcement, so a NON-god codex agent never receives a
+ * write-capable server. This is the same reasoning `buildDefaultMcpServers`
+ * already applies to its role path, which is likewise restricted to
+ * `provider === 'claude'` ("a provider that cannot enforce the block never
+ * receives the server").
+ *
+ * `fetch` is withheld from a non-god codex agent for the same class of reason
+ * (t-070 review): it can send an arbitrary URL, i.e. it is network egress the
+ * codex sandbox does not cover, and t-070 pre-approves our servers' tools. A
+ * `fetch` call is one prompt-injection away from being an exfiltration channel
+ * with no human in the loop — precisely the control the Claude path has (its
+ * PreToolUse allow-list and permission prompts) and codex does not.
  *
  * The `secret` tier is deliberately NOT withheld: Magento is read-only by
  * construction and scoped per project, which is what its own `--config` argument
@@ -52,7 +64,7 @@ export function codexMcpServers(
   const out: Record<string, CodexMcpServer> = {};
   for (const [name, spec] of Object.entries(servers)) {
     const id = name.startsWith(MANAGED_PREFIX) ? name.slice(MANAGED_PREFIX.length) : name;
-    if (!opts.isGod && mcpCatalogEntry(id)?.tier === 'write') continue;
+    if (!opts.isGod && (mcpCatalogEntry(id)?.tier === 'write' || NON_GOD_CODEX_WITHHELD.has(id))) continue;
     out[name] = spec;
   }
   return out;
