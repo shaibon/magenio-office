@@ -45,6 +45,7 @@ import { mergeTaskLedger } from '../shared/taskLedger';
 import { expandTilde, isInsideGitRepo } from './fs';
 import { resolveGodName } from '../shared/godIdentity';
 import { checkMcpPresence, nodePresenceDeps } from './mcpProvision';
+import { probeStdioServer, type McpServerSpec } from './mcpProbe';
 import { codexMcpServers, codexMcpToml } from '../shared/codexMcp';
 
 /** The subset of HarnessConfig the hive consumes for the default-MCP merge.
@@ -437,6 +438,18 @@ export class HiveManager {
    *  PreToolUse hook (hooks.ts) consults it; that is what makes the tool block
    *  fail-closed instead of a list of names someone has to keep up to date. */
   private trelloWriteBlocked = new Set<string>();
+
+  /** t-069: agentId → the MCP servers we refused to mount because their own
+   *  command line does not come up, with the reason. Kept per agent so the spawn
+   *  path that runs LAST (`--mcp-config`, after `hookSettings` already built the
+   *  same map) can turn it into the same user-facing degradation notice the proxy
+   *  bridge uses, instead of an absence nobody can explain. */
+  private mcpMountFailures = new Map<string, { server: string; detail: string }[]>();
+
+  /** t-069: reasons already written to log.jsonl + pushed to the floor, so the
+   *  two or three `buildDefaultMcpServers` calls inside ONE spawn produce one
+   *  event each rather than three identical ones. */
+  private mcpFailuresAnnounced = new Set<string>();
 
   /** The role ledger, read once per process. Lazy so a caller that never spawns
    *  (tests, headless) never touches the disk. */
@@ -1090,7 +1103,12 @@ export class HiveManager {
         args.push('--mcp-config', mcpConfigPath);
       }
     }
-    return { args, env };
+    // t-069: a server we refused to mount is a degraded spawn, and the app already
+    // has a place for that — `degraded` becomes a native toast and part of the
+    // spawn result (see index.ts). Silence is what made the Magento config typo
+    // cost four rounds of diagnosis: the agent simply had no such tool.
+    const mcpNote = this.mcpDegradationNote(meta.id, meta.name);
+    return mcpNote ? { args, env, degraded: mcpNote } : { args, env };
   }
 
   /** Update the durable job string (hire role) without respawning. Refreshes
@@ -1527,6 +1545,19 @@ export class HiveManager {
             continue;
           }
           args = [args[0], '--config', magentoConfig];
+          // t-069: the one server whose health depends on a file we cannot judge
+          // by reading the declaration — its own config, on disk, in a shape only
+          // the server knows. Ask the server (mcpProbe): a project agent whose
+          // Magento config the server rejects used to get a mount that died at
+          // startup, i.e. no Magento tools and no explanation anywhere. Fail
+          // closed (omit the corpse) and SAY WHY, in the hive log and on the floor.
+          const probe = this.probeMcpServerForMount({ command, args, env: e.spec.env });
+          if (!probe.ok) {
+            const detail = `${probe.reason} on ${magentoConfig}: ${probe.detail}`;
+            console.error(`[hive] MCP '${e.id}' not wired for ${agentId}: its config was refused — ${detail}`);
+            this.noteMcpMountFailure(agentId, `munder-${e.id}`, detail);
+            continue;
+          }
         }
       }
 
@@ -1537,6 +1568,56 @@ export class HiveManager {
       };
     }
     return out;
+  }
+
+  /**
+   * t-069 — ask the server itself whether it comes up, before mounting it.
+   *
+   * A seam, not indirection for its own sake: the failure path is the part worth
+   * testing, and a test must be able to drive it without a real Magento server on
+   * disk (or a 400ms child process per case). Overriding this one method in a test
+   * exercises every line of the wiring below it.
+   */
+  private probeMcpServerForMount(spec: McpServerSpec): ReturnType<typeof probeStdioServer> {
+    return probeStdioServer(spec);
+  }
+
+  /**
+   * t-069 — record a refused mount where a human and the hive can both see it: the
+   * agent's own memory of the spawn (for the degradation notice), log.jsonl (which
+   * is how the floor diagnoses anything after the fact), and the renderer event the
+   * app already uses for "this spawn is degraded, here is why".
+   *
+   * Announced once per (agent, server, reason): one spawn builds the MCP map two or
+   * three times (settings, `--mcp-config`, codex tables), and three identical log
+   * lines would read as three separate breakages.
+   */
+  private noteMcpMountFailure(agentId: string, server: string, detail: string): void {
+    const prior = this.mcpMountFailures.get(agentId) ?? [];
+    if (!prior.some((f) => f.server === server && f.detail === detail)) {
+      prior.push({ server, detail });
+      this.mcpMountFailures.set(agentId, prior);
+    }
+    const key = `${agentId}\u0000${server}\u0000${detail}`;
+    if (this.mcpFailuresAnnounced.has(key)) return;
+    this.mcpFailuresAnnounced.add(key);
+    this.appendLog({ kind: 'mcp-server-dead', agentId, server, detail });
+    this.emit?.('hive:degraded', {
+      agentId,
+      reason: 'mcp-mount-refused',
+      server,
+      message: `${server} was not mounted: ${detail}`
+    });
+  }
+
+  /** t-069 — what the spawn path tells the user, in the same shape the proxy
+   *  bridge's degradation uses. Empty string when every server mounted. */
+  private mcpDegradationNote(agentId: string, name: string): string {
+    const failures = this.mcpMountFailures.get(agentId) ?? [];
+    if (!failures.length) return '';
+    const servers = failures.map((f) => f.server).join(', ');
+    const list = failures.map((f) => `${f.server}: ${f.detail}`).join('; ');
+    return `${name} is running without ${servers}: the server refused its own configuration at startup (${list}). Fix that config and respawn — this session has no tools from it.`;
   }
 
   /**
