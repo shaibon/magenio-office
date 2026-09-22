@@ -23,8 +23,59 @@ function legacyProjectKey(cwd: string): string {
     : cwd.replace(/^\//, '').replaceAll('/', '-');
 }
 
+/** Every Claude config root to consider, ACTIVE FIRST: `$CLAUDE_CONFIG_DIR` when the
+ *  app was launched with one, then the default `~/.claude`.
+ *
+ *  Claude Code reads and writes its transcripts under the ACTIVE root ONLY, and the
+ *  dev build is routinely launched with `CLAUDE_CONFIG_DIR=~/.claude-magenio`.
+ *  `ptyEnv` deliberately passes that variable through to every spawned agent
+ *  (`CLAUDE_CONFIG_KEEP`), so hard-coding `~/.claude/projects` here made the harness
+ *  and the CLI it spawns look in two different trees: a session resumed from another
+ *  cwd was seeded into `~/.claude/projects` while `claude --resume` looked under
+ *  `~/.claude-magenio`, and the spawn died with
+ *  `No conversation found with session ID: <id>`.
+ *
+ *  Read at CALL time, like `os.homedir()` below: tests redirect both. */
+function claudeRoots(): string[] {
+  const roots: string[] = [];
+  const configured = process.env.CLAUDE_CONFIG_DIR?.trim();
+  if (configured) roots.push(configured);
+  const fallback = path.join(os.homedir(), '.claude');
+  if (!roots.includes(fallback)) roots.push(fallback);
+  return roots;
+}
+
+/** The root Claude Code itself is reading this run — therefore the only correct
+ *  place to CREATE a project directory. */
+function activeClaudeRoot(): string {
+  return claudeRoots()[0];
+}
+
+/** The project dir for `cwd` under ONE root, or null when neither spelling exists
+ *  there. Current spelling first; legacy only as a fallback for pre-change installs.
+ *
+ *  That order is not cosmetic: this harness itself created legacy-named directories
+ *  by copying transcripts into them, so a fallback-first resolver would keep reading
+ *  our own stale copies forever. */
+function projectDirUnder(root: string, cwd: string): string | null {
+  const projects = path.join(root, 'projects');
+  const current = path.join(projects, projectKey(cwd));
+  if (existsSync(current)) return current;
+  // For cwd '/' the legacy key is the empty string, and path.join(root, '')
+  // collapses to the projects ROOT — which always exists, so the fallback would
+  // hand back a directory holding every project rather than one, and callers
+  // would read/seed `<root>/projects/<session>.jsonl`. An empty key is not a
+  // project name; treat it as no legacy candidate at all.
+  const legacyKey = legacyProjectKey(cwd);
+  if (!legacyKey) return null;
+  const legacy = path.join(projects, legacyKey);
+  return existsSync(legacy) ? legacy : null;
+}
+
 /** Resolve the Claude Code transcript directory for a given working directory:
- *  ~/.claude/projects keyed by cwd.
+ *  `<root>/projects` keyed by cwd, searched across every root — the ACTIVE one
+ *  first, so a transcript written under a configured `CLAUDE_CONFIG_DIR` is found
+ *  before any same-keyed leftover in `~/.claude`.
  *
  *  We used to emit the legacy key unconditionally on POSIX, which silently
  *  stopped matching once Claude Code moved to dashing every non-alphanumeric.
@@ -33,38 +84,34 @@ function legacyProjectKey(cwd: string): string {
  *  `condense-abort`s with zero successes) and a usage reconciler quietly reading
  *  nothing at all.
  *
- *  Prefer the CURRENT spelling; fall back to the legacy one only when it exists
- *  and the current one does not, so pre-change installs stay readable. That order
- *  is not cosmetic: this harness itself created legacy-named directories by
- *  copying transcripts into them, so a fallback-first resolver would keep reading
- *  our own stale copies forever. When neither exists we return the CURRENT
- *  spelling, because callers that go on to create the directory must create the
+ *  When neither root has the directory we return the CURRENT spelling under the
+ *  ACTIVE root, because callers that go on to create the directory must create the
  *  one Claude Code will actually read. */
 export function projectDir(cwd: string): string {
-  const root = path.join(os.homedir(), '.claude/projects');
-  const current = path.join(root, projectKey(cwd));
-  if (existsSync(current)) return current;
-  // For cwd '/' the legacy key is the empty string, and path.join(root, '')
-  // collapses to the projects ROOT — which always exists, so the fallback would
-  // hand back a directory holding every project rather than one, and callers
-  // would read/seed `~/.claude/projects/<session>.jsonl`. An empty key is not a
-  // project name; treat it as no legacy candidate at all.
-  const legacyKey = legacyProjectKey(cwd);
-  if (!legacyKey) return current;
-  const legacy = path.join(root, legacyKey);
-  return existsSync(legacy) ? legacy : current;
+  for (const root of claudeRoots()) {
+    const found = projectDirUnder(root, cwd);
+    if (found) return found;
+  }
+  return path.join(activeClaudeRoot(), 'projects', projectKey(cwd));
 }
 
-/** Ensure session `<sessionId>.jsonl` exists in `cwd`'s Claude project dir so a
- *  `claude --resume <sessionId>` spawn in that cwd can find it. Claude keys
+/** Ensure session `<sessionId>.jsonl` exists in `cwd`'s ACTIVE Claude project dir so
+ *  a `claude --resume <sessionId>` spawn in that cwd can find it. Claude keys
  *  transcripts by cwd, so a session started elsewhere is invisible until its
  *  `.jsonl` is seeded across.
  *
  *  - Already present in the target project dir → no-op, returns true.
- *  - Found under a DIFFERENT project dir (resumed from another cwd — the Add
- *    Agent "resume session" flow, #2) → copied across, returns true.
+ *  - Found under a DIFFERENT project dir, in ANY root (resumed from another cwd, or
+ *    written under a configured `CLAUDE_CONFIG_DIR` — the Add Agent "resume session"
+ *    flow, #2) → copied across, returns true.
  *  - Not found anywhere → returns false, so the caller can fall back to a fresh
  *    session instead of launching a broken `--resume`.
+ *
+ *  The COPY TARGET is always the ACTIVE root — never `projectDir()`'s search result,
+ *  which may legitimately be `~/.claude` merely because that is the only root that
+ *  has the directory yet. Seeding there is exactly the miss this fixes: the CLI
+ *  reads the active root, so a transcript dropped anywhere else is invisible to
+ *  `claude --resume`.
  *
  *  Best-effort: any fs error yields false rather than throwing into the spawn. */
 /** A Claude session id is a UUID. Renderer-supplied ids flow into `path.join`, so
@@ -75,16 +122,21 @@ const VALID_SESSION_ID = /^[A-Za-z0-9_-]+$/;
 export function seedSessionTranscript(cwd: string, sessionId: string): boolean {
   try {
     if (!sessionId || !VALID_SESSION_ID.test(sessionId)) return false;
-    const target = path.join(projectDir(cwd), `${sessionId}.jsonl`);
+    const activeRoot = activeClaudeRoot();
+    const targetDir = projectDirUnder(activeRoot, cwd)
+      ?? path.join(activeRoot, 'projects', projectKey(cwd));
+    const target = path.join(targetDir, `${sessionId}.jsonl`);
     if (existsSync(target)) return true;
-    const projectsRoot = path.join(os.homedir(), '.claude/projects');
-    if (!existsSync(projectsRoot)) return false;
-    for (const dir of readdirSync(projectsRoot)) {
-      const candidate = path.join(projectsRoot, dir, `${sessionId}.jsonl`);
-      if (existsSync(candidate)) {
-        mkdirSync(path.dirname(target), { recursive: true });
-        cpSync(candidate, target);
-        return true;
+    for (const root of claudeRoots()) {
+      const projectsRoot = path.join(root, 'projects');
+      if (!existsSync(projectsRoot)) continue;
+      for (const dir of readdirSync(projectsRoot)) {
+        const candidate = path.join(projectsRoot, dir, `${sessionId}.jsonl`);
+        if (existsSync(candidate)) {
+          mkdirSync(path.dirname(target), { recursive: true });
+          cpSync(candidate, target);
+          return true;
+        }
       }
     }
     return false;
@@ -97,21 +149,24 @@ export function seedSessionTranscript(cwd: string, sessionId: string): boolean {
  *  Agent "resume session" auto-fill. The cwd is read from a transcript RECORD
  *  (every line carries a `cwd` field) — deliberately NOT by un-dashing the
  *  project-dir name, which is lossy when the path itself contains dashes. Searches
- *  every `~/.claude/projects/<dir>/<sessionId>.jsonl`; if more than one matches
- *  (shouldn't — session ids are unique UUIDs) the most-recently-modified wins.
+ *  every `<root>/projects/<dir>/<sessionId>.jsonl` across the roots (the ACTIVE one
+ *  first); if more than one matches (shouldn't — session ids are unique UUIDs) the
+ *  most-recently-modified wins.
  *  Returns the cwd string, or null if not found / unreadable / no cwd record. */
 export function resolveSessionCwd(sessionId: string): string | null {
   try {
     if (!sessionId || !VALID_SESSION_ID.test(sessionId)) return null;
-    const projectsRoot = path.join(os.homedir(), '.claude/projects');
-    if (!existsSync(projectsRoot)) return null;
     let best: { file: string; mtime: number } | null = null;
-    for (const dir of readdirSync(projectsRoot)) {
-      const candidate = path.join(projectsRoot, dir, `${sessionId}.jsonl`);
-      try {
-        const st = statSync(candidate);
-        if (!best || st.mtimeMs > best.mtime) best = { file: candidate, mtime: st.mtimeMs };
-      } catch { /* not present in this project dir */ }
+    for (const root of claudeRoots()) {
+      const projectsRoot = path.join(root, 'projects');
+      if (!existsSync(projectsRoot)) continue;
+      for (const dir of readdirSync(projectsRoot)) {
+        const candidate = path.join(projectsRoot, dir, `${sessionId}.jsonl`);
+        try {
+          const st = statSync(candidate);
+          if (!best || st.mtimeMs > best.mtime) best = { file: candidate, mtime: st.mtimeMs };
+        } catch { /* not present in this project dir */ }
+      }
     }
     if (!best) return null;
     const text = readFileSync(best.file, 'utf8');
