@@ -111,6 +111,11 @@
       { "id": "claude-opus-4-8-high", "label": "Opus 4.8 1M", "minAppVersion": null, "maxAppVersion": null },
       { "id": "claude-sonnet-5-thinking-high", "label": "Sonnet 5 1M Thinking", "minAppVersion": null, "maxAppVersion": null }
     ],
-    "custom": []
+    "custom": [],
+    "deepcode": [
+      { "label": "CLI default", "minAppVersion": null, "maxAppVersion": null },
+      { "id": "deepseek-v4-pro", "label": "DeepSeek V4 Pro", "minAppVersion": null, "maxAppVersion": null },
+      { "id": "deepseek-v4-flash", "label": "DeepSeek V4 Flash", "minAppVersion": null, "maxAppVersion": null }
+    ]
   }
 }
