@@ -157,6 +157,43 @@ test('codexMcpServers keeps every safe-readonly server and drops only the write 
   assert.deepEqual(Object.keys(codexMcpServers(s, { isGod: true })).sort(), ['munder-time', 'munder-trello']);
 });
 
+// ─── t-070: the tools must be CALLABLE, not just visible ─────────────────────
+
+test('every managed server is mounted pre-approved: codex never waits for a human', () => {
+  const toml = codexMcpToml({ 'munder-time': { command: 'uvx', args: ['mcp-server-time'] } });
+  assert.match(toml, /default_tools_approval_mode = "approve"/);
+});
+
+test('the pre-approval lands in the SERVER table, before any env sub-table', () => {
+  const toml = codexMcpToml({
+    'munder-search': { command: 'npx', args: ['-y', 'pkg'], env: { BRAVE_API_KEY: 'k' } }
+  });
+  const mode = toml.indexOf('default_tools_approval_mode');
+  const env = toml.indexOf('[mcp_servers.munder-search.env]');
+  assert.ok(mode > 0, 'the mode is written');
+  assert.ok(mode < env, 'a key after the env header would land in the env table');
+});
+
+test('the value is the one codex 0.155.1 accepts, and the only one that never prompts', () => {
+  // Verified on the binary: a bogus value fails with
+  // "unknown variant `zzz`, expected one of `auto`, `prompt`, `writes`, `approve`".
+  const toml = codexMcpToml({ 'munder-magento': { command: 'node', args: ['x.js'] } });
+  assert.match(toml, /default_tools_approval_mode = "approve"/);
+  assert.equal(/default_tools_approval_mode = "(auto|prompt|writes)"/.test(toml), false);
+});
+
+test('the write tier keeps codex\'s own gating — no pre-approval on write tools', () => {
+  const toml = codexMcpToml({ 'munder-trello': { command: 'bun', args: ['x'] } });
+  assert.match(toml, /\[mcp_servers\.munder-trello\]/, 'the table itself is still rendered');
+  assert.equal(toml.includes('default_tools_approval_mode'), false,
+    'the codex path has no PreToolUse allow-list, so its own gating is the only control');
+});
+
+test('a real codex agent config carries the pre-approval end to end', () => {
+  const toml = tables({ time: { enabled: true } }, 'jim-1');
+  assert.match(toml, /\[mcp_servers\.munder-time\][\s\S]*default_tools_approval_mode = "approve"/);
+});
+
 // ─── the wiring (the spawn path really uses the generator) ───────────────────
 
 test('the codex spawn branch installs the generated tables, and the Claude path is untouched', () => {
