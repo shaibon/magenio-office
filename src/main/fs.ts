@@ -1,6 +1,6 @@
 import { readdir, lstat, open, realpath, stat } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
-import { constants } from 'node:fs';
+import { constants, existsSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { imageMimeForPath } from '../shared/imageTypes';
@@ -315,6 +315,34 @@ export function expandTilde(p: string): string {
   else if (t.startsWith('~/') || t.startsWith('~\\')) out = join(homedir(), t.slice(2));
   if (!isAbsolute(out)) return t;
   return resolve(out);
+}
+
+/**
+ * Whether `dir` is inside a git working tree — the directory itself, or any
+ * ANCESTOR, holds a `.git` entry.
+ *
+ * Probes for the ENTRY, never for a directory: a linked worktree's `.git` is a
+ * FILE (`gitdir: /…/.git/worktrees/<name>`), which is exactly how every isolated
+ * agent workspace is checked out here, so a `isDirectory()` test would report the
+ * hive's own worktrees as not being repos.
+ *
+ * Walks up to the filesystem root and stops there (`dirname('/') === '/'`), so a
+ * directory outside every repo answers false instead of looping.
+ *
+ * `hasGitEntry` is injectable so the walk can be unit-tested without a real
+ * checkout; production always uses existsSync.
+ */
+export function isInsideGitRepo(
+  dir: string,
+  hasGitEntry: (d: string) => boolean = (d) => existsSync(join(d, '.git'))
+): boolean {
+  let cur = resolve(dir);
+  for (;;) {
+    if (hasGitEntry(cur)) return true;
+    const parent = dirname(cur);
+    if (parent === cur) return false;
+    cur = parent;
+  }
 }
 
 /**
