@@ -157,25 +157,38 @@ test('codexMcpServers keeps the sandboxed servers and drops the write tier for a
   assert.deepEqual(Object.keys(codexMcpServers(s, { isGod: true })).sort(), ['munder-time', 'munder-trello']);
 });
 
-test('munder-fetch is withheld from a non-god codex agent (unsandboxed network egress)', () => {
-  // t-070 review: with the tools pre-approved, a `fetch` call is an egress
-  // channel no human sees. codex has no PreToolUse allow-list, so the only safe
-  // option on that provider is not to mount it.
-  const s = { 'munder-fetch': { command: 'uvx', args: ['mcp-server-fetch'] }, 'munder-time': { command: 'uvx', args: ['t'] } };
-  assert.deepEqual(Object.keys(codexMcpServers(s, { isGod: false })), ['munder-time']);
-  assert.deepEqual(Object.keys(codexMcpServers(s, { isGod: true })).sort(), ['munder-fetch', 'munder-time']);
+/** The servers withheld from a non-god codex agent because their tools put
+ *  caller-supplied text on the wire to something the hive does not control. */
+const EGRESS_SERVERS = ['fetch', 'context7'];
 
-  const toml = tables({ fetch: { enabled: true }, time: { enabled: true } }, 'jim-1');
-  assert.equal(toml.includes('munder-fetch'), false, 'a non-god codex agent never gets it');
+test('the unsandboxed egress servers are withheld from a non-god codex agent', () => {
+  // t-070 review: with the tools pre-approved, a `fetch`/`context7` call is an
+  // egress channel no human sees. codex has no PreToolUse allow-list, so the only
+  // safe option on that provider is not to mount them.
+  const s = {};
+  for (const id of EGRESS_SERVERS) s[`munder-${id}`] = { command: 'uvx', args: [id] };
+  s['munder-time'] = { command: 'uvx', args: ['t'] };
+  assert.deepEqual(Object.keys(codexMcpServers(s, { isGod: false })), ['munder-time']);
+  assert.deepEqual(Object.keys(codexMcpServers(s, { isGod: true })).sort(),
+    ['munder-context7', 'munder-fetch', 'munder-time']);
+
+  const cfg = { time: { enabled: true } };
+  for (const id of EGRESS_SERVERS) cfg[id] = { enabled: true };
+  const toml = tables(cfg, 'jim-1');
+  for (const id of EGRESS_SERVERS) {
+    assert.equal(toml.includes(`munder-${id}`), false, `a non-god codex agent never gets ${id}`);
+    assert.match(tables({ [id]: { enabled: true } }, 'god', { isGod: true }), new RegExp(`\\[mcp_servers\\.munder-${id}\\]`));
+  }
   assert.match(toml, /\[mcp_servers\.munder-time\]/, 'the other servers are unaffected');
-  assert.match(tables({ fetch: { enabled: true } }, 'god', { isGod: true }), /\[mcp_servers\.munder-fetch\]/);
 });
 
-test('the fetch exclusion is codex-only: the Claude path still mounts it', () => {
+test('the egress exclusion is codex-only: the Claude path still mounts them', () => {
   // The guard lives in codexMcpServers, not in the shared catalog builder — the
-  // Claude path has the allow-list + permission prompts that make fetch usable.
-  const map = hive['buildDefaultMcpServers'](CWD, { ...ALL_OFF, fetch: { enabled: true } }, 'jim-claude', { role: 'dev', provider: 'claude' });
-  assert.ok(map['munder-fetch'], 'the Claude path is untouched by a codex-only guard');
+  // Claude path has the allow-list + permission prompts that make them usable.
+  const cfg = { ...ALL_OFF };
+  for (const id of EGRESS_SERVERS) cfg[id] = { enabled: true };
+  const map = hive['buildDefaultMcpServers'](CWD, cfg, 'jim-claude', { role: 'dev', provider: 'claude' });
+  for (const id of EGRESS_SERVERS) assert.ok(map[`munder-${id}`], `the Claude path is untouched by a codex-only guard (${id})`);
 });
 
 // ─── t-070: the tools must be CALLABLE, not just visible ─────────────────────

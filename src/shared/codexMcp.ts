@@ -31,8 +31,16 @@ const MANAGED_PREFIX = 'munder-';
 
 /** Catalog ids withheld from a NON-god codex agent regardless of tier — servers
  *  whose tools reach outside the codex sandbox. Kept as a named list so the rule
- *  is one place to read and one place to extend. */
-const NON_GOD_CODEX_WITHHELD = new Set(['fetch']);
+ *  is one place to read and one place to extend.
+ *
+ *  `fetch` sends an arbitrary URL; `context7` queries an external documentation
+ *  API with free-text. Both are egress, and once t-070 pre-approves a server's
+ *  tools, an injected instruction can carry data out through either with nobody
+ *  to see it. The discriminator: does the tool put caller-supplied TEXT on the
+ *  wire to something we do not control? Our filesystem/git servers do not
+ *  (cwd-scoped), and magento reaches one project's store, read-only by
+ *  construction. */
+const NON_GOD_CODEX_WITHHELD = new Set(['fetch', 'context7']);
 
 /**
  * The subset of the Claude-side map a CODEX agent may hold.
@@ -46,12 +54,12 @@ const NON_GOD_CODEX_WITHHELD = new Set(['fetch']);
  * `provider === 'claude'` ("a provider that cannot enforce the block never
  * receives the server").
  *
- * `fetch` is withheld from a non-god codex agent for the same class of reason
- * (t-070 review): it can send an arbitrary URL, i.e. it is network egress the
- * codex sandbox does not cover, and t-070 pre-approves our servers' tools. A
- * `fetch` call is one prompt-injection away from being an exfiltration channel
- * with no human in the loop — precisely the control the Claude path has (its
- * PreToolUse allow-list and permission prompts) and codex does not.
+ * The servers in NON_GOD_CODEX_WITHHELD are withheld for the same class of
+ * reason (t-070 review): they are network egress the codex sandbox does not
+ * cover, and t-070 pre-approves our servers' tools, so one prompt injection
+ * turns such a call into an exfiltration channel with no human in the loop —
+ * precisely the control the Claude path has (its PreToolUse allow-list and
+ * permission prompts) and codex does not.
  *
  * The `secret` tier is deliberately NOT withheld: Magento is read-only by
  * construction and scoped per project, which is what its own `--config` argument
