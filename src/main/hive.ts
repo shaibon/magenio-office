@@ -1456,6 +1456,19 @@ export class HiveManager {
       // never ride in on a default (the catalog already ships these OFF, but this
       // guards a hand-edited/partial mcpDefaults map too).
       if (e.tier !== 'safe-readonly' && consented !== true) continue;
+      // t-067: a keyed server whose secret is still the catalog's EMPTY placeholder
+      // cannot start — it exits immediately ("BRAVE_API_KEY environment variable is
+      // required") and the client shows a server that never connects, which reads
+      // as a client-side bug rather than a missing credential. Fail closed and name
+      // the key instead of mounting a corpse. The catalog spells a required secret
+      // as an empty string, so this is the one place that convention is enforced.
+      const missingEnv = Object.entries(e.spec.env ?? {})
+        .filter(([, v]) => !String(v).trim())
+        .map(([k]) => k);
+      if (missingEnv.length) {
+        console.error(`[hive] MCP '${e.id}' not wired for ${agentId}: required env empty (${missingEnv.join(', ')})`);
+        continue;
+      }
       // Per-agent scoping: an empty or absent list means every agent, which is
       // the behaviour every existing consent has. `roles` (t-056) is a second,
       // additive way in — by role text, not by an id that changes across a
