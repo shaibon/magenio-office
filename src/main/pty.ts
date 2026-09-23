@@ -332,6 +332,11 @@ export class PtyManager {
    *  runs. Best-effort — set once by the main process. */
   private exitHandler:
     ((id: string, exitCode?: number, info?: PtyExitInfo) => void) | null = null;
+  /** Collect the MCP servers a dying session leaves behind (t-073). Set once by
+   *  the main process, which owns the hive root the declared command lines come
+   *  from; pty has no business knowing about the hive. See mcpReap.ts for why a
+   *  process-group sweep cannot do this. */
+  private mcpReaper: ((sessionPid: number) => void) | null = null;
 
   /** The default/fallback output sink — set to the PRIMARY window. Used only for
    *  sessions with no recorded owner; owned sessions route to their owner. */
@@ -355,6 +360,7 @@ export class PtyManager {
       if (s.owner === wc) {
         try {
           const pid = s.proc.pid;
+          this.reapMcp(pid); // before the kill: the servers are still its children
           s.proc.kill();
           ensureKilled(pid);
         } catch { /* already gone */ }
@@ -371,6 +377,19 @@ export class PtyManager {
     handler: (id: string, exitCode?: number, info?: PtyExitInfo) => void
   ): void {
     this.exitHandler = handler;
+  }
+
+  /** Register the MCP-server reaper (t-073). Called with a session's pid on
+   *  every path that retires it — the explicit kills and the natural exit — so
+   *  the detached servers it left in its own process group are collected instead
+   *  of accumulating until the next app start. */
+  setMcpReaper(reaper: (sessionPid: number) => void): void {
+    this.mcpReaper = reaper;
+  }
+
+  /** Best-effort: a reaper failure must never break a teardown. */
+  private reapMcp(sessionPid: number): void {
+    try { this.mcpReaper?.(sessionPid); } catch { /* never throw out of a kill */ }
   }
 
   /** Send to the renderer only if it's still alive. During app quit, killing a
@@ -714,6 +733,11 @@ export class PtyManager {
         if (this.sessions.get(opts.id) !== session) return;
         this.safeSend(`pty:exit:${opts.id}`, { exitCode, signal }, session.owner);
         this.sessions.delete(opts.id);
+        // A natural exit leaks exactly like a kill: the detached MCP servers are
+        // reparented to PID 1 the moment this process is reaped, and nothing else
+        // will ever look for them. Collected here, before the teardown handler,
+        // while the pid is still the one in `session`.
+        this.reapMcp(session.proc.pid);
         // Natural exit must run the same lifecycle teardown as an explicit kill.
         // Guarded so a teardown error can never crash node-pty's exit callback.
         // `signal` is forwarded, not dropped: a provider killed by SIGILL/SIGSEGV
@@ -780,6 +804,10 @@ export class PtyManager {
     if (!s) return { ok: false, error: `no pty: ${id}` };
     try {
       const pid = s.proc.pid;
+      // The group sweep below collects the session's own tree but NOT the MCP
+      // servers, which the CLI detached into their own groups — reap them here,
+      // while they are still children of `pid` (see mcpReap.ts).
+      this.reapMcp(pid);
       s.proc.kill();
       ensureKilled(pid); // verify + sweep the process group so no PID leaks
       this.sessions.delete(id);
@@ -831,6 +859,9 @@ export class PtyManager {
     const sweepNow = process.platform === 'win32';
     for (const s of this.sessions.values()) {
       const pid = s.proc.pid;
+      // Both arms below are group sweeps (taskkill /T, or node-pty's close +
+      // ensureKilled), and neither reaches a DETACHED MCP server — see mcpReap.ts.
+      this.reapMcp(pid);
       if (sweepNow) {
         // Capture and kill the intact Windows process tree before closing
         // ConPTY: once the root exits, taskkill may no longer be able to find
