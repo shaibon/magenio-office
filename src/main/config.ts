@@ -44,7 +44,7 @@ export interface ScheduledMission {
    *  it (days + fromMinute..toMinute, local time), `outsideIntervalMs` outside
    *  (absent = paused outside). Ignored when `weekly` is valid, and when absent
    *  the mission behaves exactly as before. See shared/weeklySchedule.ts. */
-  activeWindow?: { days: number[]; fromMinute: number; toMinute: number; outsideIntervalMs?: number };
+  activeWindow?: { days: number[]; fromMinute: number; toMinute: number; outsideIntervalMs?: number; outsideMinutes?: number[] };
   to: string;
   body: string;
   enabled: boolean;

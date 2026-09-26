@@ -37,7 +37,7 @@ interface ScheduledMission {
   /** Day-of-week + time. Present ⇒ this replaces intervalMs (main/config.ts). */
   weekly?: { days: number[]; minute: number };
   /** Interval mission with a full-rate window; see main/config.ts. */
-  activeWindow?: { days: number[]; fromMinute: number; toMinute: number; outsideIntervalMs?: number };
+  activeWindow?: { days: number[]; fromMinute: number; toMinute: number; outsideIntervalMs?: number; outsideMinutes?: number[] };
 }
 
 const DEFAULT_INTERVAL_MS = 3_600_000;

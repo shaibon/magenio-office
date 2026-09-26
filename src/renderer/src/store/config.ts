@@ -32,7 +32,7 @@ export interface ScheduledMission {
   id: string;
   label: string;
   intervalMs: number;
-  activeWindow?: { days: number[]; fromMinute: number; toMinute: number; outsideIntervalMs?: number };
+  activeWindow?: { days: number[]; fromMinute: number; toMinute: number; outsideIntervalMs?: number; outsideMinutes?: number[] };
   to: string;
   body: string;
   enabled: boolean;

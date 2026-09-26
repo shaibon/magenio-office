@@ -555,13 +555,16 @@ export function ActiveWindowPicker({ value, onChange }: {
         />
         <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{t('triggersUi.outside')}</span>
         <Select
-          value={String(value.outsideIntervalMs ?? 0)}
-          onChange={(v) => onChange({ ...value, outsideIntervalMs: Number(v) || undefined })}
+          value={value.outsideMinutes ? 'fixed' : String(value.outsideIntervalMs ?? 0)}
+          onChange={(v) => v === 'fixed'
+            ? onChange({ ...value, outsideMinutes: [12 * 60, 18 * 60] })
+            : onChange({ ...value, outsideMinutes: undefined, outsideIntervalMs: Number(v) || undefined })}
         >
           <option value="0">{t('triggersUi.paused')}</option>
           <option value={String(24 * 3_600_000)}>{t('triggersUi.onceADay')}</option>
           <option value={String(12 * 3_600_000)}>{t('triggersUi.twiceADay')}</option>
           <option value={String(6 * 3_600_000)}>{t('triggersUi.every6h')}</option>
+          <option value="fixed">{t('triggersUi.atNoonAnd6pm')}</option>
         </Select>
       </div>
       {normalizeActiveWindow(value) === null && <Hint>{t('triggersUi.windowInvalid')}</Hint>}

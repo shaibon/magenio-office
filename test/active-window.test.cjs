@@ -67,3 +67,47 @@ test('DST: window opening is a wall-clock time, not 24h later', () => {
 test('formatActiveWindow', () => {
   assert.equal(formatActiveWindow(WIN), 'weekdays 08:00-20:00, off-window every 12h');
 });
+
+/* ── outsideMinutes: fixed times of day outside the window ── */
+const FIXED = { days: [1, 2, 3, 4, 5], fromMinute: 480, toMinute: 1200, outsideMinutes: [18 * 60, 12 * 60] };
+const delay = (w, now) => activeWindowDelayMs(w, 30 * MIN, now, now); // just fired at `now`
+
+test('outsideMinutes: normalized sorted, de-duped, range-checked; empty = absent', () => {
+  assert.deepEqual(normalizeActiveWindow({ ...FIXED, outsideMinutes: [1080, 720, 720, -1, 1440, 1.5, 'x'] }).outsideMinutes, [720, 1080]);
+  assert.equal('outsideMinutes' in normalizeActiveWindow({ ...FIXED, outsideMinutes: [] }), false);
+  assert.equal('outsideMinutes' in normalizeActiveWindow({ ...FIXED, outsideMinutes: [1440] }), false);
+  assert.equal('outsideMinutes' in normalizeActiveWindow(WIN), false, 'no key when absent');
+});
+
+test('outsideMinutes: weekend fires at 12:00 then 18:00, not a 12h drift', () => {
+  const sat0 = at(2026, 10, 3, 0, 5);
+  assert.equal(delay(FIXED, sat0), at(2026, 10, 3, 12) - sat0);
+  const sat12 = at(2026, 10, 3, 12, 0);
+  assert.equal(delay(FIXED, sat12), 6 * HOUR, 'after 12:00 comes 18:00');
+  const sat18 = at(2026, 10, 3, 18, 0);
+  assert.equal(delay(FIXED, sat18), at(2026, 10, 4, 12) - sat18, 'after 18:00 comes Sunday 12:00');
+  const sun18 = at(2026, 10, 4, 18, 0);
+  assert.equal(delay(FIXED, sun18), at(2026, 10, 5, 8) - sun18, 'Sunday night: Monday 08:00 opening (Mon 12:00 is in-window)');
+});
+
+test('outsideMinutes: listed times inside the window are skipped', () => {
+  const tueNight = at(2026, 9, 29, 20, 30);
+  assert.equal(delay(FIXED, tueNight), at(2026, 9, 30, 8) - tueNight, 'nothing extra on a weekday night');
+  const fri = at(2026, 10, 2, 20, 30);
+  assert.equal(delay(FIXED, fri), at(2026, 10, 3, 12) - fri, 'Friday night waits for Saturday 12:00');
+});
+
+test('outsideMinutes takes precedence over outsideIntervalMs', () => {
+  const both = { ...FIXED, outsideIntervalMs: HOUR };
+  const sat = at(2026, 10, 3, 9, 0);
+  assert.equal(delay(both, sat), 3 * HOUR);
+});
+
+test('outsideMinutes: overdue ticks are not replayed; strictly-after semantics', () => {
+  const noon = at(2026, 10, 3, 12, 0);
+  assert.equal(activeWindowDelayMs(FIXED, 30 * MIN, noon, noon), 6 * HOUR, 'a slot exactly now is not re-armed');
+});
+
+test('formatActiveWindow with outsideMinutes', () => {
+  assert.equal(formatActiveWindow(FIXED), 'weekdays 08:00-20:00, off-window at 12:00, 18:00');
+});

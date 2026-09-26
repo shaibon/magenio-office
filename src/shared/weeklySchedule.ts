@@ -159,13 +159,17 @@ export interface ActiveWindow {
   toMinute: number;
   /** Cadence outside the window; absent = no runs outside it. */
   outsideIntervalMs?: number;
+  /** Fixed times of day (minutes since local midnight, sorted, 0..1439) for
+   *  outside the window; TAKES PRECEDENCE over `outsideIntervalMs`. A listed
+   *  time that itself falls inside the window is skipped. */
+  outsideMinutes?: number[];
 }
 
 /** Validate and canonicalise; null for anything unusable (a bad window is
  *  ignored, so the mission falls back to its plain interval). */
 export function normalizeActiveWindow(w: unknown): ActiveWindow | null {
   if (!w || typeof w !== 'object') return null;
-  const raw = w as { days?: unknown; fromMinute?: unknown; toMinute?: unknown; outsideIntervalMs?: unknown };
+  const raw = w as { days?: unknown; fromMinute?: unknown; toMinute?: unknown; outsideIntervalMs?: unknown; outsideMinutes?: unknown };
   const days = normalizeWeekly({ days: raw.days, minute: 0 })?.days;
   if (!days) return null;
   const { fromMinute: from, toMinute: to, outsideIntervalMs: out } = raw;
@@ -173,6 +177,10 @@ export function normalizeActiveWindow(w: unknown): ActiveWindow | null {
   if (typeof to !== 'number' || !Number.isInteger(to) || to <= from || to > 1440) return null;
   const win: ActiveWindow = { days, fromMinute: from, toMinute: to };
   if (typeof out === 'number' && Number.isFinite(out) && out > 0) win.outsideIntervalMs = out;
+  if (Array.isArray(raw.outsideMinutes)) {
+    const mins = [...new Set(raw.outsideMinutes.filter((x): x is number => Number.isInteger(x) && x >= 0 && x <= 1439))].sort((a, b) => a - b);
+    if (mins.length) win.outsideMinutes = mins;
+  }
   return win;
 }
 
@@ -183,7 +191,9 @@ export function formatActiveWindow(w: unknown): string {
   const key = n.days.join(',');
   const d = key === '1,2,3,4,5' ? 'weekdays' : key === '0,6' ? 'weekends' : key === '0,1,2,3,4,5,6' ? 'every day'
     : n.days.map((x) => WEEKDAY_LABELS[x]).join(', ');
-  const out = n.outsideIntervalMs
+  const out = n.outsideMinutes
+    ? `off-window at ${n.outsideMinutes.map(formatMinute).join(', ')}`
+    : n.outsideIntervalMs
     ? `off-window every ${n.outsideIntervalMs % 3_600_000 === 0 ? `${n.outsideIntervalMs / 3_600_000}h` : `${Math.round(n.outsideIntervalMs / 60_000)}m`}`
     : 'off-window paused';
   return `${d} ${formatMinute(n.fromMinute)}-${formatMinute(n.toMinute === 1440 ? 1439 : n.toMinute)}, ${out}`;
@@ -200,7 +210,8 @@ function inWindow(n: ActiveWindow, ms: number): boolean {
  * null when the window is unusable (caller keeps the plain interval).
  *
  * The next fire is the earliest of: lastFiredAt + intervalMs, if that lands
- * inside the window; lastFiredAt + outsideIntervalMs, if set; and the next
+ * inside the window; lastFiredAt + outsideIntervalMs, if set (or, when
+ * outsideMinutes is set, its next out-of-window time of day instead); and the next
  * window opening, so full rate resumes on the dot. Zero means overdue. A
  * mission that never fired (lastFiredAt 0) is overdue, as with plain intervals.
  */
@@ -210,7 +221,16 @@ export function activeWindowDelayMs(w: unknown, intervalMs: number, nowMs: numbe
   const cands: number[] = [];
   const inTick = lastFiredAt + intervalMs;
   if (inWindow(n, Math.max(inTick, nowMs))) cands.push(inTick);
-  if (n.outsideIntervalMs) cands.push(lastFiredAt + n.outsideIntervalMs);
+  if (n.outsideMinutes) {
+    // Next listed time strictly after now that is itself outside the window.
+    // ponytail: a slot missed while the app was closed is not replayed.
+    outer: for (let offset = 0; offset <= 7; offset++) {
+      for (const m of n.outsideMinutes) {
+        const t = slotAt(new Date(nowMs), offset, m).getTime();
+        if (t > nowMs && !inWindow(n, t)) { cands.push(t); break outer; }
+      }
+    }
+  } else if (n.outsideIntervalMs) cands.push(lastFiredAt + n.outsideIntervalMs);
   const from = new Date(nowMs);
   for (let offset = 0; offset <= 7; offset++) {
     const slot = slotAt(from, offset, n.fromMinute);
