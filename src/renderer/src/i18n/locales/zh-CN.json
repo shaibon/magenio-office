@@ -1079,7 +1079,9 @@
     "onceADay": "每天一次",
     "twiceADay": "每天两次",
     "every6h": "每 6 小时",
-    "atNoonAnd6pm": "在 12:00 和 18:00（仅窗口外）",
+    "atFixedTimes": "在固定时刻…（仅窗口外）",
+    "addTime": "添加时间",
+    "removeTime": "移除时间",
     "windowInvalid": "窗口必须在开始之后结束，且至少选择一天。",
     "removeWindow": "移除窗口",
     "pickDayHint": "至少选择一天，否则它将永远不会运行。"

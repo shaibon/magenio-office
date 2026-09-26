@@ -533,6 +533,8 @@ export function ActiveWindowPicker({ value, onChange }: {
   value: ActiveWindow | null; onChange: (w: ActiveWindow | null) => void;
 }) {
   const { t } = useTranslation();
+  // Emptying the list clears outsideMinutes to undefined; this keeps the editor open meanwhile.
+  const [fixedMode, setFixedMode] = useState(false);
   if (!value) {
     return <MiniButton onClick={() => onChange(DEFAULT_ACTIVE_WINDOW)}>{t('triggersUi.addWindow')}</MiniButton>;
   }
@@ -555,18 +557,46 @@ export function ActiveWindowPicker({ value, onChange }: {
         />
         <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{t('triggersUi.outside')}</span>
         <Select
-          value={value.outsideMinutes ? 'fixed' : String(value.outsideIntervalMs ?? 0)}
-          onChange={(v) => v === 'fixed'
-            ? onChange({ ...value, outsideMinutes: [12 * 60, 18 * 60] })
-            : onChange({ ...value, outsideMinutes: undefined, outsideIntervalMs: Number(v) || undefined })}
+          value={fixedMode || value.outsideMinutes ? 'fixed' : String(value.outsideIntervalMs ?? 0)}
+          onChange={(v) => {
+            setFixedMode(v === 'fixed');
+            onChange(v === 'fixed'
+              ? { ...value, outsideMinutes: value.outsideMinutes ?? [12 * 60] }
+              : { ...value, outsideMinutes: undefined, outsideIntervalMs: Number(v) || undefined });
+          }}
         >
           <option value="0">{t('triggersUi.paused')}</option>
           <option value={String(24 * 3_600_000)}>{t('triggersUi.onceADay')}</option>
           <option value={String(12 * 3_600_000)}>{t('triggersUi.twiceADay')}</option>
           <option value={String(6 * 3_600_000)}>{t('triggersUi.every6h')}</option>
-          <option value="fixed">{t('triggersUi.atNoonAnd6pm')}</option>
+          <option value="fixed">{t('triggersUi.atFixedTimes')}</option>
         </Select>
       </div>
+      {(fixedMode || value.outsideMinutes) && (() => {
+        // Same canonical form the scheduler uses: sorted, de-duplicated, empty → undefined.
+        const times = normalizeActiveWindow({ ...value, toMinute: 1440, fromMinute: 0 })?.outsideMinutes ?? [];
+        const set = (next: number[]) => onChange({ ...value, outsideMinutes: next.length ? next : undefined });
+        const nextFree = () => { let m = ((times.at(-1) ?? 11 * 60) + 60) % 1440; while (times.includes(m)) m = (m + 60) % 1440; return m; };
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {times.map((m) => (
+              <div key={m} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <input
+                  type="time"
+                  value={formatMinute(m)}
+                  onChange={(e) => {
+                    const [h, mm] = e.target.value.split(':').map(Number);
+                    if (Number.isFinite(h) && Number.isFinite(mm)) set(times.map((x) => (x === m ? h * 60 + mm : x)));
+                  }}
+                  style={{ ...inputStyle, width: 108, padding: '3px 6px' }}
+                />
+                <MiniButton onClick={() => set(times.filter((x) => x !== m))}>{t('triggersUi.removeTime')}</MiniButton>
+              </div>
+            ))}
+            <div><MiniButton onClick={() => set([...times, nextFree()])}>{t('triggersUi.addTime')}</MiniButton></div>
+          </div>
+        );
+      })()}
       {normalizeActiveWindow(value) === null && <Hint>{t('triggersUi.windowInvalid')}</Hint>}
       <MiniButton onClick={() => onChange(null)}>{t('triggersUi.removeWindow')}</MiniButton>
     </div>

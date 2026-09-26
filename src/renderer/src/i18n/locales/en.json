@@ -1079,7 +1079,9 @@
     "onceADay": "once a day",
     "twiceADay": "twice a day",
     "every6h": "every 6 hours",
-    "atNoonAnd6pm": "at 12:00 and 18:00 (outside only)",
+    "atFixedTimes": "at fixed times…",
+    "addTime": "Add time",
+    "removeTime": "Remove time",
     "windowInvalid": "The window must close after it opens, with at least one day.",
     "removeWindow": "Remove window",
     "pickDayHint": "Pick at least one day, or this will never run."
