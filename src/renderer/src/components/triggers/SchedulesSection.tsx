@@ -5,10 +5,10 @@ import { PixelButton } from '../PixelButton';
 import { useStore } from '@/store/store';
 import {
   Chip, Field, Hint, MiniButton, Muted, Select, SchedulePicker, SubCard, SubHeader,
-  Toggle, fmtInterval, inputStyle, textareaStyle, weeklyDraft, weeklyIsUsable,
+  ActiveWindowPicker, Toggle, fmtInterval, inputStyle, textareaStyle, weeklyDraft, weeklyIsUsable,
   type WeeklyDraft
 } from './ui';
-import { formatWeekly, nextWeeklyFireMs } from '@shared/weeklySchedule';
+import { formatActiveWindow, formatWeekly, nextWeeklyFireMs, normalizeActiveWindow, type ActiveWindow } from '@shared/weeklySchedule';
 import { useRtl } from '@/i18n/useDirection';
 
 /**
@@ -36,6 +36,8 @@ interface ScheduledMission {
   quietThresholdMs?: number;
   /** Day-of-week + time. Present ⇒ this replaces intervalMs (main/config.ts). */
   weekly?: { days: number[]; minute: number };
+  /** Interval mission with a full-rate window; see main/config.ts. */
+  activeWindow?: { days: number[]; fromMinute: number; toMinute: number; outsideIntervalMs?: number };
 }
 
 const DEFAULT_INTERVAL_MS = 3_600_000;
@@ -198,6 +200,7 @@ function MissionRow({ mission, targetName, agents, onPatch, onDelete }: {
   const [to, setTo] = useState(mission.to);
   const [intervalMs, setIntervalMs] = useState(mission.intervalMs);
   const [weekly, setWeekly] = useState<WeeklyDraft | null>(weeklyDraft(mission.weekly));
+  const [win, setWin] = useState<ActiveWindow | null>(normalizeActiveWindow(mission.activeWindow));
   const [body, setBody] = useState(mission.body);
   const [saved, setSaved] = useState(false);
 
@@ -209,6 +212,7 @@ function MissionRow({ mission, targetName, agents, onPatch, onDelete }: {
     setTo(mission.to);
     setIntervalMs(mission.intervalMs);
     setWeekly(weeklyDraft(mission.weekly));
+    setWin(normalizeActiveWindow(mission.activeWindow));
     setBody(mission.body);
     setSaved(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -216,13 +220,15 @@ function MissionRow({ mission, targetName, agents, onPatch, onDelete }: {
 
   const heartbeat = mission.kind === 'heartbeat';
   const storedWeekly = weeklyDraft(mission.weekly);
+  const storedWin = normalizeActiveWindow(mission.activeWindow);
   // Compare the CANONICAL form, not the raw object: [1,3] and [3,1] mean the
   // same schedule, and a row that reads as dirty after a no-op click is noise.
   const weeklyKey = (w: WeeklyDraft | null) => (w ? `${[...w.days].sort((a, b) => a - b).join(',')}@${w.minute}` : '');
   const dirty = label !== mission.label || to !== mission.to
     || intervalMs !== mission.intervalMs || body !== mission.body
-    || weeklyKey(weekly) !== weeklyKey(storedWeekly);
-  const whenIsUsable = !weekly || weeklyIsUsable(weekly);
+    || weeklyKey(weekly) !== weeklyKey(storedWeekly)
+    || JSON.stringify(win) !== JSON.stringify(normalizeActiveWindow(mission.activeWindow));
+  const whenIsUsable = (!weekly || weeklyIsUsable(weekly)) && (!win || normalizeActiveWindow(win) !== null);
 
   const fired = mission.lastFiredAt
     ? t('schedulesSection.fired', { time: relTime(Date.now() - mission.lastFiredAt, t) })
@@ -246,7 +252,7 @@ function MissionRow({ mission, targetName, agents, onPatch, onDelete }: {
     // `weekly: undefined` is the switch back to interval mode. It has to be sent
     // explicitly — the backend merges by id and spreads, so simply omitting the
     // key would leave the old schedule in place and the row would snap back.
-    onPatch({ label: trimmed, to, intervalMs, body, weekly: weekly ?? undefined });
+    onPatch({ label: trimmed, to, intervalMs, body, weekly: weekly ?? undefined, activeWindow: weekly ? undefined : win ?? undefined });
     setSaved(true);
     setTimeout(() => setSaved(false), 1300);
   };
@@ -259,7 +265,7 @@ function MissionRow({ mission, targetName, agents, onPatch, onDelete }: {
         title={
           <span style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
             <Chip tone={mission.enabled ? 'on' : 'off'}>
-              {heartbeat ? t('schedulesSection.beat') : storedWeekly ? formatWeekly(storedWeekly) : fmtInterval(mission.intervalMs)}
+              {heartbeat ? t('schedulesSection.beat') : storedWeekly ? formatWeekly(storedWeekly) : storedWin ? `${fmtInterval(mission.intervalMs)} · ${formatActiveWindow(storedWin)}` : fmtInterval(mission.intervalMs)}
             </Chip>
             <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {mission.label}
@@ -300,6 +306,7 @@ function MissionRow({ mission, targetName, agents, onPatch, onDelete }: {
               ? <SchedulePicker intervalMs={intervalMs} weekly={null} onInterval={setIntervalMs} onWeekly={() => { /* interval only */ }} />
               : <SchedulePicker intervalMs={intervalMs} weekly={weekly} onInterval={setIntervalMs} onWeekly={setWeekly} />}
             {heartbeat && <Hint>{t('schedulesSection.beatCeiling')}</Hint>}
+            {!heartbeat && !weekly && <ActiveWindowPicker value={win} onChange={setWin} />}
           </Field>
           <Field label={t('schedulesSection.prompt')}>
             <textarea

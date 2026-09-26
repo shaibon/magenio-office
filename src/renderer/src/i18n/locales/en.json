@@ -1072,6 +1072,15 @@
     "at": "at",
     "weekdays": "weekdays",
     "everyDay": "every day",
+    "addWindow": "Only full rate in a window…",
+    "until": "until",
+    "outside": "outside:",
+    "paused": "paused",
+    "onceADay": "once a day",
+    "twiceADay": "twice a day",
+    "every6h": "every 6 hours",
+    "windowInvalid": "The window must close after it opens, with at least one day.",
+    "removeWindow": "Remove window",
     "pickDayHint": "Pick at least one day, or this will never run."
   },
   "triggerHistory": {

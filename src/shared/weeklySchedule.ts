@@ -141,3 +141,80 @@ export function weeklyDelayMs(w: unknown, nowMs: number, lastFiredAt = 0): numbe
   const next = nextWeeklyFireMs(n, nowMs);
   return next === null ? null : Math.max(0, next - nowMs);
 }
+
+/* ─────────────────────────── active window ───────────────────────────────────
+ * "Full rate Mon-Fri 08:00-20:00, once or twice a day otherwise" for a mission
+ * that stays interval-based. Unlike `weekly` this does NOT replace the interval:
+ * inside the window `intervalMs` applies, outside it `outsideIntervalMs` does
+ * (absent = stay silent until the window reopens). Same local-time,
+ * calendar-field arithmetic as above. The window is same-day only
+ * (fromMinute < toMinute); "festivi" just means "outside the window". */
+
+export interface ActiveWindow {
+  /** 0 = Sunday … 6 = Saturday. */
+  days: number[];
+  /** Window opens at this minute since local midnight (inclusive), 0..1439. */
+  fromMinute: number;
+  /** …and closes at this one (exclusive), fromMinute+1..1440. */
+  toMinute: number;
+  /** Cadence outside the window; absent = no runs outside it. */
+  outsideIntervalMs?: number;
+}
+
+/** Validate and canonicalise; null for anything unusable (a bad window is
+ *  ignored, so the mission falls back to its plain interval). */
+export function normalizeActiveWindow(w: unknown): ActiveWindow | null {
+  if (!w || typeof w !== 'object') return null;
+  const raw = w as { days?: unknown; fromMinute?: unknown; toMinute?: unknown; outsideIntervalMs?: unknown };
+  const days = normalizeWeekly({ days: raw.days, minute: 0 })?.days;
+  if (!days) return null;
+  const { fromMinute: from, toMinute: to, outsideIntervalMs: out } = raw;
+  if (typeof from !== 'number' || !Number.isInteger(from) || from < 0 || from > 1439) return null;
+  if (typeof to !== 'number' || !Number.isInteger(to) || to <= from || to > 1440) return null;
+  const win: ActiveWindow = { days, fromMinute: from, toMinute: to };
+  if (typeof out === 'number' && Number.isFinite(out) && out > 0) win.outsideIntervalMs = out;
+  return win;
+}
+
+/** "weekdays 08:00-20:00, off-window every 12h". */
+export function formatActiveWindow(w: unknown): string {
+  const n = normalizeActiveWindow(w);
+  if (!n) return 'no window';
+  const key = n.days.join(',');
+  const d = key === '1,2,3,4,5' ? 'weekdays' : key === '0,6' ? 'weekends' : key === '0,1,2,3,4,5,6' ? 'every day'
+    : n.days.map((x) => WEEKDAY_LABELS[x]).join(', ');
+  const out = n.outsideIntervalMs
+    ? `off-window every ${n.outsideIntervalMs % 3_600_000 === 0 ? `${n.outsideIntervalMs / 3_600_000}h` : `${Math.round(n.outsideIntervalMs / 60_000)}m`}`
+    : 'off-window paused';
+  return `${d} ${formatMinute(n.fromMinute)}-${formatMinute(n.toMinute === 1440 ? 1439 : n.toMinute)}, ${out}`;
+}
+
+function inWindow(n: ActiveWindow, ms: number): boolean {
+  const d = new Date(ms);
+  const m = d.getHours() * 60 + d.getMinutes();
+  return n.days.includes(d.getDay()) && m >= n.fromMinute && m < n.toMinute;
+}
+
+/**
+ * Wait before the next fire of an interval mission that carries a window, or
+ * null when the window is unusable (caller keeps the plain interval).
+ *
+ * The next fire is the earliest of: lastFiredAt + intervalMs, if that lands
+ * inside the window; lastFiredAt + outsideIntervalMs, if set; and the next
+ * window opening, so full rate resumes on the dot. Zero means overdue. A
+ * mission that never fired (lastFiredAt 0) is overdue, as with plain intervals.
+ */
+export function activeWindowDelayMs(w: unknown, intervalMs: number, nowMs: number, lastFiredAt = 0): number | null {
+  const n = normalizeActiveWindow(w);
+  if (!n) return null;
+  const cands: number[] = [];
+  const inTick = lastFiredAt + intervalMs;
+  if (inWindow(n, Math.max(inTick, nowMs))) cands.push(inTick);
+  if (n.outsideIntervalMs) cands.push(lastFiredAt + n.outsideIntervalMs);
+  const from = new Date(nowMs);
+  for (let offset = 0; offset <= 7; offset++) {
+    const slot = slotAt(from, offset, n.fromMinute);
+    if (n.days.includes(slot.getDay()) && slot.getTime() > nowMs) { cands.push(slot.getTime()); break; }
+  }
+  return Math.max(0, Math.min(...cands) - nowMs);
+}

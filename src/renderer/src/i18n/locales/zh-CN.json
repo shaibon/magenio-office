@@ -1072,6 +1072,15 @@
     "at": "在",
     "weekdays": "工作日",
     "everyDay": "每天",
+    "addWindow": "仅在时间窗口内全速运行…",
+    "until": "至",
+    "outside": "窗口外：",
+    "paused": "暂停",
+    "onceADay": "每天一次",
+    "twiceADay": "每天两次",
+    "every6h": "每 6 小时",
+    "windowInvalid": "窗口必须在开始之后结束，且至少选择一天。",
+    "removeWindow": "移除窗口",
     "pickDayHint": "至少选择一天，否则它将永远不会运行。"
   },
   "triggerHistory": {

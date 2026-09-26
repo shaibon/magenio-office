@@ -19,7 +19,7 @@ import {
   modelForRole, OPS_STANDUP_MISSION, HEARTBEAT_MISSION, JIRA_POLL_MISSION, TRELLO_INTAKE_MISSION, COMPACT_MAINTENANCE_MISSION, type HarnessConfig, type ScheduledMission
 } from './config';
 import { listDir, readFileText, readFileBinary, writeFileText, statAbs, expandTilde } from './fs';
-import { normalizeWeekly, weeklyDelayMs } from '../shared/weeklySchedule';
+import { activeWindowDelayMs, normalizeActiveWindow, normalizeWeekly, weeklyDelayMs } from '../shared/weeklySchedule';
 import {
   getBranch, getStatus, getLog, getBranches, getAheadBehind, isRepo, getDiff, mainRepoRoot,
   addWorktree, removeWorktree, worktreeHasUnintegratedWork, worktreeIsGcSafe,
@@ -775,6 +775,26 @@ function syncMissions(): void {
         const now = Date.now();
         const persisted = (readConfig().missions ?? []).find((x) => x.id === m.id)?.lastFiredAt ?? 0;
         const delay = weeklyDelayMs(weekly, now, justFired ? Math.max(persisted, now) : persisted);
+        if (delay === null) return;
+        entry.timeout = setTimeout(() => { fire(); rearm(true); }, delay);
+      };
+      rearm(false);
+      missionTimers.set(m.id, entry);
+      continue;
+    }
+    // Interval mission with an active window: full cadence inside it, the slow
+    // (or no) cadence outside. Self-reschedules like weekly because the gap
+    // between fires varies. Only reached when `weekly` is absent/invalid, so a
+    // mission without `activeWindow` falls straight through to the code below,
+    // unchanged.
+    const win = normalizeActiveWindow(m.activeWindow);
+    if (win && m.intervalMs > 0) {
+      // `justFired` is the same spin guard as the weekly branch: after a fire the
+      // floor is `now`, so a failed lastFiredAt write cannot produce a hot loop.
+      const rearm = (justFired: boolean): void => {
+        const now = Date.now();
+        const persisted = (readConfig().missions ?? []).find((x) => x.id === m.id)?.lastFiredAt ?? 0;
+        const delay = activeWindowDelayMs(win, m.intervalMs, now, justFired ? Math.max(persisted, now) : persisted);
         if (delay === null) return;
         entry.timeout = setTimeout(() => { fire(); rearm(true); }, delay);
       };

@@ -2,8 +2,8 @@ import { useState, type CSSProperties, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { TRIGGER_MODES, type TriggerMode } from '@shared/triggers';
 import {
-  WEEKDAY_INITIALS, WEEKDAY_LABELS, formatMinute, normalizeWeekly,
-  type WeeklySchedule
+  WEEKDAY_INITIALS, WEEKDAY_LABELS, formatMinute, normalizeActiveWindow, normalizeWeekly,
+  type ActiveWindow, type WeeklySchedule
 } from '@shared/weeklySchedule';
 
 /**
@@ -518,4 +518,54 @@ export function SchedulePicker({ intervalMs, weekly, onInterval, onWeekly }: {
 export function weeklyDraft(w: WeeklySchedule | { days: number[]; minute: number } | undefined): WeeklyDraft | null {
   const n = normalizeWeekly(w);
   return n ? { days: n.days, minute: n.minute } : null;
+}
+
+/* ──────────────────────────── active window ─────────────────────────────── */
+
+export const DEFAULT_ACTIVE_WINDOW: ActiveWindow = {
+  days: [1, 2, 3, 4, 5], fromMinute: 8 * 60, toMinute: 20 * 60, outsideIntervalMs: 12 * 3_600_000
+};
+
+/** Optional "full rate only inside these days and hours" for an interval mission.
+ *  Reuses the 7-day picker: its time field is the window's opening, and a second
+ *  field closes it. `value === null` is "no window" (the mission runs 24/7). */
+export function ActiveWindowPicker({ value, onChange }: {
+  value: ActiveWindow | null; onChange: (w: ActiveWindow | null) => void;
+}) {
+  const { t } = useTranslation();
+  if (!value) {
+    return <MiniButton onClick={() => onChange(DEFAULT_ACTIVE_WINDOW)}>{t('triggersUi.addWindow')}</MiniButton>;
+  }
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <WeeklyPicker
+        value={{ days: value.days, minute: value.fromMinute }}
+        onChange={(w) => onChange({ ...value, days: w.days, fromMinute: w.minute })}
+      />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{t('triggersUi.until')}</span>
+        <input
+          type="time"
+          value={formatMinute(value.toMinute === 1440 ? 1439 : value.toMinute)}
+          onChange={(e) => {
+            const [h, m] = e.target.value.split(':').map(Number);
+            if (Number.isFinite(h) && Number.isFinite(m)) onChange({ ...value, toMinute: h * 60 + m });
+          }}
+          style={{ ...inputStyle, width: 108, padding: '3px 6px' }}
+        />
+        <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{t('triggersUi.outside')}</span>
+        <Select
+          value={String(value.outsideIntervalMs ?? 0)}
+          onChange={(v) => onChange({ ...value, outsideIntervalMs: Number(v) || undefined })}
+        >
+          <option value="0">{t('triggersUi.paused')}</option>
+          <option value={String(24 * 3_600_000)}>{t('triggersUi.onceADay')}</option>
+          <option value={String(12 * 3_600_000)}>{t('triggersUi.twiceADay')}</option>
+          <option value={String(6 * 3_600_000)}>{t('triggersUi.every6h')}</option>
+        </Select>
+      </div>
+      {normalizeActiveWindow(value) === null && <Hint>{t('triggersUi.windowInvalid')}</Hint>}
+      <MiniButton onClick={() => onChange(null)}>{t('triggersUi.removeWindow')}</MiniButton>
+    </div>
+  );
 }

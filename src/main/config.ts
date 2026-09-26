@@ -40,6 +40,11 @@ export interface ScheduledMission {
    *  `intervalMs` is deliberately left on the record so switching back restores
    *  the cadence the user had. See shared/weeklySchedule.ts. */
   weekly?: { days: number[]; minute: number };
+  /** Optional active window on an INTERVAL mission: `intervalMs` applies inside
+   *  it (days + fromMinute..toMinute, local time), `outsideIntervalMs` outside
+   *  (absent = paused outside). Ignored when `weekly` is valid, and when absent
+   *  the mission behaves exactly as before. See shared/weeklySchedule.ts. */
+  activeWindow?: { days: number[]; fromMinute: number; toMinute: number; outsideIntervalMs?: number };
   to: string;
   body: string;
   enabled: boolean;
