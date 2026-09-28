@@ -1352,7 +1352,11 @@
     "count": "{{count}} تكامل · {{usable}} متاح للعمّال",
     "needsSecretShort": "يحتاج سرًّا",
     "test": "اختبار",
-    "edit": "تحرير"
+    "edit": "تحرير",
+    "confirmRemoveTitle": "إزالة «{{label}}»؟",
+    "confirmRemoveLead": "سيؤدي هذا إلى حذف التكامل والمفتاح المحفوظ معه.",
+    "confirmRemoveBody": "كل ما يعتمد على «{{label}}» سيتوقف حتى تضيفه من جديد. المفتاح غير محفوظ في مكان آخر، وسيلزم لصقه مرة أخرى.",
+    "confirmRemoveCta": "إزالة"
   },
   "jiraProjects": {
     "title": "مشاريع Jira",

@@ -1352,7 +1352,11 @@
     "count": "{{count}} 个集成 · {{usable}} 个对工人可用",
     "needsSecretShort": "需要密钥",
     "test": "测试",
-    "edit": "编辑"
+    "edit": "编辑",
+    "confirmRemoveTitle": "移除“{{label}}”？",
+    "confirmRemoveLead": "这会删除该集成及其保存的密钥。",
+    "confirmRemoveBody": "所有调用“{{label}}”的功能都会停止，直到你重新添加。密钥没有其他备份，需要重新粘贴一次。",
+    "confirmRemoveCta": "移除"
   },
   "jiraProjects": {
     "title": "Jira 项目",

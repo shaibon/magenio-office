@@ -2,6 +2,8 @@ import { useEffect, useState, type CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
 import { authTypeNeedsSecret as needsSecret } from '@shared/integrations';
 import { PixelButton } from './PixelButton';
+import { PixelPanel } from './PixelPanel';
+import { Icon } from './Icon';
 import {
   integrationsClient,
   slugify,
@@ -111,6 +113,7 @@ export function IntegrationsRegistry() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [note, setNote] = useState('');
+  const [pendingRemove, setPendingRemove] = useState<IntegrationRecordView | null>(null);
 
   const flash = (msg: string) => { setNote(msg); setTimeout(() => setNote(''), 2400); };
   const refresh = async () => setRecords(await integrationsClient.list());
@@ -180,11 +183,13 @@ export function IntegrationsRegistry() {
     finally { setBusy(false); }
   };
 
-  const onRemove = async (r: IntegrationRecordView) => {
+  const onRemove = (r: IntegrationRecordView) => setPendingRemove(r);
+
+  const doRemove = async (r: IntegrationRecordView) => {
     setBusy(true);
     try { await integrationsClient.remove(r.id); setRowTest((m) => { const n = { ...m }; delete n[r.id]; return n; }); await refresh(); flash(tr('integrations.removed', { label: r.label })); }
     catch { flash(tr('integrations.couldNotRemove')); }
-    finally { setBusy(false); }
+    finally { setBusy(false); setPendingRemove(null); }
   };
 
   const fmtTest = (t: TestResult) => t.ok
@@ -393,7 +398,7 @@ export function IntegrationsRegistry() {
                     <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
                       <PixelButton variant="secondary" size="sm" onClick={() => { void onTestRow(r); }} disabled={busy || testingId === r.id}>{testingId === r.id ? '…' : tr('integrations.test')}</PixelButton>
                       <PixelButton variant="ghost" size="sm" onClick={() => startEdit(r)} disabled={busy}>{tr('integrations.edit')}</PixelButton>
-                      <PixelButton variant="ghost" size="sm" onClick={() => { void onRemove(r); }} disabled={busy}>✕</PixelButton>
+                      <PixelButton variant="ghost" size="sm" onClick={() => onRemove(r)} disabled={busy}>✕</PixelButton>
                     </div>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -410,6 +415,74 @@ export function IntegrationsRegistry() {
       )}
 
       {note && <span style={subText}>{note}</span>}
+
+      {pendingRemove && (
+        <RemoveIntegrationConfirmModal
+          label={pendingRemove.label}
+          busy={busy}
+          onCancel={() => setPendingRemove(null)}
+          onConfirm={() => { void doRemove(pendingRemove); }}
+        />
+      )}
+    </div>
+  );
+}
+
+/** Destructive confirm before removing an integration — the stored key goes with it. */
+function RemoveIntegrationConfirmModal({
+  label, busy, onCancel, onConfirm,
+}: {
+  label: string;
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const { t } = useTranslation();
+
+  return (
+    <div
+      onClick={busy ? undefined : onCancel}
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(26, 19, 32, 0.7)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 400,
+      }}
+    >
+      <div onClick={(e) => e.stopPropagation()} style={{ width: 480, maxWidth: '92vw' }}>
+        <PixelPanel variant="dialog" title={t('integrations.confirmRemoveTitle', { label })} noPadding>
+          <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+              <div style={{
+                width: 32, height: 32, flexShrink: 0,
+                background: 'var(--cth-coral-light)',
+                boxShadow: 'inset 0 0 0 1.5px var(--cth-ink-500)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>
+                <Icon name="bell" />
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{
+                  fontFamily: 'var(--cth-font-display)', fontSize: 12, lineHeight: '20px',
+                  color: 'var(--cth-ink-900)', marginBottom: 4,
+                }}>
+                  {t('integrations.confirmRemoveLead')}
+                </div>
+                <div style={{ fontSize: 15, lineHeight: '22px', color: 'var(--cth-ink-700)' }}>
+                  {t('integrations.confirmRemoveBody', { label })}
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <PixelButton variant="secondary" size="md" onClick={onCancel} disabled={busy}>
+                {t('common.cancel')}
+              </PixelButton>
+              <PixelButton variant="destructive" size="md" onClick={onConfirm} disabled={busy}>
+                {t('integrations.confirmRemoveCta')}
+              </PixelButton>
+            </div>
+          </div>
+        </PixelPanel>
+      </div>
     </div>
   );
 }
