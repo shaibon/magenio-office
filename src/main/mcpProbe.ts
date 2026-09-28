@@ -161,12 +161,14 @@ function runProbe(spec: McpServerSpec, timeoutMs: number): McpProbeResult {
       env: { ...process.env, ...(spec.env ?? {}) }
     });
     const err = r.error as NodeJS.ErrnoException | undefined;
-    // A process still running when the timeout fired was NOT refused by anything:
-    // it started. (Node reports the timeout as an error AND a signal.)
-    if (r.signal || err?.code === 'ETIMEDOUT') return { ok: true, alive: true };
+    // A timed-out process was still running. A process that died from another
+    // signal did not come up, even though spawnSync reports both via r.signal.
+    if (err?.code === 'ETIMEDOUT') return { ok: true, alive: true };
     if (err) return { ok: false, reason: 'spawn-failed', detail: condenseDetail(err.message) };
     if (r.status === 0) return { ok: true, alive: false };
-    const detail = condenseDetail(r.stderr) || `exited with code ${r.status} and no message on stderr`;
+    const detail = condenseDetail(r.stderr) || (r.signal
+      ? `terminated by signal ${r.signal}`
+      : `exited with code ${r.status} and no message on stderr`);
     return { ok: false, reason: 'exit', detail: redactSecretValues(detail) };
   } catch (e) {
     return { ok: false, reason: 'spawn-failed', detail: condenseDetail(String(e)) };

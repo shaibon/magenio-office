@@ -29,6 +29,11 @@ test('inside the window the plain interval applies', () => {
   assert.equal(activeWindowDelayMs(WIN, 30 * MIN, now, now - 2 * HOUR), 0, 'overdue fires now');
 });
 
+test('outside cadence never shortens the interval while the window is open', () => {
+  const now = at(2026, 9, 28, 8, 0);
+  assert.equal(activeWindowDelayMs({ ...WIN, outsideIntervalMs: HOUR }, 2 * HOUR, now, now), 2 * HOUR);
+});
+
 test('outside the window the slow cadence applies', () => {
   const now = at(2026, 9, 28, 22, 0); // Mon night
   // last fired 2h ago -> 10h to go on 12h cadence, but Tue 08:00 opens sooner (10h) -> tie; use 1h ago

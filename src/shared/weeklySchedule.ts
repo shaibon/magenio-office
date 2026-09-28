@@ -230,7 +230,10 @@ export function activeWindowDelayMs(w: unknown, intervalMs: number, nowMs: numbe
         if (t > nowMs && !inWindow(n, t)) { cands.push(t); break outer; }
       }
     }
-  } else if (n.outsideIntervalMs) cands.push(lastFiredAt + n.outsideIntervalMs);
+  } else if (n.outsideIntervalMs) {
+    const outTick = lastFiredAt + n.outsideIntervalMs;
+    if (!inWindow(n, Math.max(outTick, nowMs))) cands.push(outTick);
+  }
   const from = new Date(nowMs);
   for (let offset = 0; offset <= 7; offset++) {
     const slot = slotAt(from, offset, n.fromMinute);

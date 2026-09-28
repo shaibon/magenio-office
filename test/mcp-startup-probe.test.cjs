@@ -70,6 +70,12 @@ test('a command that cannot be spawned is reported dead, not thrown', () => {
   assert.equal(r.reason, 'spawn-failed');
 });
 
+test('a server terminated by a signal is reported dead', () => {
+  const r = probeStdioServer({ command: NODE, args: ['-e', 'process.kill(process.pid, "SIGTERM")'] }, { noCache: true });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'exit');
+});
+
 test('a verdict is cached per command line + file fingerprint', () => {
   const dir = tmp('md-probe-cache-');
   const counter = path.join(dir, 'count');
@@ -199,4 +205,26 @@ test('a healthy Magento config is mounted with the project binding as --config',
   );
   assert.deepEqual(map['munder-magento'], { command: pkg.command, args: [pkg.args[0], '--config', cfgPath] });
   assert.equal(hive['mcpDegradationNote']('pam-t069b', 'Pam'), '');
+});
+
+test('a later spawn does not report an earlier MCP failure', async () => {
+  const pkg = installedServer();
+  const cfgPath = writeConfig(tmp('md-probe-stale-'), '{"broken":true}');
+  harnessProbe = { ok: false, reason: 'exit', detail: 'Invalid config' };
+  hive['buildDefaultMcpServers'](
+    CWD, { ...ALL_OFF, magento: { enabled: true, ...pkg } }, 'pam-stale', { role: 'pm' }, cfgPath
+  );
+  assert.match(hive['mcpDegradationNote']('pam-stale', 'Pam'), /munder-magento/);
+
+  const injection = await hive.ensureAgent(
+    { id: 'pam-stale', name: 'Pam', provider: 'claude', cwd: CWD },
+    { mcpDefaults: ALL_OFF }
+  );
+  assert.equal(injection.degraded, undefined);
+
+  const before = logLines('mcp-server-dead').length;
+  hive['buildDefaultMcpServers'](
+    CWD, { ...ALL_OFF, magento: { enabled: true, ...pkg } }, 'pam-stale', { role: 'pm' }, cfgPath
+  );
+  assert.equal(logLines('mcp-server-dead').length, before + 1, 'a new spawn can announce a new refusal');
 });

@@ -812,6 +812,11 @@ export class HiveManager {
     const root = this.root();
     if (!root) return { args: [], env: {} };
     this.ensureHive();
+    // These records describe one spawn; a later attempt must get a fresh verdict.
+    this.mcpMountFailures.delete(meta.id);
+    for (const key of this.mcpFailuresAnnounced) {
+      if (key.startsWith(`${meta.id}\u0000`)) this.mcpFailuresAnnounced.delete(key);
+    }
 
     const dir = this.agentDir(meta.id);
     mkdirSync(join(dir, 'inbox', '.done'), { recursive: true });

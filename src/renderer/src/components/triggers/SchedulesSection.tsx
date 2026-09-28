@@ -8,7 +8,7 @@ import {
   ActiveWindowPicker, Toggle, fmtInterval, inputStyle, textareaStyle, weeklyDraft, weeklyIsUsable,
   type WeeklyDraft
 } from './ui';
-import { formatActiveWindow, formatWeekly, nextWeeklyFireMs, normalizeActiveWindow, type ActiveWindow } from '@shared/weeklySchedule';
+import { activeWindowDelayMs, formatActiveWindow, formatWeekly, nextWeeklyFireMs, normalizeActiveWindow, type ActiveWindow } from '@shared/weeklySchedule';
 import { useRtl } from '@/i18n/useDirection';
 
 /**
@@ -236,11 +236,14 @@ function MissionRow({ mission, targetName, agents, onPatch, onDelete }: {
   // A weekly mission's next run comes from the calendar, not from lastFiredAt +
   // interval — and unlike the interval case it is knowable before the first run,
   // so a schedule that has never fired can still say when it will.
+  const now = Date.now();
+  const windowDelay = storedWin && activeWindowDelayMs(storedWin, mission.intervalMs, now, mission.lastFiredAt ?? 0);
   const nextAt = storedWeekly
-    ? nextWeeklyFireMs(storedWeekly, Date.now())
+    ? nextWeeklyFireMs(storedWeekly, now)
+    : storedWin ? windowDelay === null ? null : now + windowDelay
     : mission.lastFiredAt ? mission.lastFiredAt + mission.intervalMs : null;
   const next = mission.enabled && nextAt !== null
-    ? ` · ${t('schedulesSection.next', { time: relTime(Date.now() - nextAt, t) })}`
+    ? ` · ${t('schedulesSection.next', { time: relTime(now - nextAt, t) })}`
     : '';
 
   const save = () => {
