@@ -11,6 +11,7 @@ import { join, resolve, relative, sep, basename, dirname, isAbsolute } from 'nod
 import { homedir } from 'node:os';
 import { request as httpsRequest } from 'node:https';
 import { PtyManager, type SpawnOptions } from './pty';
+import { reapHiveMcp } from './mcpReap';
 import { resolveCommand as resolveCliCommand, isSafeCommandName } from './shellEnv';
 import { initAutoUpdater, abortPendingRestart } from './updater';
 import { RealtimeFloorWatcher } from './realtimeFloorWatcher';
@@ -607,6 +608,26 @@ function removeWorkerScratch(workerId: string): void {
 // SAME pty/window (no user click). Provider-agnostic. Idempotent by construction: the
 // relaunch carries `noAutoInstall`, so the installer can never fire (let alone loop) a
 // second time — a binary that's somehow still missing just spawns and exits normally.
+// t-073: the MCP servers a session leaves behind are spawned DETACHED by the
+// CLI (its own process group), so neither `kill()` nor `killAll()`'s group
+// sweep can reach them; without this they accumulate for the life of the app —
+// measured at 85 processes / ~460 MB over five restarts. The reaper decides by
+// identity (a command line the app itself declared in an agent's mcp.json) and
+// touches nothing else, so it is safe on every teardown path. Wired once here:
+// pty.ts owns the sessions but has no business reading the hive root.
+ptyManager.setMcpReaper((sessionPid) => {
+  try {
+    const root = hive.root();
+    if (!root) return; // hive disabled: nothing was declared, nothing to reap
+    const r = reapHiveMcp(root, { sessionPid });
+    if (r.reaped.length) {
+      // ROUTE it through the event log, not console: a reap is an observed
+      // fact about the floor, and the same feed every agent reads is where
+      // "where did my MCP server go" gets answered.
+      hive.appendLog({ kind: 'mcp-orphan-reaped', sessionPid, pids: r.reaped, trigger: 'session-exit' });
+    }
+  } catch { /* best-effort: never break a teardown */ }
+});
 ptyManager.setExitHandler((id, exitCode, info) => {
   // Record an ABNORMAL death before teardown — teardownPty drops the
   // pty->agent mapping, so after it runs we can no longer say WHOSE process
@@ -5415,6 +5436,21 @@ function bootstrapHiveServices(): void {
   });
   control.replaceAutoDeliveryPauses(readConfig().autoDeliveryPausedAgents ?? []);
   archiveOrphanedAgents(); // #57/#58: archive stale archived:false entries with no live PTY
+  // t-073: app start is the one moment we can clean up what PREVIOUS runs left
+  // behind. Sessions leak their detached MCP servers on every teardown, and a
+  // crash or a hard quit skips even that reaper, so sweep the floor here too.
+  // Same identity rule as the teardown path (see mcpReap.ts): the Boss's own
+  // orphaned daemons (codegraph, openclaw) are not declared by us and are never
+  // candidates — that is the whole point of keying on our own mcp.json.
+  try {
+    const root = hive.root();
+    if (root) {
+      const orphaned = reapHiveMcp(root);
+      if (orphaned.reaped.length) {
+        hive.appendLog({ kind: 'mcp-orphan-reaped', pids: orphaned.reaped, trigger: 'app-start' });
+      }
+    }
+  } catch (e) { console.error('[startup] MCP orphan reap failed:', e); }
   hive.startRouter();
   startEphemeralWorkerWatcher(); // poll HIVE_ROOT/spawn-requests → ephemeral workers
   // Phase 2: the loopback secret broker. Bind it BEFORE workers spawn so each spawn can
