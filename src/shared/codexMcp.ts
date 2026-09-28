@@ -128,9 +128,8 @@ function tomlKey(k: string): string {
  *
  * Strings and arrays go through JSON.stringify: a JSON string is also a valid
  * TOML basic string and a JSON array of strings is a valid TOML inline array, and
- * it escapes the quotes a hive path containing spaces needs. `env` values are
- * therefore always strings — codex's schema wants strings there, and the catalog
- * already declares empty-string placeholders for servers awaiting a key.
+ * it escapes the quotes a hive path containing spaces needs. `${NAME}` env
+ * references become `env_vars`, so key values never enter config.toml.
  */
 export function codexMcpToml(servers: Record<string, CodexMcpServer>): string {
   const names = Object.keys(servers);
@@ -145,9 +144,12 @@ export function codexMcpToml(servers: Record<string, CodexMcpServer>): string {
     // so the key lands in the server's own table.
     out += approvalModeLine(name);
     const env = Object.entries(s.env ?? {});
-    if (env.length) {
+    const forwarded = env.filter(([k, v]) => v === `\${${k}}`).map(([k]) => k);
+    if (forwarded.length) out += `env_vars = ${JSON.stringify(forwarded)}\n`;
+    const literals = env.filter(([k, v]) => v !== `\${${k}}`);
+    if (literals.length) {
       out += `\n[mcp_servers.${key}.env]\n`;
-      for (const [k, v] of env) out += `${tomlKey(k)} = ${JSON.stringify(v)}\n`;
+      for (const [k, v] of literals) out += `${tomlKey(k)} = ${JSON.stringify(v)}\n`;
     }
   }
   return out;

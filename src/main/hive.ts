@@ -450,6 +450,7 @@ export class HiveManager {
    *  two or three `buildDefaultMcpServers` calls inside ONE spawn produce one
    *  event each rather than three identical ones. */
   private mcpFailuresAnnounced = new Set<string>();
+  private missingMcpEnvWarnings = new Set<string>();
 
   /** The role ledger, read once per process. Lazy so a caller that never spawns
    *  (tests, headless) never touches the disk. */
@@ -1479,19 +1480,6 @@ export class HiveManager {
       // never ride in on a default (the catalog already ships these OFF, but this
       // guards a hand-edited/partial mcpDefaults map too).
       if (e.tier !== 'safe-readonly' && consented !== true) continue;
-      // t-067: a keyed server whose secret is still the catalog's EMPTY placeholder
-      // cannot start — it exits immediately ("BRAVE_API_KEY environment variable is
-      // required") and the client shows a server that never connects, which reads
-      // as a client-side bug rather than a missing credential. Fail closed and name
-      // the key instead of mounting a corpse. The catalog spells a required secret
-      // as an empty string, so this is the one place that convention is enforced.
-      const missingEnv = Object.entries(e.spec.env ?? {})
-        .filter(([, v]) => !String(v).trim())
-        .map(([k]) => k);
-      if (missingEnv.length) {
-        console.error(`[hive] MCP '${e.id}' not wired for ${agentId}: required env empty (${missingEnv.join(', ')})`);
-        continue;
-      }
       // Per-agent scoping: an empty or absent list means every agent, which is
       // the behaviour every existing consent has. `roles` (t-056) is a second,
       // additive way in — by role text, not by an id that changes across a
@@ -1509,6 +1497,22 @@ export class HiveManager {
         && this.isPrivilegedPm(agentId)
         && (roleMeta?.provider ?? 'claude') === 'claude';
       if (!idAllowed && !roleAllowed) continue;
+      // Magento is opt-in per project; projects without a config are expected.
+      if (e.id === 'magento' && !magentoConfig) continue;
+      // Empty catalog values name required variables inherited from Munder's
+      // environment. Keep their values out of the agent's MCP config on disk.
+      const requiredEnv = Object.entries(e.spec.env ?? {});
+      const missingEnv = requiredEnv
+        .filter(([k, v]) => !String(v).trim() && !process.env[k]?.trim())
+        .map(([k]) => k);
+      if (missingEnv.length) {
+        const warning = `${e.id}:${missingEnv.join(',')}`;
+        if (!this.missingMcpEnvWarnings.has(warning)) {
+          this.missingMcpEnvWarnings.add(warning);
+          console.warn(`[hive] MCP '${e.id}' skipped: required env empty (${missingEnv.join(', ')})`);
+        }
+        continue;
+      }
 
       // t-067: `git` is scoped to the agent's own cwd at spawn, so a cwd that is
       // not inside a git working tree makes the server die on startup ("not a
@@ -1545,11 +1549,7 @@ export class HiveManager {
         // Magento: one process per project. No project config → fail closed (no
         // server); never a config other than the agent's own project's.
         if (e.id === 'magento') {
-          if (!magentoConfig) {
-            console.error(`[hive] MCP 'magento' not wired for ${agentId}: no project Magento config`);
-            continue;
-          }
-          args = [args[0], '--config', magentoConfig];
+          args = [args[0], '--config', magentoConfig!];
           // t-069: the one server whose health depends on a file we cannot judge
           // by reading the declaration — its own config, on disk, in a shape only
           // the server knows. Ask the server (mcpProbe): a project agent whose
@@ -1569,7 +1569,7 @@ export class HiveManager {
       out[`munder-${e.id}`] = {
         command,
         args,
-        ...(e.spec.env ? { env: e.spec.env } : {})
+        ...(requiredEnv.length ? { env: Object.fromEntries(requiredEnv.map(([k, v]) => [k, v || `\${${k}}`])) } : {})
       };
     }
     return out;

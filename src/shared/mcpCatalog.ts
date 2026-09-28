@@ -38,8 +38,8 @@ export interface McpCatalogEntry {
   spec: {
     command: string;
     args: string[];
-    /** Required env (e.g. an API token). Present only on write/secret entries; the
-     *  value is supplied via consent, never hard-coded here. */
+    /** Required env (e.g. an API token). An empty value names a variable that
+     *  must be present in Munder's environment; its value is never stored here. */
     env?: Record<string, string>;
   };
   tier: McpTier;
