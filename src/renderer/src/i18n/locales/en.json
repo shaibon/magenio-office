@@ -1352,7 +1352,11 @@
     "count": "{{count}} integrations · {{usable}} available to workers",
     "needsSecretShort": "Needs secret",
     "test": "test",
-    "edit": "edit"
+    "edit": "edit",
+    "confirmRemoveTitle": "remove “{{label}}”?",
+    "confirmRemoveLead": "this deletes the integration and its stored key.",
+    "confirmRemoveBody": "Anything that calls “{{label}}” stops working until you add it again. The key is not kept anywhere else — you will have to paste it in a second time.",
+    "confirmRemoveCta": "remove it"
   },
   "jiraProjects": {
     "title": "Jira projects",
