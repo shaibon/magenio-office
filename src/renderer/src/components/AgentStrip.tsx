@@ -313,7 +313,7 @@ export function AgentStrip({ config }: AgentStripProps) {
             {/* Per-agent dismiss wires straight to removeRestorableAgent
                 (filters + persistRestorable), so a dismissed agent never
                 reappears after reload. Each row also restores that ONE agent
-                now — the Boss's exact "I need this specific one back" case. */}
+                now — the exact "I need this specific one back" case. */}
             {restorableAgents.map((a: Agent) => {
               const isFrozen = !!config?.autoDeliveryPausedAgents?.includes(a.id);
               const isBusy = rowRestoreBusyId === a.id;

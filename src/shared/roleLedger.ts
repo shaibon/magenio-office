@@ -1,5 +1,5 @@
 /**
- * t-056 (review fix) — the PRIVILEGED role ledger.
+ * The PRIVILEGED role ledger.
  *
  * Why this module exists at all. Before this, the role that decides whether an
  * agent gets the integration-broker token or the role-scoped Trello server was

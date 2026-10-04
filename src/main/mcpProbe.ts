@@ -1,5 +1,5 @@
 /**
- * t-069 — a mounted MCP server that dies before it can serve is invisible.
+ * A mounted MCP server that dies before it can serve is invisible.
  *
  * `buildDefaultMcpServers` decides whether a server is mounted from what is
  * DECLARED: the catalog entry, the consent map, the project binding. That is
@@ -12,9 +12,9 @@
  *
  * Diagnosed for real on 2026-09-22: `~/.config/magenio/burd.json` carried one key
  * the magento-mcp schema rejects (`ssh.password`), so the Magento server died at
- * startup and EVERY project agent silently lost its Magento tools. Four rounds of
- * hunting went into a one-line config typo, because the only signal was "the tool
- * is not there".
+ * startup and every project agent silently lost its Magento tools: the only
+ * signal was "the tool is not there", and a one-line config typo cost more to
+ * find than any schema error would have.
  *
  * This module answers the one question a declaration cannot: DOES IT COME UP? It
  * runs the exact command line the client will run and reads the outcome. It

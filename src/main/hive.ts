@@ -423,7 +423,7 @@ export class HiveManager {
   constructor(
     private getHome: () => string | null,
     private emit?: (channel: string, payload: unknown) => boolean | void,
-    /** t-056: the app-owned data dir (Electron userData) holding the privileged
+    /** The app-owned data dir (Electron userData) holding the privileged
      *  role ledger. It MUST be a directory agents cannot write — deliberately not
      *  one of `sandboxWritableDirs()`' entries — because it is the only source of
      *  the role that grants the broker token and the role-scoped Trello server.
@@ -439,14 +439,14 @@ export class HiveManager {
    *  fail-closed instead of a list of names someone has to keep up to date. */
   private trelloWriteBlocked = new Set<string>();
 
-  /** t-069: agentId → the MCP servers we refused to mount because their own
+  /** agentId → the MCP servers we refused to mount because their own
    *  command line does not come up, with the reason. Kept per agent so the spawn
    *  path that runs LAST (`--mcp-config`, after `hookSettings` already built the
    *  same map) can turn it into the same user-facing degradation notice the proxy
    *  bridge uses, instead of an absence nobody can explain. */
   private mcpMountFailures = new Map<string, { server: string; detail: string }[]>();
 
-  /** t-069: reasons already written to log.jsonl + pushed to the floor, so the
+  /** Reasons already written to log.jsonl + pushed to the floor, so the
    *  two or three `buildDefaultMcpServers` calls inside ONE spawn produce one
    *  event each rather than three identical ones. */
   private mcpFailuresAnnounced = new Set<string>();
@@ -829,7 +829,7 @@ export class HiveManager {
     const reg = this.registry();
     const prev = reg.agents[meta.id];
     if (meta.cwd) meta = { ...meta, cwd: expandTilde(meta.cwd) };
-    /** t-056: the role the SPAWN REQUEST carried, captured BEFORE the registry
+    /** The role the SPAWN REQUEST carried, captured BEFORE the registry
      *  fallback below can fold `prev.role` into it. Only this value may become a
      *  privilege — `prev.role` comes from registry.json, which sits in a
      *  directory the agents can write. */
@@ -837,7 +837,7 @@ export class HiveManager {
     const role = preferredAgentRole(meta.role, prev?.role, !!meta.isGod);
     meta = { ...meta, role };
 
-    // t-056: record the requested role in the app-owned ledger, ONCE per agent
+    // Record the requested role in the app-owned ledger, ONCE per agent
     // id. That ledger — not registry.json — is what grants the broker token and
     // the role-scoped Trello server (see shared/roleLedger.ts). First sighting
     // only: an id that already has an entry keeps it, so an agent editing its own
@@ -1109,7 +1109,7 @@ export class HiveManager {
         args.push('--mcp-config', mcpConfigPath);
       }
     }
-    // t-069: a server we refused to mount is a degraded spawn, and the app already
+    // A server we refused to mount is a degraded spawn, and the app already
     // has a place for that — `degraded` becomes a native toast and part of the
     // spawn result (see index.ts). Silence is what made the Magento config typo
     // cost four rounds of diagnosis: the agent simply had no such tool.
@@ -1292,7 +1292,7 @@ export class HiveManager {
     return Array.from(new Set(out));
   }
 
-  // ─── t-056: the privileged role ledger ─────────────────────────────────────
+  // ─── The privileged role ledger ─────────────────────────────────────
   // Broker/Trello privilege is decided from THIS ledger, never from
   // registry.json (see shared/roleLedger.ts for why). The file lives in the
   // app's own data directory, outside every agent's writable set.
@@ -1370,7 +1370,7 @@ export class HiveManager {
     // the Bash sandbox). Bash children via sandbox.filesystem.denyRead, the Read
     // tool via permissions.deny.
     const magentoDeny = magento?.denyRead ?? [];
-    // t-056: any non-god agent that received the Trello server (by id or by PM
+    // Any non-god agent that received the Trello server (by id or by PM
     // role — either path) has its write tools blocked here, not left to prompt
     // discipline alone (only god's mission carries that discipline today).
     // EXACT tool names only, no globs. This settings-level list is defense in
@@ -1395,7 +1395,7 @@ export class HiveManager {
       // 2031, so startup still matches without pinning anything.
       ...(theme ? { theme: 'auto' } : {}),
       // W3 — default skills/MCP bundle. Claude Code does NOT load `mcpServers`
-      // from --settings (verified live: god's and Pam's settings both carried
+      // from --settings (verified live: the settings of both agents carried
       // munder-* entries here and neither session ever saw the tools) — it only
       // reads it from --mcp-config. The caller that writes this settings.json
       // (the function that pushes `--settings`) writes a sibling mcp.json and
@@ -1481,7 +1481,7 @@ export class HiveManager {
       // guards a hand-edited/partial mcpDefaults map too).
       if (e.tier !== 'safe-readonly' && consented !== true) continue;
       // Per-agent scoping: an empty or absent list means every agent, which is
-      // the behaviour every existing consent has. `roles` (t-056) is a second,
+      // the behaviour every existing consent has. `roles` is a second,
       // additive way in — by role text, not by an id that changes across a
       // restore. That text comes from the app-owned privileged-role ledger
       // (isPrivilegedPm), NOT from registry.json, which lives in a directory the
@@ -1514,7 +1514,7 @@ export class HiveManager {
         continue;
       }
 
-      // t-067: `git` is scoped to the agent's own cwd at spawn, so a cwd that is
+      // `git` is scoped to the agent's own cwd at spawn, so a cwd that is
       // not inside a git working tree makes the server die on startup ("not a
       // valid Git repository"). The client then retries against a process that
       // will never come up, and the agent silently has no git tools. god's cwd is
@@ -1550,7 +1550,7 @@ export class HiveManager {
         // server); never a config other than the agent's own project's.
         if (e.id === 'magento') {
           args = [args[0], '--config', magentoConfig!];
-          // t-069: the one server whose health depends on a file we cannot judge
+          // The one server whose health depends on a file we cannot judge
           // by reading the declaration — its own config, on disk, in a shape only
           // the server knows. Ask the server (mcpProbe): a project agent whose
           // Magento config the server rejects used to get a mount that died at
@@ -1576,7 +1576,7 @@ export class HiveManager {
   }
 
   /**
-   * t-069 — ask the server itself whether it comes up, before mounting it.
+   * Ask the server itself whether it comes up, before mounting it.
    *
    * A seam, not indirection for its own sake: the failure path is the part worth
    * testing, and a test must be able to drive it without a real Magento server on
@@ -1588,7 +1588,7 @@ export class HiveManager {
   }
 
   /**
-   * t-069 — record a refused mount where a human and the hive can both see it: the
+   * Record a refused mount where a human and the hive can both see it: the
    * agent's own memory of the spawn (for the degradation notice), log.jsonl (which
    * is how the floor diagnoses anything after the fact), and the renderer event the
    * app already uses for "this spawn is degraded, here is why".
@@ -1615,7 +1615,7 @@ export class HiveManager {
     });
   }
 
-  /** t-069 — what the spawn path tells the user, in the same shape the proxy
+  /** What the spawn path tells the user, in the same shape the proxy
    *  bridge's degradation uses. Empty string when every server mounted. */
   private mcpDegradationNote(agentId: string, name: string): string {
     const failures = this.mcpMountFailures.get(agentId) ?? [];
@@ -2495,7 +2495,7 @@ export class HiveManager {
   }
 
   /**
-   * t-065 — the codex counterpart of the Claude path's `mcp.json`.
+   * The codex counterpart of the Claude path's `mcp.json`.
    *
    * Same source map (`buildDefaultMcpServers`: consent ∩ catalog, `munder-*`
    * namespacing, filesystem/git scoped to the agent cwd, Magento resolved per
@@ -2534,7 +2534,7 @@ export class HiveManager {
    *  home from namespaced paths under the standard global scan roots. The user's
    *  ~/.codex/auth.json is linked in and their config.toml is copied + extended
    *  (login + model/provider/trust settings still apply).
-   *  `mcpTables` is the pre-rendered TOML block from `codexMcpTables()` (t-065):
+   *  `mcpTables` is the pre-rendered TOML block from `codexMcpTables()`:
    *  codex reads external servers from `config.toml` only, so the default-MCP
    *  bundle reaches a codex agent through this file and nowhere else. Empty when
    *  nothing is enabled, in which case the file is byte-identical to before.
@@ -2609,7 +2609,7 @@ export class HiveManager {
           config += `\n[[hooks.${ev}]]\n[[hooks.${ev}.hooks]]\ntype = "command"\ncommand = ${JSON.stringify(command)}\ntimeout = 30\n`;
         }
       }
-      // t-065: the default-MCP bundle, in the only surface codex reads it from.
+      // The default-MCP bundle, in the only surface codex reads it from.
       // Appended AFTER the hooks so a server name can never land inside a
       // `[[hooks.*]]` table, and appended to (never replacing) the user's seeded
       // config, whose own `[mcp_servers.*]` entries stay intact and visible.
@@ -2999,7 +2999,7 @@ export class HiveManager {
           anyCtx = true;
         }
         // Same-named agents are only distinguishable once the project is in the
-        // row itself — the whole reason t-033 adds it to shared fleet data.
+        // row itself — the whole reason it is added to shared fleet data.
         const projectTag = !a.isGod && a.project ? ` [${a.project}]` : '';
         return `${a.id}${a.name ? ` "${a.name}"` : ''}${projectTag} (${bits.join(', ')})`;
       });
