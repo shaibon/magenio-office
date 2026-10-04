@@ -58,7 +58,7 @@ interface Capability {
   workerId: string;
   allowedIds: Set<string>;
   grantedAt: number;
-  /** t-056: a PM's broker access is read-only — every non-GET request is
+  /** A PM's broker access is read-only — every non-GET request is
    *  rejected before route dispatch, regardless of which route it targets. */
   readOnly: boolean;
 }
@@ -80,7 +80,7 @@ export interface IntegrationBrokerDeps {
    *  WHY THIS EXISTS: freezing was only ever reachable from the UI (the
    *  `control:autoDelivery` IPC), so an orchestrator agent could park work on a
    *  frozen teammate but never call it back — every thaw needed a human to click.
-   *  That made "god or Pam can thaw an agent when needed" unsatisfiable in
+   *  That made "an orchestrator or a PM can thaw an agent when needed" unsatisfiable in
    *  practice. Editing the persisted list alone does NOT do it either: the gate
    *  that actually withholds delivery lives in main's in-memory `control` map and
    *  is loaded from config only at app-start, so a file edit leaves the running
@@ -154,7 +154,7 @@ export class IntegrationBroker {
 
   /** Mint a per-worker capability token granting access to `allowedIds`. Any prior
    *  token for this worker is revoked first. The token is a random handle — never a
-   *  secret, never persisted. `readOnly` (t-056) restricts the token to GET only,
+   *  secret, never persisted. `readOnly` restricts the token to GET only,
    *  across every route — used for a PM's broker access. */
   grant(workerId: string, allowedIds: string[], opts?: { readOnly?: boolean }): string {
     this.revoke(workerId);
@@ -181,12 +181,12 @@ export class IntegrationBroker {
     return undefined;
   }
 
-  /** t-056 — what a READ-ONLY capability may still do.
+  /** What a READ-ONLY capability may still do.
    *
    *  GET is the general read. HEAD is deliberately NOT allowed: the proxy would
    *  forward it and a downstream server may treat it as a different verb.
    *
-   *  Exactly one write is excepted, `POST /agents/<id>/thaw`: t-040 requires a PM
+   *  Exactly one write is excepted, `POST /agents/<id>/thaw`: a PM is required
    *  to be able to call a parked teammate back without a human, and thaw is the
    *  recovery direction. `freeze` is NOT excepted — a read-only token cannot park
    *  anyone. */
@@ -227,11 +227,11 @@ export class IntegrationBroker {
     const cap = this.resolveCapability(IntegrationBroker.tokenFrom(req));
     if (!cap) return IntegrationBroker.sendError(res, 401, 'unauthorized', 'missing or invalid capability token');
 
-    // 2a) A read-only capability (t-056: PM broker access) may only read. Checked
+    // 2a) A read-only capability (PM broker access) may only read. Checked
     // before any route dispatch so it covers /i/<id>/<path> AND every other route
     // uniformly, not just the integration proxy. Exactly one write is excepted:
     // the agent-control THAW post, because a PM must be able to wake a parked
-    // teammate without a human (t-040); the freeze direction stays forbidden.
+    // teammate without a human; the freeze direction stays forbidden.
     //
     // An X-HTTP-Method-Override header is treated as a write regardless: the
     // proxy forwards headers verbatim, and a downstream server that honours the

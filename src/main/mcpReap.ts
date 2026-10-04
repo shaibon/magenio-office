@@ -31,9 +31,9 @@
  * Every clause is load-bearing; each one alone is a false positive waiting to
  * happen:
  *   - identity alone would kill a LIVE session's server, which has an owner;
- *   - detachment-alone would kill the Boss's own detached daemons — `codegraph
+ *   - detachment-alone would kill unrelated detached daemons — `codegraph
  *     serve --mcp` on a non-hive project, `openclaw … gateway` — which are
- *     exactly the orphans this floor must NOT touch.
+ *     exactly the processes this floor must NOT touch.
  *
  * Deliberately NOT matched: a server whose declared command is a wrapper (`npx`,
  * `uvx`) resolves to a different argv[0] in the process table, so it does not
@@ -186,8 +186,8 @@ export interface ReapDecisionOptions {
  *
  * A candidate is a declared server that is DETACHED (`pgid === pid`) and either
  * orphaned (`ppid === 1`) or a child of the session being torn down. Everything
- * else is left strictly alone — a live session's attached server, the Boss's
- * non-hive daemons, an unrelated process that merely mentions our paths.
+ * else is left strictly alone — a live session's attached server, daemons on
+ * projects that are not ours, an unrelated process that merely mentions our paths.
  */
 export function reapTargets(
   rows: ProcRow[],

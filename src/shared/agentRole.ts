@@ -34,7 +34,7 @@ export function preferredAgentRole(
   return isGod ? 'orchestrator (god)' : 'agent';
 }
 
-/** t-056: is this agent a PM (a "Pam")? Matched by keyword against the durable
+/** Is this agent a PM? Matched by keyword against the durable
  *  role/capabilities text, the same way `modelForRole` (config.ts) already picks
  *  cheap-model helpers — there is no structured role enum, `role` is free text
  *  set at hire. Never by agent id: an id changes across a restore, a role

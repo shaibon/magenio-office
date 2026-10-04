@@ -1,5 +1,5 @@
 /**
- * t-044 — registry-backed recovery for the renderer's Archived list.
+ * Registry-backed recovery for the renderer's Archived list.
  *
  * registry.json is the durable roster source: every agent the hive has ever
  * spawned is there, archived or not, with its original id and cwd. The

@@ -146,7 +146,7 @@ export class TelemetryCollector {
    *  has no input source of its own (hook payloads don't expose api errors). */
   private readonly apiErrorSubs = new Set<(agentId: string) => void>();
 
-  /** t-034 diagnostic (2026-09-05): a `--resume`d agent (thaw or a plain boot
+  /** A `--resume`d agent (thaw or a plain boot
    *  restore) was observed to stop reporting live usage in fleet.json even
    *  after it demonstrably ran a turn. Once-per-agent-per-process breadcrumbs
    *  so the NEXT restart shows immediately whether OTLP metrics for a resumed
@@ -233,7 +233,7 @@ export class TelemetryCollector {
     }
     this.agentSessions.delete(agentId);
     this.spans.delete(agentId);
-    // t-034: let the next spawn's first metric (or drop) log again — the
+    // Let the next spawn's first metric (or drop) log again — the
     // question is whether THIS respawn reattaches, not whether it ever did.
     this.diagMetricSeen.delete(agentId);
     this.diagMetricDropped.delete(agentId);
@@ -323,7 +323,7 @@ export class TelemetryCollector {
             const agentId = str(attrs['agent.id']) || str(resAttrs['agent.id']);
             const sessionId = str(attrs['session.id']);
             if (!agentId || !sessionId) {
-              // t-034: a metric datapoint that never reaches `touched` below —
+              // a metric datapoint that never reaches `touched` below —
               // if a resumed agent's metrics land here without a session.id,
               // this is where they silently vanish. Once per agentId (or once
               // for a wholly anonymous datapoint) per process lifetime.

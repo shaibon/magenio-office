@@ -345,7 +345,7 @@ export interface HarnessConfig {
    *  Seeded from MCP_CATALOG (safe-readonly ON, write/secret OFF); the user flips
    *  these in Settings. A server is wired into an agent only when enabled here.
    *  `agents` narrows a server to specific agent ids (absent/empty = every agent,
-   *  today's behaviour). `roles` (t-056) narrows by role text instead (see
+   *  today's behaviour). `roles` narrows by role text instead (see
    *  `isPmRole`) — either match is enough. `command`/`args` supply the launch
    *  command for catalog entries flagged `userConfigured` — and are IGNORED for
    *  every other entry. */

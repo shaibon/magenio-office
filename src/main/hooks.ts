@@ -268,7 +268,7 @@ export class HookServer {
       return {};
     }
 
-    // t-056 — Trello write policy, FAIL-CLOSED. A non-god agent that received the
+    // Trello write policy, FAIL-CLOSED. A non-god agent that received the
     // Trello server may call only the classified READ tools. Deliberately an
     // allow-list: a write tool added by a newer server build is not on it and is
     // denied here, where the settings-level deny list (which can only name tools

@@ -62,7 +62,7 @@ export interface McpCatalogEntry {
    *  restricted from its first materialization, not from the moment the user
    *  remembers to type an allow-list. */
   defaultAgents?: string[];
-  /** t-056: like `defaultAgents` but by ROLE (see `isPmRole`), not by agent id —
+  /** Like `defaultAgents` but by ROLE (see `isPmRole`), not by agent id —
    *  survives a restore where ids change. Additive to `defaultAgents`: either
    *  match is enough to include the agent. */
   defaultRoles?: string[];
@@ -72,13 +72,13 @@ export interface McpCatalogEntry {
 export interface McpConsentEntry {
   enabled: boolean;
   agents?: string[];
-  /** t-056: role-based counterpart to `agents` (see `McpCatalogEntry.defaultRoles`). */
+  /** Role-based counterpart to `agents` (see `McpCatalogEntry.defaultRoles`). */
   roles?: string[];
   command?: string;
   args?: string[];
 }
 
-/** t-056 — the READ-ONLY tools of the pinned Trello MCP server build
+/** The READ-ONLY tools of the pinned Trello MCP server build
  *  (`bun .../magenio-mcp/trello-mcp/build/index.js`). This is an ALLOW-list, and
  *  it is the load-bearing half of the classification: the runtime guard
  *  (`HiveManager.isTrelloWriteBlocked` + the PreToolUse hook) blocks every Trello
@@ -100,7 +100,7 @@ export const TRELLO_READ_TOOLS = [
   'list_boards', 'list_boards_in_workspace', 'list_workspaces', 'search_cards'
 ] as const;
 
-/** t-056 — the write-mutating tools of the same build. Kept as an explicit list
+/** The write-mutating tools of the same build. Kept as an explicit list
  *  because `permissions.deny` in the agent's settings file needs EXACT tool
  *  names, not glob patterns: this is the in-settings half of the block, written
  *  as `mcp__munder-trello__<name>`. The allow-list above is what makes the pair
@@ -281,11 +281,11 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
     tier: 'write',
     defaultEnabled: false,
     userConfigured: true,
-    // Spec decision 7: Trello access is "ristretto a un insieme esplicito di
-    // agenti … oggi ['god']". god's mission is the only place the never-write
-    // discipline is written down, so no other agent may hold these tools.
+    // Trello access is restricted to an explicit set of agents: the
+    // orchestrator role is the only place the never-write discipline is
+    // written down, so no other agent may hold these tools by default.
     defaultAgents: ['god'],
-    // t-056: PMs (Pam) also read Trello, by role rather than by id. Their write
+    // PMs also read Trello, by role rather than by id. Their write
     // tools are blocked at the settings layer (hookSettings' permissions.deny,
     // TRELLO_WRITE_TOOLS above) rather than by prompt discipline alone.
     defaultRoles: ['pm']
@@ -359,7 +359,7 @@ export function mergeMcpConsent(
     if (seed.agents) merged.agents = [...seed.agents];
     else delete merged.agents;
   }
-  // Same ABSENT ≠ EMPTY treatment for `roles` (t-056).
+  // Same ABSENT ≠ EMPTY treatment for `roles`.
   if (merged.roles === undefined) {
     if (seed.roles) merged.roles = [...seed.roles];
     else delete merged.roles;

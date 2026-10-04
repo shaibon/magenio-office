@@ -245,7 +245,7 @@ const hive = new HiveManager(
     if (!wc) return false;
     try { wc.send(channel, payload); return true; } catch { return false; }
   },
-  // t-056: the app-owned privileged-role ledger lives in userData — OUTSIDE the
+  // The app-owned privileged-role ledger lives in userData — OUTSIDE the
   // agents' sandbox-writable set — so the role that grants the broker token and
   // the role-scoped Trello server can never be self-assigned through
   // registry.json. See shared/roleLedger.ts.
@@ -608,7 +608,7 @@ function removeWorkerScratch(workerId: string): void {
 // SAME pty/window (no user click). Provider-agnostic. Idempotent by construction: the
 // relaunch carries `noAutoInstall`, so the installer can never fire (let alone loop) a
 // second time — a binary that's somehow still missing just spawns and exits normally.
-// t-073: the MCP servers a session leaves behind are spawned DETACHED by the
+// The MCP servers a session leaves behind are spawned DETACHED by the
 // CLI (its own process group), so neither `kill()` nor `killAll()`'s group
 // sweep can reach them; without this they accumulate for the life of the app —
 // measured at 85 processes / ~460 MB over five restarts. The reaper decides by
@@ -2990,10 +2990,10 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       // through pty:spawn -> spawnAgentCore, not the ephemeral-worker path (below,
       // ~processSpawnRequest) that already grants this to workers. Scoped to god
       // only — least privilege, not a blanket grant to every spawned agent.
-      // t-056: a PM (Pam) gets the same broker reach, by role, never by id — an id
+      // A PM gets the same broker reach, by role, never by id — an id
       // changes across a restore, a role string survives it — and READ-ONLY:
       // `grant(..., { readOnly: true })` rejects every non-GET at the broker
-      // itself (the one exception being the thaw POST a PM needs, t-040). The role
+      // itself (the one exception being the thaw POST a PM needs). The role
       // is read from the app-owned role ledger (HiveManager.isPrivilegedPm), NOT
       // from registry.json: that file sits in a directory agents can write, and an
       // agent promoting itself to PM there must grant it nothing.
@@ -5436,10 +5436,10 @@ function bootstrapHiveServices(): void {
   });
   control.replaceAutoDeliveryPauses(readConfig().autoDeliveryPausedAgents ?? []);
   archiveOrphanedAgents(); // #57/#58: archive stale archived:false entries with no live PTY
-  // t-073: app start is the one moment we can clean up what PREVIOUS runs left
+  // App start is the one moment we can clean up what PREVIOUS runs left
   // behind. Sessions leak their detached MCP servers on every teardown, and a
   // crash or a hard quit skips even that reaper, so sweep the floor here too.
-  // Same identity rule as the teardown path (see mcpReap.ts): the Boss's own
+  // Same identity rule as the teardown path (see mcpReap.ts): unrelated
   // orphaned daemons (codegraph, openclaw) are not declared by us and are never
   // candidates — that is the whole point of keying on our own mcp.json.
   try {

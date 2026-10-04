@@ -1,5 +1,5 @@
 /**
- * Codex MCP defaults (t-065) — the codex-side twin of the `mcp.json` the Claude
+ * Codex MCP defaults — the codex-side twin of the `mcp.json` the Claude
  * path writes.
  *
  * Codex takes external MCP servers from `mcp_servers` tables in its own
@@ -34,7 +34,7 @@ const MANAGED_PREFIX = 'munder-';
  *  is one place to read and one place to extend.
  *
  *  `fetch` sends an arbitrary URL; `context7` queries an external documentation
- *  API with free-text. Both are egress, and once t-070 pre-approves a server's
+ *  API with free-text. Both are egress, and once a server's
  *  tools, an injected instruction can carry data out through either with nobody
  *  to see it. The discriminator: does the tool put caller-supplied TEXT on the
  *  wire to something we do not control? Our filesystem/git servers do not
@@ -47,7 +47,7 @@ const NON_GOD_CODEX_WITHHELD = new Set(['fetch', 'context7']);
  *
  * Everything is shared except two guards, both fail-closed on the provider that
  * cannot enforce them. The `write` tier (Trello today) is only safe where the
- * Claude path's PreToolUse allow-list enforces it (t-056) — codex has no
+ * Claude path's PreToolUse allow-list enforces it — codex has no
  * equivalent hook-side enforcement, so a NON-god codex agent never receives a
  * write-capable server. This is the same reasoning `buildDefaultMcpServers`
  * already applies to its role path, which is likewise restricted to
@@ -55,8 +55,8 @@ const NON_GOD_CODEX_WITHHELD = new Set(['fetch', 'context7']);
  * receives the server").
  *
  * The servers in NON_GOD_CODEX_WITHHELD are withheld for the same class of
- * reason (t-070 review): they are network egress the codex sandbox does not
- * cover, and t-070 pre-approves our servers' tools, so one prompt injection
+ * reason: they are network egress the codex sandbox does not
+ * cover, and our servers' tools are pre-approved, so one prompt injection
  * turns such a call into an exfiltration channel with no human in the loop —
  * precisely the control the Claude path has (its PreToolUse allow-list and
  * permission prompts) and codex does not.
@@ -78,18 +78,18 @@ export function codexMcpServers(
   return out;
 }
 
-/** The only codex MCP approval mode that never waits for a human (t-070). */
+/** The only codex MCP approval mode that never waits for a human. */
 const PREAPPROVED_TOOLS_MODE = 'approve';
 
 /**
- * t-070 — an MCP tool that "requires approval" is a DEAD tool in this hive.
+ * An MCP tool that "requires approval" is a dead tool for an unattended worker.
  *
  * Every codex worker is spawned unattended with `-a never` (`approval_policy =
  * "never"`, agentProvider.ts). In that combination a tool whose effective mode is
  * anything but pre-approved does not prompt — it FAILS, with "MCP tool call
  * requires approval, but approval policy is never". So mounting a server without
- * pre-approving its tools is half a mount: Dwight BURD could see `munder_magento`
- * and no call ever worked.
+ * pre-approving its tools is half a mount: the Magento server was mounted and
+ * no call ever worked.
  *
  * The mode is set per SERVER, inside our own `[mcp_servers.*]` tables, and only
  * for the tables this function generates: the user's own servers keep codex's
@@ -104,7 +104,7 @@ const PREAPPROVED_TOOLS_MODE = 'approve';
  *
  * The `write` tier (Trello) is deliberately LEFT OUT: the codex path has no
  * PreToolUse allow-list, so codex's own gating is the only control on those write
- * tools (t-065 withholds them from a non-god codex agent for the same reason).
+ * tools (they are withheld from a non-god codex agent for the same reason).
  * Pre-approving them would erase it. Consequence, on purpose: on a codex agent
  * Trello's tools stay uncallable until someone decides otherwise.
  */
@@ -139,7 +139,7 @@ export function codexMcpToml(servers: Record<string, CodexMcpServer>): string {
     const s = servers[name];
     const key = tomlKey(name);
     out += `\n[mcp_servers.${key}]\ncommand = ${JSON.stringify(s.command)}\nargs = ${JSON.stringify(s.args ?? [])}\n`;
-    // t-070: without a pre-approval the tools of a mounted server are uncallable
+    // without a pre-approval the tools of a mounted server are uncallable
     // on the unattended codex path (see approvalModeLine). Before the env sub-table,
     // so the key lands in the server's own table.
     out += approvalModeLine(name);

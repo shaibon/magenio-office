@@ -332,7 +332,7 @@ export class PtyManager {
    *  runs. Best-effort — set once by the main process. */
   private exitHandler:
     ((id: string, exitCode?: number, info?: PtyExitInfo) => void) | null = null;
-  /** Collect the MCP servers a dying session leaves behind (t-073). Set once by
+  /** Collect the MCP servers a dying session leaves behind. Set once by
    *  the main process, which owns the hive root the declared command lines come
    *  from; pty has no business knowing about the hive. See mcpReap.ts for why a
    *  process-group sweep cannot do this. */
@@ -379,7 +379,7 @@ export class PtyManager {
     this.exitHandler = handler;
   }
 
-  /** Register the MCP-server reaper (t-073). Called with a session's pid on
+  /** Register the MCP-server reaper. Called with a session's pid on
    *  every path that retires it — the explicit kills and the natural exit — so
    *  the detached servers it left in its own process group are collected instead
    *  of accumulating until the next app start. */
