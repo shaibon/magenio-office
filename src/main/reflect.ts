@@ -22,13 +22,17 @@
  */
 import {
   existsSync, statSync, readdirSync, readFileSync, writeFileSync,
-  mkdirSync, copyFileSync, renameSync, openSync, fsyncSync, closeSync
+  mkdirSync, copyFileSync, renameSync, openSync, fsyncSync, closeSync, rmSync, rmdirSync
 } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { runHiddenClaude } from './hiddenClaude';
 
 /** Total memory.md budget — mirrors the janitor's CONTEXT_BUDGET_BYTES (128 KB). */
 const BUDGET_BYTES = 131_072;
+/** An over-budget file may shrink by this much per pass instead of the flat 5%:
+ *  it can need many passes to come down, and each one evicts only the oldest
+ *  sections. Exported so the gate's tests can pin the boundary. */
+export const OVER_BUDGET_MIN_GAIN_BYTES = 4096;
 /** Cheap tail-summarizer (DECIDED by god). The verify gate covers quality. */
 const CONDENSE_MODEL = 'claude-haiku-4-5';
 /** Hard cap so a wedged headless run can't stall the reflect loop. */
@@ -207,12 +211,19 @@ export class MemoryReflector {
       this.logAbort(id, 'backup-failed', String(e));
       return { id, condensed: false, reason: 'backup-failed', oldBytes };
     }
+    // Nothing below has written to `mem` yet, so an abort leaves the original in
+    // place and the copy is redundant — drop it instead of keeping one per retry.
+    const dropBackup = () => {
+      try { rmSync(dirname(backup), { recursive: true, force: true }); } catch { /* best-effort */ }
+      try { rmdirSync(dirname(dirname(backup))); } catch { /* shared with another agent's backup */ }
+    };
 
     // 2) SUMMARIZE the (condensed + evicted) tail via headless Haiku.
     let summary: { condensed: string; hoist: string[] };
     try {
       summary = await this.summarize(home, parsed.condensed, evict, parsed.pinned);
     } catch (e) {
+      dropBackup();
       this.logAbort(id, 'summarize-failed', String(e));
       return { id, condensed: false, reason: 'summarize-failed', oldBytes };
     }
@@ -229,6 +240,7 @@ export class MemoryReflector {
       condensed: summary.condensed, keep
     });
     if (!verdict.ok) {
+      dropBackup();
       this.logAbort(id, verdict.reason, undefined, { oldBytes, newBytes });
       return { id, condensed: false, reason: verdict.reason, oldBytes, newBytes };
     }
@@ -237,6 +249,7 @@ export class MemoryReflector {
     try {
       atomicWrite(mem, rebuilt);
     } catch (e) {
+      dropBackup();
       this.logAbort(id, 'swap-failed', String(e), { oldBytes, newBytes });
       return { id, condensed: false, reason: 'swap-failed', oldBytes, newBytes };
     }
@@ -280,6 +293,10 @@ export class MemoryReflector {
       model: CONDENSE_MODEL,
       cwd: home,
       command: this.getCommand(),
+      // The prompt is self-contained, so the session gets its own throwaway cwd:
+      // `home` also hosts the orchestrator's long-lived session, and sharing a
+      // working directory is what makes a transcript ambiguous to identify.
+      privateCwd: true,
       // Pure text transform — must never touch the repo or shell out.
       disallowedTools: ['Edit', 'Write', 'NotebookEdit', 'Bash'],
       env: this.getMemoryEnv(),
@@ -383,8 +400,15 @@ export function verify(args: {
   // 4) Non-empty + sane.
   if (newBytes <= 200) return { ok: false, reason: 'too-small' };
   if (!condensed.trim()) return { ok: false, reason: 'empty-condensed' };
-  // 3) Actually smaller (a no-op condense is a failure).
-  if (!(newBytes < oldBytes * 0.95)) return { ok: false, reason: 'not-smaller' };
+  // 3) Actually smaller (a no-op condense is a failure) — with one exception: a
+  // file over the budget needs many passes to come down, and each pass only evicts
+  // the oldest sections, so a pass that crosses under the budget or makes a
+  // substantial absolute gain is progress even when it is short of the flat 5%.
+  const gain = oldBytes - newBytes;
+  const overBudget = oldBytes > BUDGET_BYTES;
+  const shrunkEnough = newBytes < oldBytes * 0.95
+    || (overBudget && (newBytes < BUDGET_BYTES || gain >= OVER_BUDGET_MIN_GAIN_BYTES));
+  if (!shrunkEnough) return { ok: false, reason: 'not-smaller' };
   // 2) Pinned preserved: every old pinned line survives (hoist only adds).
   const newPinned = new Set(pinnedLines(re.pinned));
   for (const line of oldPinnedLines) if (!newPinned.has(line)) return { ok: false, reason: 'pinned-line-dropped' };

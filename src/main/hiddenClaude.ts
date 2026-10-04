@@ -1,5 +1,6 @@
 import * as pty from 'node-pty';
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { resolveCommand, userShellPath } from './shellEnv';
 import { expandTilde } from './fs';
@@ -21,6 +22,12 @@ import { ensureKilled } from './procKill';
  * Session lifecycle:
  *   spawn → boot-quiet detect → bracketed-paste prompt + \r → idle-settle →
  *   transcript JSONL extract (last assistant text block) → kill
+ *
+ * The session runs in a throwaway cwd (see `privateCwd`): the Claude Code project
+ * dir is derived from the working directory, so a private one guarantees the call
+ * owns its transcript even when the caller's directory also hosts a long-lived
+ * session. The transcript is additionally identified by name — the set sampled
+ * before the spawn — because a shared directory could grow a newer file mid-call.
  */
 
 /** ms of PTY silence that signals the TUI is ready for input (boot complete). */
@@ -45,6 +52,13 @@ export interface HiddenClaudeOptions {
   timeoutMs?: number;
   /** Extra env merged over the resolved shell env (e.g. the shared MemPalace). */
   env?: Record<string, string>;
+  /**
+   * Run the session in a throwaway directory instead of `cwd`. Default true: the
+   * call is a self-contained text transform, so it must not see the caller's
+   * project — and a private directory also makes its transcript unambiguous.
+   * Set false only when the response genuinely depends on `cwd` for context.
+   */
+  privateCwd?: boolean;
 }
 
 export interface HiddenClaudeResult {
@@ -54,11 +68,35 @@ export interface HiddenClaudeResult {
   error?: string;
 }
 
+/** Every `.jsonl` transcript filename already present for `cwd`. Sampled BEFORE a
+ *  spawn so the capture step can tell this session's own transcript from a file
+ *  that merely happened to be written while the call was running — a long-lived
+ *  session in the same working directory keeps rewriting its own. */
+export function listTranscriptFiles(cwd: string): Set<string> {
+  const seen = new Set<string>();
+  try {
+    const dir = projectDir(cwd);
+    if (!existsSync(dir)) return seen;
+    for (const f of readdirSync(dir)) {
+      if (!f.endsWith('.jsonl')) continue;
+      try { if (statSync(path.join(dir, f)).isFile()) seen.add(f); }
+      catch { /* vanished between readdir and stat — not this session's */ }
+    }
+  } catch { /* unreadable directory reads as "nothing there yet" */ }
+  return seen;
+}
+
 /**
- * Extract the last assistant text block from the transcript JSONL written
+ * Extract the last assistant text block from the newest transcript JSONL written
  * at or after `spawnedAt`. Reuses projectDir() from transcript.ts.
+ *
+ * `exclude` (from listTranscriptFiles(), taken before the spawn) is the filter
+ * that identifies the session: only files this call created are eligible, so the
+ * newest-by-mtime fallback can never return another session's text.
  */
-function extractLastAssistantText(cwd: string, spawnedAt: number): string | null {
+export function extractLastAssistantText(
+  cwd: string, spawnedAt: number, exclude?: ReadonlySet<string>
+): string | null {
   try {
     const dir = projectDir(cwd);
     if (!existsSync(dir)) return null;
@@ -66,11 +104,14 @@ function extractLastAssistantText(cwd: string, spawnedAt: number): string | null
     const candidates: { f: string; mtime: number }[] = [];
     for (const f of readdirSync(dir)) {
       if (!f.endsWith('.jsonl')) continue;
+      if (exclude?.has(f)) continue;
       try {
-        const mtime = statSync(path.join(dir, f)).mtimeMs;
-        // 5 s slack: include files that already existed at spawn but were
-        // updated by this session. Sort by mtime and take the newest.
-        if (mtime >= spawnedAt - 5000) candidates.push({ f, mtime });
+        const st = statSync(path.join(dir, f));
+        if (!st.isFile()) continue;
+        // 5 s slack covers a file that appears just before spawnedAt; `exclude`
+        // is what actually rules out a pre-existing session. Sort by mtime and
+        // take the newest of what is left.
+        if (st.mtimeMs >= spawnedAt - 5000) candidates.push({ f, mtime: st.mtimeMs });
       } catch { /* file removed between readdir and stat — skip */ }
     }
     if (!candidates.length) return null;
@@ -96,6 +137,14 @@ function extractLastAssistantText(cwd: string, spawnedAt: number): string | null
   } catch { return null; }
 }
 
+/** Drop a throwaway cwd and the transcript project dir the session left under it.
+ *  Best-effort: a failed cleanup must never affect the caller's result. */
+function disposePrivateCwd(dir: string | null): void {
+  if (!dir) return;
+  try { rmSync(projectDir(dir), { recursive: true, force: true }); } catch { /* best-effort */ }
+  try { rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+}
+
 export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Promise<HiddenClaudeResult> {
   return new Promise((resolve) => {
     if (!prompt.trim()) { resolve({ ok: false, error: 'empty prompt' }); return; }
@@ -106,6 +155,20 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
       return;
     }
     opts = { ...opts, cwd };
+
+    // A throwaway cwd keeps the session away from the caller's project AND gives
+    // it a project dir of its own, so its transcript cannot be confused with a
+    // session already living in `cwd`. Falls back to `cwd` if the temp dir cannot
+    // be made — the pre-spawn snapshot below still identifies the right file.
+    let privateDir: string | null = null;
+    let sessionCwd = cwd;
+    if (opts.privateCwd !== false) {
+      try {
+        privateDir = mkdtempSync(path.join(os.tmpdir(), 'munder-hidden-'));
+        sessionCwd = privateDir;
+      } catch { privateDir = null; }
+    }
+    const seenTranscripts = listTranscriptFiles(sessionCwd);
 
     const binary = (opts.command || 'claude').trim().split(/\s+/)[0] || 'claude';
     const exe = resolveCommand(binary);
@@ -136,7 +199,7 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
         name: 'xterm-color',
         cols: 220,
         rows: 50,
-        cwd: opts.cwd,
+        cwd: sessionCwd,
         env: {
           ...process.env,
           PATH: userShellPath(),
@@ -144,6 +207,7 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
         } as Record<string, string>,
       });
     } catch (e) {
+      disposePrivateCwd(privateDir);
       resolve({ ok: false, error: e instanceof Error ? e.message : String(e) });
       return;
     }
@@ -172,11 +236,12 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
       clearTimeout(bootMaxTimer);
       clearTimeout(globalTimer);
       kill();
+      disposePrivateCwd(privateDir);
       resolve(r);
     };
 
     const captureAndFinish = () => {
-      const text = extractLastAssistantText(opts.cwd, spawnedAt);
+      const text = extractLastAssistantText(sessionCwd, spawnedAt, seenTranscripts);
       finish(text
         ? { ok: true, text }
         : { ok: false, error: 'no assistant response found in transcript' });
