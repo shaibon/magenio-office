@@ -2,6 +2,8 @@ import { useEffect, useState, type CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
 import { jiraProjectsClient, type JiraProjectBinding, type JiraAssigneeAllowlistEntry } from '@/jiraProjects/jiraProjectsClient';
 import { integrationsClient } from '@/integrations/registryClient';
+import { repoKeyOf, repoLabelOf, useResolvedRepoNames } from '@/hooks/useResolvedRepoNames';
+import type { Agent } from '@/store/store';
 import { authTypeNeedsSecret as needsSecret } from '@shared/integrations';
 import { parseTrelloBoardUrl, validateTrelloIntake, type TrelloIntakeBinding } from '@shared/trelloIntake';
 import { bindingFromDraft, draftFromBinding, emptyDraft, type Draft } from './jiraProjectDraft';
@@ -28,16 +30,27 @@ interface JiraPollSettingsState {
   assigneeAllowlist?: JiraAssigneeAllowlistEntry[];
 }
 
-/** An assignable agent for the multi-select: every non-archived hive-registry
+/** A row in the assignable-agent multi-select: every non-archived hive-registry
  *  entry, god included (the server-side agentExists check always treats god
- *  as valid, so the UI shouldn't exclude it either). */
-interface AssignableAgent { id: string; name: string }
+ *  as valid, so the UI shouldn't exclude it either). Carries the fields the row
+ *  label needs — name, PROJECT and id — plus `archived`, set only on an id kept
+ *  because the binding under edit still references it. */
+interface AssignableAgent {
+  id: string;
+  name: string;
+  cwd: string;
+  project: string;
+  isGod?: boolean;
+  archived: boolean;
+}
 
 const dispLabel: CSSProperties = { fontFamily: 'var(--cth-font-display)', fontSize: 8, lineHeight: '12px', color: 'var(--cth-ink-500)', textTransform: 'uppercase' };
 const fieldLabel: CSSProperties = { ...dispLabel, color: 'var(--cth-ink-700)' };
 const subText: CSSProperties = { fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-500)' };
 const hint: CSSProperties = { fontSize: 11, lineHeight: '15px', color: 'var(--cth-ink-500)' };
 const inputStyle: CSSProperties = { width: '100%', padding: '6px 8px', background: 'var(--cth-paper-100)', border: 'none', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)', fontSize: 12, lineHeight: '18px', color: 'var(--cth-ink-900)' };
+/** Secondary text on an option row (the project and id next to an agent name). */
+const muted: CSSProperties = { color: 'var(--cth-ink-500)' };
 
 export function JiraProjectsRegistry() {
   const { t: tr } = useTranslation();
@@ -76,11 +89,29 @@ export function JiraProjectsRegistry() {
       setAgentRoster(
         Object.values(registry.agents)
           .filter((a) => !a.archived)
-          .map((a) => ({ id: a.id, name: a.name }))
+          // Carry cwd/project as well: the multi-select below labels each row
+          // with the agent's PROJECT (and id), so same-named agents on
+          // different projects are never ambiguous.
+          .map((a) => ({ id: a.id, name: a.name, cwd: a.cwd, project: a.project ?? '', isGod: a.isGod, archived: false }))
       );
     })();
     return () => { alive = false; };
   }, []);
+
+  // Resolve each roster agent's repository (one cached git call per distinct
+  // path, shared with the rest of the app) so the multi-select below can name a
+  // row's PROJECT: the bare name alone is ambiguous for same-named agents on
+  // different projects.
+  useResolvedRepoNames(agentRoster as unknown as Agent[]);
+
+  /** The project shown for a roster row: the Jira key of the binding whose repo
+   *  is the agent's repo root, else its repo/project label. Deliberately not
+   *  `jiraKeyFor`: that reports only bindings that already COVER the agent, and
+   *  covering a project is exactly what this form is used to configure. */
+  const projectOf = (a: AssignableAgent): string => {
+    const ref = a as unknown as Agent;
+    return bindings.find((b) => b.repo === repoKeyOf(ref))?.key ?? repoLabelOf(ref);
+  };
 
   const goList = () => { setView('list'); setDraft(null); setErr(''); };
   const startAdd = () => { setDraft(emptyDraft()); setErr(''); setView('configure'); };
@@ -158,12 +189,12 @@ export function JiraProjectsRegistry() {
   // naming an agent the user has no way to see or uncheck anywhere in the UI.
   // Surface it explicitly, already checked, so it can be removed from the
   // binding like any other assignment.
-  const visibleAgents = draft
+  const visibleAgents: AssignableAgent[] = draft
     ? [
       ...agentRoster,
       ...draft.agents
         .filter((id) => !agentRoster.some((a) => a.id === id))
-        .map((id) => ({ id, name: `${id} (archived)` }))
+        .map((id) => ({ id, name: id, cwd: '', project: '', isGod: false, archived: true }))
     ]
     : agentRoster;
 
@@ -389,7 +420,15 @@ export function JiraProjectsRegistry() {
                     checked={draft.agents.includes(a.id)}
                     onChange={(e) => toggleAgent(a.id, e.target.checked)}
                   />
-                  {a.name}
+                  {a.archived ? (
+                    <>{a.id} <span style={muted}>(archived)</span></>
+                  ) : (
+                    <>
+                      {a.name}
+                      <span style={muted}> · {projectOf(a)}</span>
+                      <span style={{ ...muted, fontFamily: 'var(--cth-font-mono)' }}> · {a.id}</span>
+                    </>
+                  )}
                 </label>
               ))}
             </div>
