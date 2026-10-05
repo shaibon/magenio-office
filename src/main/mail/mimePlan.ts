@@ -29,7 +29,10 @@ export function planParts(root: BodyNode | undefined): PartPlan {
     if (n.childNodes?.length) { for (const c of n.childNodes) walk(c, false); return; }
     const type = (n.type ?? '').toLowerCase();
     if (type.startsWith('multipart/')) return;
-    const attachment = (n.disposition ?? '').toLowerCase() === 'attachment';
+    // A part with a file name is an attachment even without a Content-Disposition;
+    // only unnamed inline text is the message body.
+    const named = !!(n.dispositionParameters?.filename || n.parameters?.name);
+    const attachment = (n.disposition ?? '').toLowerCase() === 'attachment' || named;
     if (!attachment && (type === 'text/plain' || type === 'text/html')) {
       if ((n.size ?? 0) <= MAX_TEXT_PART_BYTES) {
         plan.text.push({ part: n.part || (single ? '1' : ''), type, charset: n.parameters?.charset || 'utf-8', size: n.size ?? 0 });

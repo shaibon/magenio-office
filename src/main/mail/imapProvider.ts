@@ -23,6 +23,7 @@ interface ImapFlowLike {
   connect(): Promise<void>;
   getMailboxLock(path: string, opts: { readOnly: boolean }): Promise<{ release(): void }>;
   mailbox: { uidValidity?: bigint | number } | false;
+  search(query: Record<string, unknown>, opts: { uid: boolean }): Promise<number[] | false>;
   fetch(range: string, query: Record<string, unknown>, opts: { uid: boolean }): AsyncIterable<FetchedMessage>;
   download(range: string, part: string, opts: { uid: boolean; maxBytes: number }): Promise<{ content: AsyncIterable<Buffer> }>;
   logout(): Promise<void>;
@@ -83,14 +84,20 @@ export function createImapProvider(conn: MailAccountConn, password: string, deps
         const uidValidity = c.mailbox ? Number(c.mailbox.uidValidity ?? 0) || null : null;
         // Structure and headers only: the message source (and so any attachment
         // bytes) is never requested. Text parts are downloaded one by one below.
+        // Bound the work BEFORE fetching: list the new UIDs (numbers only), take the
+        // oldest `limit`, and fetch just those. The rest wait for the next poll.
+        // (`N:*` always includes the newest message even when it is <= lastUid.)
+        const found = await c.search({ uid: `${lastUid + 1}:*` }, { uid: true });
+        const uids = (found || []).filter((u) => u > lastUid).sort((a, b) => a - b).slice(0, limit);
         const heads: FetchedMessage[] = [];
-        for await (const m of c.fetch(`${lastUid + 1}:*`, { uid: true, envelope: true, bodyStructure: true, headers: HEADERS }, { uid: true })) {
-          // `N:*` always includes the newest message even when it is <= lastUid.
-          if (m.uid > lastUid) heads.push(m);
+        if (uids.length) {
+          for await (const m of c.fetch(uids.join(','), { uid: true, envelope: true, bodyStructure: true, headers: HEADERS }, { uid: true })) {
+            if (uids.includes(m.uid)) heads.push(m);
+          }
+          heads.sort((a, b) => a.uid - b.uid);
         }
-        heads.sort((a, b) => a.uid - b.uid);
         const out: RawMail[] = [];
-        for (const m of heads.slice(0, limit)) {
+        for (const m of heads) {
           const plan = planParts(m.bodyStructure);
           let text: string | undefined; let html: string | undefined;
           // text/plain first; text/html only as the fallback when there is none.

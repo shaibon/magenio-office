@@ -365,6 +365,7 @@ test('IMAP adapter never requests the message source and downloads only text par
     on() {}
     async connect() {}
     async getMailboxLock(_p, o) { log.lock = o; return { release() {} }; }
+    async search(q) { log.searches = (log.searches || []).concat([q]); return [4]; }
     async *fetch(range, query) {
       log.queries.push(query);
       yield { uid: 4, envelope: { messageId: '<M1@x>', subject: 'Hi', date: new Date(1000), from: [{ name: 'Ann', address: 'Ann@Client.com' }], to: [{ address: 'me@x' }] }, bodyStructure: STRUCTURE, headers: Buffer.from('References: <r@x>\r\nList-Unsubscribe: <u>\r\n') };
@@ -403,4 +404,41 @@ test('the classifier runs with no tools: all built-ins off, no MCP, no bypass', 
   assert.deepEqual(b, ['--model', 'm', '--permission-mode', 'bypassPermissions', '--disallowedTools', 'Edit', 'Write', 'NotebookEdit']);
   const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '../src/main/index.ts'), 'utf8');
   assert.match(src, /MAIL_CLASSIFY_MODEL,[\s\S]{0,400}noTools: true/);
+});
+
+test('a text part with a file name is an attachment even without a Content-Disposition', () => {
+  const plan = planParts({ type: 'multipart/mixed', childNodes: [
+    { type: 'text/plain', part: '1', size: 10 },
+    { type: 'text/plain', part: '2', size: 10, parameters: { name: 'notes.txt' } },
+    { type: 'text/html', part: '3', size: 10, dispositionParameters: { filename: 'page.html' } }
+  ] });
+  assert.deepEqual(plan.text.map((t) => t.part), ['1']);
+  assert.deepEqual(plan.attachments.map((a) => a.filename), ['notes.txt', 'page.html']);
+});
+
+test('IMAP adapter bounds the batch before fetching: search UIDs, take the oldest `limit`, fetch only those', async () => {
+  const fetched = [];
+  class FakeFlow {
+    constructor() { this.mailbox = { uidValidity: 1 }; }
+    on() {}
+    async connect() {}
+    async getMailboxLock() { return { release() {} }; }
+    async search(q) { fetched.push(['search', q.uid]); return Array.from({ length: 100 }, (_, i) => 200 - i); } // newest first, 100 of them
+    async *fetch(range) {
+      fetched.push(['fetch', range]);
+      for (const u of range.split(',').map(Number)) yield { uid: u, envelope: { messageId: `<m${u}@x>`, subject: 's', from: [{ address: 'a@b.c' }] }, bodyStructure: { type: 'text/plain', size: 1 } };
+    }
+    async download() { return { content: (async function* () { yield Buffer.from('x'); })() }; }
+  }
+  const p = createImapProvider({ host: 'h.com', port: 993, username: 'u', mailbox: 'INBOX' }, 'pw', { ImapFlow: FakeFlow, simpleParser: async () => ({ text: 'x' }) });
+  const r = await p.fetchSince(100, 3);
+  assert.deepEqual(fetched[0], ['search', '101:*']);
+  assert.deepEqual(fetched[1], ['fetch', '101,102,103']);       // the 3 oldest, never the other 97
+  assert.deepEqual(r.messages.map((m) => m.uid), [101, 102, 103]);
+  assert.equal(fetched.filter((f) => f[0] === 'fetch').length, 1);
+  // Nothing new (only the always-included newest, which is <= cursor): no fetch at all.
+  fetched.length = 0;
+  FakeFlow.prototype.search = async () => [100];
+  assert.deepEqual((await p.fetchSince(100, 3)).messages, []);
+  assert.deepEqual(fetched, []);
 });
