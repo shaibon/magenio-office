@@ -375,7 +375,7 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
             </button>
           </div>
 
-          <div className="cth-scroll-hidden" style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '6px 0' }}>
+          <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '6px 0' }}>
             {/* The god agent runs the floor rather than a checkout, so it gets no
                 repository header — it sits alone at the top of the roster. */}
             {gods.map(a => (
