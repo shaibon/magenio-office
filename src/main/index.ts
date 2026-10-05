@@ -2750,9 +2750,11 @@ async function resolveAgentProject(
   if (!meta.cwd) return undefined;
   let root: string | null = null;
   try { root = await mainRepoRoot(meta.cwd); } catch { root = null; }
-  const binding = (cfg.jiraProjects ?? []).find((b) =>
-    b.enabled && b.repo === root && (!b.agents || b.agents.length === 0 || b.agents.includes(meta.id)));
-  if (binding) return binding.key;
+  // Membership comes from the repo, not from a binding's `agents` claim list —
+  // see projectKeyForAgent. A null answer means no binding owns the repo
+  // unambiguously, and the folder basename is the honest label then.
+  const key = jiraProjects.projectKeyForAgent(cfg.jiraProjects ?? [], meta.id, root);
+  if (key) return key;
   const base = root || meta.cwd;
   const name = basename(base);
   return name || undefined;

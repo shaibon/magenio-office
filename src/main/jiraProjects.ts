@@ -102,6 +102,30 @@ export async function validateJiraProjectBinding(
   return { ok: true };
 }
 
+/** The project an agent BELONGS to, for the shared `project` label (registry.json /
+ *  fleet.json) — as opposed to which binding CLAIMS that project's cards.
+ *
+ *  `agents` on a binding is a claim list, and today every binding names only its own
+ *  roster (one Pam per project). Keying membership off it means every OTHER agent of
+ *  the same repo falls through to the folder basename, so one floor shows up as two
+ *  groups — "BRAVI" for the listed Pam and "magenio-M2-bravifarmacie" for the rest.
+ *  The repo is what identifies the project, so a single enabled binding for that repo
+ *  labels every agent whose main repo it is.
+ *
+ *  Returns null — "no opinion, use the folder name" — when the repo is not bound, or
+ *  when SEVERAL bindings own it: which of them an agent is on cannot be told from the
+ *  repo alone, and a wrong label is worse than a folder name. */
+export function projectKeyForAgent(
+  bindings: readonly JiraProjectBinding[],
+  agentId: string,
+  repoRoot: string | null
+): string | null {
+  const owned = bindings.filter((b) => b.enabled && b.repo === repoRoot);
+  const claiming = owned.find((b) => !b.agents || b.agents.length === 0 || b.agents.includes(agentId));
+  if (claiming) return claiming.key;
+  return owned.length === 1 ? owned[0].key : null;
+}
+
 /** All configured bindings, unfiltered (enabled and disabled). */
 export function listBindings(): JiraProjectBinding[] {
   return readConfig().jiraProjects ?? [];
