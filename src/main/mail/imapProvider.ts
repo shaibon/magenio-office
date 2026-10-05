@@ -8,34 +8,44 @@
  */
 import type { MailAccountConn, MailProvider, FetchResult } from './provider';
 import { normalizeMessageId, type RawMail } from '../../shared/mail';
+import { MAX_TEXT_PART_BYTES, parseHeaderBlock, planParts, type AttachmentMeta, type BodyNode, type TextPart } from './mimePlan';
 
+interface FetchedMessage {
+  uid: number;
+  envelope?: {
+    date?: Date; subject?: string; messageId?: string; inReplyTo?: string;
+    from?: { name?: string; address?: string }[]; to?: { address?: string }[];
+  };
+  bodyStructure?: BodyNode;
+  headers?: Buffer;
+}
 interface ImapFlowLike {
   connect(): Promise<void>;
   getMailboxLock(path: string, opts: { readOnly: boolean }): Promise<{ release(): void }>;
   mailbox: { uidValidity?: bigint | number } | false;
-  fetch(range: string, query: Record<string, boolean>, opts: { uid: boolean }): AsyncIterable<{ uid: number; source?: Buffer }>;
+  fetch(range: string, query: Record<string, unknown>, opts: { uid: boolean }): AsyncIterable<FetchedMessage>;
+  download(range: string, part: string, opts: { uid: boolean; maxBytes: number }): Promise<{ content: AsyncIterable<Buffer> }>;
   logout(): Promise<void>;
   close(): void;
   on(ev: string, fn: (e: unknown) => void): void;
 }
-interface ParsedLike {
-  messageId?: string; inReplyTo?: string; references?: string | string[]; subject?: string; date?: Date;
-  from?: { value: { name?: string; address?: string }[] };
-  to?: { value: { address?: string }[] } | { value: { address?: string }[] }[];
-  text?: string; html?: string | false;
-  headers?: Map<string, unknown>;
-  attachments?: { filename?: string; contentType?: string; size?: number }[];
+interface ParsedLike { text?: string; html?: string | false }
+
+/** Seams for tests; production loads the real libraries lazily. */
+export interface ImapDeps {
+  ImapFlow?: new (o: Record<string, unknown>) => ImapFlowLike;
+  simpleParser?: (s: Buffer) => Promise<ParsedLike>;
 }
 
-const MAX_SOURCE_BYTES = 5 * 1024 * 1024;
+const HEADERS = ['references', 'list-unsubscribe', 'precedence', 'auto-submitted'];
 
-export function createImapProvider(conn: MailAccountConn, password: string): MailProvider {
+export function createImapProvider(conn: MailAccountConn, password: string, deps: ImapDeps = {}): MailProvider {
   let client: ImapFlowLike | null = null;
 
   const open = async (): Promise<ImapFlowLike> => {
     if (client) return client;
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { ImapFlow } = require('imapflow') as { ImapFlow: new (o: Record<string, unknown>) => ImapFlowLike };
+    const ImapFlow = deps.ImapFlow ?? (require('imapflow') as { ImapFlow: NonNullable<ImapDeps['ImapFlow']> }).ImapFlow;
     const c = new ImapFlow({
       host: conn.host, port: conn.port,
       secure: true,                               // TLS from the first byte, no STARTTLS downgrade
@@ -50,23 +60,45 @@ export function createImapProvider(conn: MailAccountConn, password: string): Mai
     return c;
   };
 
+  /** Download ONE text part (decoded, size-capped) and let mailparser apply its charset. */
+  const readText = async (c: ImapFlowLike, uid: number, t: TextPart, parse: NonNullable<ImapDeps['simpleParser']>): Promise<string> => {
+    const dl = await c.download(String(uid), t.part, { uid: true, maxBytes: MAX_TEXT_PART_BYTES });
+    const chunks: Buffer[] = [];
+    for await (const ch of dl.content) chunks.push(ch);
+    const wrapper = Buffer.concat([
+      Buffer.from(`Content-Type: ${t.type}; charset="${t.charset.replace(/[^\w.-]/g, '')}"\r\nContent-Transfer-Encoding: 8bit\r\n\r\n`),
+      ...chunks
+    ]);
+    const p = await parse(wrapper);
+    return t.type === 'text/html' ? (typeof p.html === 'string' ? p.html : p.text ?? '') : p.text ?? '';
+  };
+
   return {
     async fetchSince(lastUid, limit): Promise<FetchResult> {
       const c = await open();
       const lock = await c.getMailboxLock(conn.mailbox, { readOnly: true });
       try {
         // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const { simpleParser } = require('mailparser') as { simpleParser: (s: Buffer) => Promise<ParsedLike> };
+        const parse = deps.simpleParser ?? (require('mailparser') as { simpleParser: NonNullable<ImapDeps['simpleParser']> }).simpleParser;
         const uidValidity = c.mailbox ? Number(c.mailbox.uidValidity ?? 0) || null : null;
-        const out: RawMail[] = [];
-        for await (const m of c.fetch(`${lastUid + 1}:*`, { uid: true, source: true }, { uid: true })) {
+        // Structure and headers only: the message source (and so any attachment
+        // bytes) is never requested. Text parts are downloaded one by one below.
+        const heads: FetchedMessage[] = [];
+        for await (const m of c.fetch(`${lastUid + 1}:*`, { uid: true, envelope: true, bodyStructure: true, headers: HEADERS }, { uid: true })) {
           // `N:*` always includes the newest message even when it is <= lastUid.
-          if (m.uid <= lastUid || !m.source) continue;
-          if (m.source.length > MAX_SOURCE_BYTES) { out.push(oversized(m.uid)); continue; }
-          out.push(toRaw(m.uid, await simpleParser(m.source)));
-          if (out.length >= limit) break;
+          if (m.uid > lastUid) heads.push(m);
         }
-        out.sort((a, b) => a.uid - b.uid);
+        heads.sort((a, b) => a.uid - b.uid);
+        const out: RawMail[] = [];
+        for (const m of heads.slice(0, limit)) {
+          const plan = planParts(m.bodyStructure);
+          let text: string | undefined; let html: string | undefined;
+          for (const t of plan.text) {
+            const body = await readText(c, m.uid, t, parse);
+            if (t.type === 'text/html') html ??= body; else text ??= body;
+          }
+          out.push(toRaw(m, plan.attachments, text, html));
+        }
         return { messages: out, uidValidity };
       } finally {
         lock.release();
@@ -81,34 +113,23 @@ export function createImapProvider(conn: MailAccountConn, password: string): Mai
   };
 }
 
-const addrList = (v: ParsedLike['to']): string[] =>
-  (Array.isArray(v) ? v : v ? [v] : []).flatMap((x) => x.value.map((a) => a.address ?? '').filter(Boolean));
-
-function toRaw(uid: number, p: ParsedLike): RawMail {
-  const h = p.headers;
-  const refs = typeof p.references === 'string' ? p.references.split(/\s+/) : p.references ?? [];
-  const prec = String(h?.get('precedence') ?? '').toLowerCase();
-  const f = p.from?.value[0];
+function toRaw(m: FetchedMessage, attachments: AttachmentMeta[], text?: string, html?: string): RawMail {
+  const h = parseHeaderBlock(m.headers);
+  const e = m.envelope ?? {};
+  const prec = (h.get('precedence') ?? '').toLowerCase();
+  const auto = h.get('auto-submitted');
+  const f = e.from?.[0];
   return {
-    uid,
-    messageId: normalizeMessageId(p.messageId) || `uid-${uid}@no-message-id`,
-    inReplyTo: p.inReplyTo,
-    references: refs.filter(Boolean),
+    uid: m.uid,
+    messageId: normalizeMessageId(e.messageId) || `uid-${m.uid}@no-message-id`,
+    inReplyTo: e.inReplyTo,
+    references: (h.get('references') ?? '').split(/\s+/).filter(Boolean),
     from: { name: f?.name ?? '', address: (f?.address ?? '').toLowerCase() },
-    to: addrList(p.to),
-    subject: p.subject ?? '',
-    date: p.date instanceof Date && !isNaN(p.date.getTime()) ? p.date.getTime() : Date.now(),
-    text: p.text,
-    html: typeof p.html === 'string' ? p.html : undefined,
-    automated: !!h?.get('list-unsubscribe') || prec === 'bulk' || prec === 'list' || (!!h?.get('auto-submitted') && String(h.get('auto-submitted')) !== 'no'),
-    attachments: (p.attachments ?? []).map((a) => ({ filename: a.filename ?? '', contentType: a.contentType ?? '', size: a.size ?? 0 }))
-  };
-}
-
-/** A message over the size cap is recorded by uid so the cursor moves past it. */
-function oversized(uid: number): RawMail {
-  return {
-    uid, messageId: `uid-${uid}@oversized`, references: [], from: { name: '', address: '' }, to: [],
-    subject: '(message too large to ingest)', date: Date.now(), automated: false, attachments: []
+    to: (e.to ?? []).map((a) => a.address ?? '').filter(Boolean),
+    subject: e.subject ?? '',
+    date: e.date instanceof Date && !isNaN(e.date.getTime()) ? e.date.getTime() : Date.now(),
+    text, html,
+    automated: h.has('list-unsubscribe') || prec === 'bulk' || prec === 'list' || (!!auto && auto.toLowerCase() !== 'no'),
+    attachments
   };
 }

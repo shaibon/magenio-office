@@ -4093,7 +4093,8 @@ async function mailClassify(prompt: string): Promise<string | null> {
     cwd: home,
     command: readConfig().defaultCommand ?? 'claude',
     privateCwd: true,
-    disallowedTools: ['Edit', 'Write', 'NotebookEdit', 'Bash', 'WebFetch', 'WebSearch', 'Task'],
+    // No tools of any kind: the mail text is untrusted, so the session may only answer.
+    noTools: true,
     timeoutMs: 90_000
   });
   return r.ok && r.text ? r.text : null;

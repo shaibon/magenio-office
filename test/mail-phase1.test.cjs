@@ -326,3 +326,81 @@ test('the provider contract and the poller expose no way to send or modify mail'
   assert.match(impl, /rejectUnauthorized: true/);
   assert.doesNotMatch(impl, /\b(append|messageFlagsAdd|messageDelete|messageMove|nodemailer|smtp|sendMail)\b/i);
 });
+
+/* ───────────── attachments are never downloaded; the classifier has no tools ───────────── */
+
+const { planParts, parseHeaderBlock } = loadTs('src/main/mail/mimePlan.ts');
+const { createImapProvider } = loadTs('src/main/mail/imapProvider.ts');
+const { hiddenClaudeArgs } = loadTs('src/main/hiddenClaude.ts');
+
+const STRUCTURE = {
+  type: 'multipart/mixed', childNodes: [
+    { type: 'multipart/alternative', part: '1', childNodes: [
+      { type: 'text/plain', part: '1.1', size: 20, parameters: { charset: 'iso-8859-1' } },
+      { type: 'text/html', part: '1.2', size: 50, parameters: { charset: 'utf-8' } }
+    ] },
+    { type: 'application/pdf', part: '2', size: 9_000_000, disposition: 'attachment', dispositionParameters: { filename: 'big.pdf' } },
+    { type: 'image/png', part: '3', size: 4000, parameters: { name: 'logo.png' } },
+    { type: 'text/plain', part: '4', size: 300, disposition: 'attachment', dispositionParameters: { filename: 'notes.txt' } }
+  ]
+};
+
+test('planParts: only inline text parts are planned; attachments are metadata', () => {
+  const plan = planParts(STRUCTURE);
+  assert.deepEqual(plan.text.map((t) => t.part), ['1.1', '1.2']);
+  assert.deepEqual(plan.attachments, [
+    { filename: 'big.pdf', contentType: 'application/pdf', size: 9_000_000 },
+    { filename: 'logo.png', contentType: 'image/png', size: 4000 },
+    { filename: 'notes.txt', contentType: 'text/plain', size: 300 }
+  ]);
+  assert.deepEqual(planParts({ type: 'text/plain', size: 5 }).text.map((t) => t.part), ['1']);   // single-part message
+  assert.deepEqual(planParts({ type: 'text/plain', part: '1', size: 99_999_999 }).text, []);       // oversized text skipped
+  assert.deepEqual(parseHeaderBlock('References: <a@x>\r\n <b@x>\r\nList-Unsubscribe: <m>\r\n').get('references'), '<a@x> <b@x>');
+});
+
+test('IMAP adapter never requests the message source and downloads only text parts', async () => {
+  const log = { queries: [], downloads: [], opts: null };
+  class FakeImapFlow {
+    constructor(o) { log.opts = o; this.mailbox = { uidValidity: 5n }; }
+    on() {}
+    async connect() {}
+    async getMailboxLock(_p, o) { log.lock = o; return { release() {} }; }
+    async *fetch(range, query) {
+      log.queries.push(query);
+      yield { uid: 4, envelope: { messageId: '<M1@x>', subject: 'Hi', date: new Date(1000), from: [{ name: 'Ann', address: 'Ann@Client.com' }], to: [{ address: 'me@x' }] }, bodyStructure: STRUCTURE, headers: Buffer.from('References: <r@x>\r\nList-Unsubscribe: <u>\r\n') };
+    }
+    async download(_r, part, o) {
+      log.downloads.push({ part, maxBytes: o.maxBytes });
+      return { content: (async function* () { yield Buffer.from(`body of ${part}`); })() };
+    }
+  }
+  const simpleParser = async (buf) => { const s = buf.toString(); return { text: s.split('\r\n\r\n')[1], html: s.includes('text/html') ? '<p>h</p>' : false }; };
+  const p = createImapProvider({ host: 'h.com', port: 993, username: 'u', mailbox: 'INBOX' }, 'pw', { ImapFlow: FakeImapFlow, simpleParser });
+  const r = await p.fetchSince(0, 10);
+  assert.ok(log.queries.every((q) => !q.source && !q.bodyParts), 'source must never be requested');
+  assert.equal(log.queries[0].bodyStructure, true);
+  assert.deepEqual(log.downloads.map((d) => d.part), ['1.1', '1.2']);      // never 2, 3 or 4
+  assert.ok(log.downloads.every((d) => d.maxBytes <= 1024 * 1024));
+  assert.equal(log.lock.readOnly, true);
+  assert.equal(log.opts.secure, true);
+  assert.equal(log.opts.logger, false);
+  const m = r.messages[0];
+  assert.equal(m.messageId, 'm1@x');
+  assert.equal(m.from.address, 'ann@client.com');
+  assert.equal(m.automated, true);
+  assert.deepEqual(m.references, ['<r@x>']);
+  assert.equal(m.attachments.length, 3);
+  assert.equal(r.uidValidity, 5);
+  assert.equal(m.html, '<p>h</p>');
+});
+
+test('the classifier runs with no tools: all built-ins off, no MCP, no bypass', () => {
+  const a = hiddenClaudeArgs({ model: 'm', noTools: true, disallowedTools: ['Edit'], addDirs: ['/tmp'] });
+  assert.deepEqual(a, ['--model', 'm', '--tools', '', '--strict-mcp-config', '--disable-slash-commands', '--permission-mode', 'default']);
+  assert.ok(!a.includes('bypassPermissions') && !a.includes('--add-dir'));
+  // Unchanged for every other caller.
+  const b = hiddenClaudeArgs({ model: 'm' });
+  assert.deepEqual(b, ['--model', 'm', '--permission-mode', 'bypassPermissions', '--disallowedTools', 'Edit', 'Write', 'NotebookEdit']);
+  const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '../src/main/index.ts'), 'utf8');
+  assert.match(src, /MAIL_CLASSIFY_MODEL,[\s\S]{0,400}noTools: true/);
+});
