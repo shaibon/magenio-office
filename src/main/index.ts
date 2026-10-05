@@ -1,10 +1,10 @@
 import { magentoConfigForProject, magentoDeniedReadPaths } from './magentoMcp';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import {
   rmSync, existsSync, readFileSync, readdirSync, statSync, cpSync, writeFileSync,
   unlinkSync, mkdirSync, renameSync, createWriteStream, copyFileSync, lstatSync,
-  readlinkSync, symlinkSync
+  readlinkSync, symlinkSync, realpathSync
 } from 'node:fs';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { join, resolve, relative, sep, basename, dirname, isAbsolute } from 'node:path';
@@ -95,6 +95,8 @@ import {
   codexRemoteAliasPath,
   codexRemoteEndpoint,
   codexRemoteSocketFits,
+  codexHelpSupportsNoDaemon,
+  withCodexNoDaemonArgs,
   withCodexRemoteArgs
 } from '../shared/codexRemote';
 
@@ -158,6 +160,22 @@ function runCodexDaemonCommand(
   });
 }
 
+let codexNoDaemonSupport: Map<string, boolean> | undefined;
+/** Whether this codex CLI accepts `--no-daemon`, feature-detected once per binary. */
+function codexSupportsNoDaemon(executable: string): boolean {
+  codexNoDaemonSupport ??= new Map();
+  let ok = codexNoDaemonSupport.get(executable);
+  if (ok === undefined) {
+    try {
+      ok = codexHelpSupportsNoDaemon(
+        execFileSync(executable, ['--help'], { encoding: 'utf8', timeout: 10_000, stdio: ['ignore', 'pipe', 'ignore'] })
+      );
+    } catch { ok = false; }
+    codexNoDaemonSupport.set(executable, ok);
+  }
+  return ok;
+}
+
 /** Start/enable one managed remote-control daemon for this isolated Codex home,
  * then point the TUI at its app-server socket. Failure is non-fatal: the worker
  * still starts as a normal local Codex session. */
@@ -169,6 +187,13 @@ async function enableCodexRemoteForSpawn(
   const realHome = opts.env?.CODEX_HOME;
   if (!realHome) return false;
   try {
+    // The daemon canonicalizes CODEX_HOME (our alias is a symlink), so the socket
+    // it binds lives under the REAL home — that is the path that must fit.
+    const canonical = existsSync(realHome) ? realpathSync(realHome) : realHome;
+    if (!codexRemoteSocketFits(canonical)) {
+      console.warn('[codex-remote] canonical home socket exceeds sun_path; starting local TUI:', canonical);
+      return false;
+    }
     const alias = codexRemoteAliasPath(realHome, agentId);
     // Bail before touching the filesystem if even the short alias would exceed
     // sun_path — the daemon would start and then die on bind, and the warning
@@ -3226,7 +3251,10 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // the TUI to it so the thread is visible in ChatGPT mobile. Best-effort: an
   // unavailable/older Codex install still gets a normal local terminal.
   if (provider === 'codex' && opts.hive?.id) {
-    await enableCodexRemoteForSpawn(opts, opts.hive.id);
+    const remote = await enableCodexRemoteForSpawn(opts, opts.hive.id);
+    // Without managed remote control, keep Codex from auto-starting its own shared
+    // daemon (its socket under the long per-agent home breaks the TUI at startup).
+    if (!remote) opts.args = withCodexNoDaemonArgs(opts.args ?? [], codexSupportsNoDaemon(resolveCliCommand(opts.command)));
   }
   const res = ptyManager.spawn(opts, owner);
   if (res.ok) analytics.track('agent_spawned', { provider });

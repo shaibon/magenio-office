@@ -58,3 +58,18 @@ test('remote endpoint precedes both fresh and resumed Codex invocations', () => 
     ['--remote', endpoint, 'resume']
   );
 });
+
+test('--no-daemon is prepended for fresh and resume launches when supported', () => {
+  const { withCodexNoDaemonArgs, codexHelpSupportsNoDaemon } = loadTs('src/shared/codexRemote.ts');
+  assert.deepEqual(withCodexNoDaemonArgs(['--model', 'm', 'hi'], true), ['--no-daemon', '--model', 'm', 'hi']);
+  assert.deepEqual(
+    withCodexNoDaemonArgs(['resume', 'sid', 'prompt'], true),
+    ['--no-daemon', 'resume', 'sid', 'prompt']
+  );
+  assert.deepEqual(withCodexNoDaemonArgs(['resume', 'sid'], false), ['resume', 'sid']);
+  assert.deepEqual(withCodexNoDaemonArgs(['--no-daemon', 'x'], true), ['--no-daemon', 'x']);
+  // remote enabled -> endpoint already present, no flag
+  assert.deepEqual(withCodexNoDaemonArgs(['--remote', 'unix:///s', 'x'], true), ['--remote', 'unix:///s', 'x']);
+  assert.equal(codexHelpSupportsNoDaemon('      --no-daemon\n  Run without'), true);
+  assert.equal(codexHelpSupportsNoDaemon('--no-alt-screen\n'), false);
+});
