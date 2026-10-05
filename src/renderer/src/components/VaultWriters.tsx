@@ -30,7 +30,7 @@ export function VaultWriters({ repoOrigin, value, onChange }: {
   }, [all, origins]);
 
   const agents: WriterAgent[] = all.map(({ a, archived: arch }) => ({
-    id: a.id, name: a.name, archived: arch, origin: a.cwd in origins ? origins[a.cwd] : null
+    id: a.id, name: a.name, archived: arch, origin: origins[a.cwd]
   }));
   const options = eligibleWriters(repoOrigin, value, agents);
   const chips = writerChips(repoOrigin, value, agents);

@@ -1262,6 +1262,7 @@
     "pickProjectFirst": "اختر المشروع أولًا",
     "remove": "إزالة {{name}}",
     "warn": {
+      "noOrigin": "بلا git origin",
       "unknown": "وكيل غير معروف",
       "archived": "مؤرشف",
       "otherProject": "مشروع آخر"

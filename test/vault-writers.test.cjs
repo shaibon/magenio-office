@@ -8,7 +8,7 @@ const { eligibleWriters, writerChips, addWriter, removeWriter } = loadTs('src/sh
 
 const O = 'git@x:burd.git';
 const ag = (id, origin, archived = false) => ({ id, name: id.toUpperCase(), origin, archived });
-const agents = [ag('angela', O), ag('dwight', O), ag('old', O, true), ag('vai', 'git@x:vai.git'), ag('pending', null)];
+const agents = [ag('angela', O), ag('dwight', O), ag('old', O, true), ag('vai', 'git@x:vai.git'), ag('pending', undefined), ag('norepo', null)];
 
 test('options: live agents of this project only, minus those already chosen', () => {
   assert.deepEqual(eligibleWriters(O, [], agents).map((a) => a.id), ['angela', 'dwight']);
@@ -16,9 +16,9 @@ test('options: live agents of this project only, minus those already chosen', ()
   assert.deepEqual(eligibleWriters('', [], agents), []); // project not picked yet
 });
 
-test('chips flag unknown, archived and other-project ids; unresolved origin is not judged', () => {
-  const chips = writerChips(O, ['angela', 'ghost', 'old', 'vai', 'pending'], agents);
-  assert.deepEqual(chips.map((c) => c.state), ['ok', 'unknown', 'archived', 'otherProject', 'ok']);
+test('chips flag unknown, archived and other-project ids; origin still loading is not judged, resolved-to-nothing is flagged', () => {
+  const chips = writerChips(O, ['angela', 'ghost', 'old', 'vai', 'pending', 'norepo'], agents);
+  assert.deepEqual(chips.map((c) => c.state), ['ok', 'unknown', 'archived', 'otherProject', 'ok', 'noOrigin']);
   assert.equal(chips[1].name, 'ghost'); // unknown shows its raw id
 });
 

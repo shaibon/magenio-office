@@ -8,12 +8,12 @@
 export interface WriterAgent {
   id: string;
   name: string;
-  /** `git remote get-url origin` of the agent's cwd; null while unresolved or when it has none. */
-  origin: string | null;
+  /** `git remote get-url origin` of the agent's cwd. undefined = still resolving; null = resolved, no origin. */
+  origin: string | null | undefined;
   archived: boolean;
 }
 
-export type WriterChipState = 'ok' | 'archived' | 'otherProject' | 'unknown';
+export type WriterChipState = 'ok' | 'archived' | 'otherProject' | 'noOrigin' | 'unknown';
 export interface WriterChip { id: string; name: string; state: WriterChipState }
 
 /** Live agents of this project that are not selected yet (the multi-select options). */
@@ -31,7 +31,8 @@ export function writerChips(repoOrigin: string, selected: string[], agents: Writ
     const a = byId.get(id);
     if (!a) return { id, name: id, state: 'unknown' };
     if (a.archived) return { id, name: a.name, state: 'archived' };
-    if (a.origin !== null && a.origin !== repoOrigin) return { id, name: a.name, state: 'otherProject' };
+    if (a.origin === null) return { id, name: a.name, state: 'noOrigin' };
+    if (a.origin !== undefined && a.origin !== repoOrigin) return { id, name: a.name, state: 'otherProject' };
     return { id, name: a.name, state: 'ok' };
   });
 }

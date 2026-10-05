@@ -1262,6 +1262,7 @@
     "pickProjectFirst": "请先选择项目",
     "remove": "移除 {{name}}",
     "warn": {
+      "noOrigin": "无 git origin",
       "unknown": "未知智能体",
       "archived": "已归档",
       "otherProject": "其他项目"

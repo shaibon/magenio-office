@@ -1262,6 +1262,7 @@
     "pickProjectFirst": "Pick the project first",
     "remove": "Remove {{name}}",
     "warn": {
+      "noOrigin": "no git origin",
       "unknown": "unknown agent",
       "archived": "archived",
       "otherProject": "other project"
