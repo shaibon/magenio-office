@@ -93,7 +93,9 @@ export function createImapProvider(conn: MailAccountConn, password: string, deps
         for (const m of heads.slice(0, limit)) {
           const plan = planParts(m.bodyStructure);
           let text: string | undefined; let html: string | undefined;
-          for (const t of plan.text) {
+          // text/plain first; text/html only as the fallback when there is none.
+          for (const t of [...plan.text].sort((x, y) => (x.type === y.type ? 0 : x.type === 'text/plain' ? -1 : 1))) {
+            if (t.type === 'text/html' && text !== undefined) continue;
             const body = await readText(c, m.uid, t, parse);
             if (t.type === 'text/html') html ??= body; else text ??= body;
           }

@@ -379,7 +379,7 @@ test('IMAP adapter never requests the message source and downloads only text par
   const r = await p.fetchSince(0, 10);
   assert.ok(log.queries.every((q) => !q.source && !q.bodyParts), 'source must never be requested');
   assert.equal(log.queries[0].bodyStructure, true);
-  assert.deepEqual(log.downloads.map((d) => d.part), ['1.1', '1.2']);      // never 2, 3 or 4
+  assert.deepEqual(log.downloads.map((d) => d.part), ['1.1']);             // plain only; html is a fallback; never 2, 3 or 4
   assert.ok(log.downloads.every((d) => d.maxBytes <= 1024 * 1024));
   assert.equal(log.lock.readOnly, true);
   assert.equal(log.opts.secure, true);
@@ -391,7 +391,7 @@ test('IMAP adapter never requests the message source and downloads only text par
   assert.deepEqual(m.references, ['<r@x>']);
   assert.equal(m.attachments.length, 3);
   assert.equal(r.uidValidity, 5);
-  assert.equal(m.html, '<p>h</p>');
+  assert.equal(m.html, undefined);
 });
 
 test('the classifier runs with no tools: all built-ins off, no MCP, no bypass', () => {
