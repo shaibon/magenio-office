@@ -17,6 +17,8 @@ const EMPTY_QUEUE: QueuedMessage[] = [];
 interface Attachment {
   path: string;
   name: string;
+  /** blob: URL of a pasted image, for the chip thumbnail (the CSP blocks file:// images). */
+  thumb?: string;
 }
 
 // Prepended (only to the enqueued value, never the visible draft) when the
@@ -87,7 +89,10 @@ export function MessageQueueComposer({ agent }: MessageQueueComposerProps) {
     });
 
   const removeAttachment = (path: string) =>
-    setAttachments((prev) => prev.filter((a) => a.path !== path));
+    setAttachments((prev) => {
+      prev.forEach((a) => { if (a.path === path && a.thumb) URL.revokeObjectURL(a.thumb); });
+      return prev.filter((a) => a.path !== path);
+    });
 
   // '+' button → OS picker (images group + all files).
   const pickFiles = async () => {
@@ -114,8 +119,12 @@ export function MessageQueueComposer({ agent }: MessageQueueComposerProps) {
     const hasImage = items.some((it) => it.kind === 'file' && it.type.startsWith('image/'));
     if (hasImage) {
       e.preventDefault();
+      // Read the blob before the await: clipboardData is cleared once the handler yields.
+      const blob = items.find((it) => it.kind === 'file' && it.type.startsWith('image/'))?.getAsFile();
+      const thumb = blob ? URL.createObjectURL(blob) : undefined;
       const res = await window.cth.saveClipboardImage();
-      if (res.ok) addAttachments([res.file]);
+      if (res.ok) addAttachments([{ ...res.file, thumb }]);
+      else if (thumb) URL.revokeObjectURL(thumb);
       return;
     }
     const files = Array.from(e.clipboardData?.files ?? []);
@@ -149,6 +158,7 @@ export function MessageQueueComposer({ agent }: MessageQueueComposerProps) {
     // Enter never counts. (TELEMETRY.md → message_sent)
     void window.cth.trackMessageSent('composer');
     setText('');
+    attachments.forEach((a) => { if (a.thumb) URL.revokeObjectURL(a.thumb); });
     setAttachments([]);
   };
 
@@ -322,7 +332,9 @@ export function MessageQueueComposer({ agent }: MessageQueueComposerProps) {
                 color: 'var(--cth-ink-900)'
               }}
             >
-              <Icon name="folder" />
+              {a.thumb
+                ? <img src={a.thumb} alt="" style={{ width: 24, height: 24, objectFit: 'cover', flexShrink: 0 }} />
+                : <Icon name="folder" />}
               <span style={{
                 overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', maxWidth: 180
               }}>{a.name}</span>
