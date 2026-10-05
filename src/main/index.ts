@@ -20,6 +20,7 @@ import {
   modelForRole, OPS_STANDUP_MISSION, HEARTBEAT_MISSION, JIRA_POLL_MISSION, TRELLO_INTAKE_MISSION, COMPACT_MAINTENANCE_MISSION, type HarnessConfig, type ScheduledMission
 } from './config';
 import { listDir, readFileText, readFileBinary, writeFileText, statAbs, expandTilde } from './fs';
+import { sanitizeIdeSession, type IdeSession } from '../shared/ideSession';
 import { activeWindowDelayMs, normalizeActiveWindow, normalizeWeekly, weeklyDelayMs } from '../shared/weeklySchedule';
 import {
   getBranch, getStatus, getLog, getBranches, getAheadBehind, isRepo, getDiff, mainRepoRoot,
@@ -2305,12 +2306,12 @@ const MIN_WIN = { width: 1280, height: 800 };
 /** Validate + clamp restored bounds: enforce the minimum size, and drop a
  *  position that no longer lands on any connected display (monitor unplugged) so
  *  the window can't open off-screen. Returns null for unusable input. */
-function clampBounds(b: unknown): WindowBounds | null {
+function clampBounds(b: unknown, min: { width: number; height: number } = MIN_WIN): WindowBounds | null {
   if (!b || typeof b !== 'object') return null;
   const r = b as Partial<WindowBounds>;
   if (typeof r.width !== 'number' || typeof r.height !== 'number') return null;
-  const width = Math.max(MIN_WIN.width, Math.round(r.width));
-  const height = Math.max(MIN_WIN.height, Math.round(r.height));
+  const width = Math.max(min.width, Math.round(r.width));
+  const height = Math.max(min.height, Math.round(r.height));
   if (typeof r.x !== 'number' || typeof r.y !== 'number') return { width, height };
   const x = Math.round(r.x), y = Math.round(r.y);
   // Keep the position only if the window rect overlaps some display's work area.
@@ -2439,6 +2440,130 @@ ipcMain.handle('hire:openFile', async () => {
     ...batch,
     error: batch.manifests.length === 0 ? 'no valid hire manifests selected' : undefined
   };
+});
+
+// ─── Detachable IDE window ───────────────────────────────────────────────────
+// The IDE is one live thing that is either embedded in a window or in its own.
+// Popping out hands the renderer's session snapshot (tabs + unsaved buffers) to
+// main, which opens the window and gives the snapshot to it; docking, or closing
+// the window, hands it back to the window that popped out. Same preload, session
+// and CSP as the main window, no node integration.
+const IDE_MIN = { width: 640, height: 420 };
+const IDE_DEFAULT = { width: 1200, height: 800 };
+let ideWin: BrowserWindow | null = null;
+let ideOrigin: Electron.WebContents | null = null;
+let idePending: IdeSession | null = null;
+let ideDelivered = false;
+let ideForceClose = false;
+
+function ideAlive(): boolean { return !!ideWin && !ideWin.isDestroyed(); }
+
+function broadcastIdeDetached(): void {
+  const detached = ideAlive();
+  for (const w of allWindows) {
+    if (!w.isDestroyed() && !w.webContents.isDestroyed()) w.webContents.send('ide:detached', detached);
+  }
+}
+
+/** Give the session back to the window that popped it out (or the primary). */
+function deliverIdeSession(session: IdeSession | null): void {
+  if (ideDelivered) return;
+  ideDelivered = true;
+  const target = ideOrigin && !ideOrigin.isDestroyed() ? ideOrigin : mainWindow?.webContents;
+  if (target && !target.isDestroyed()) target.send('ide:docked', session);
+}
+
+function openIdeWindow(session: IdeSession, origin: Electron.WebContents): boolean {
+  if (ideAlive()) { ideWin!.focus(); return false; }
+  idePending = session;
+  ideOrigin = origin;
+  ideDelivered = false;
+  ideForceClose = false;
+  let saved: WindowBounds | null = null;
+  try { saved = clampBounds(persist.getKv('ide.window.bounds'), IDE_MIN); } catch { saved = null; }
+  const win = new BrowserWindow({
+    width: saved?.width ?? IDE_DEFAULT.width,
+    height: saved?.height ?? IDE_DEFAULT.height,
+    ...(saved && saved.x !== undefined && saved.y !== undefined ? { x: saved.x, y: saved.y } : {}),
+    minWidth: IDE_MIN.width,
+    minHeight: IDE_MIN.height,
+    title: 'Munder Difflin — IDE',
+    backgroundColor: '#FFF8E7',
+    titleBarStyle: 'hiddenInset',
+    show: false,
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  });
+  ideWin = win;
+  const saveBounds = debounce(() => {
+    if (win.isDestroyed() || win.isMinimized() || win.isMaximized()) return;
+    try { persist.setKv('ide.window.bounds', win.getBounds()); } catch { /* DB best-effort */ }
+  }, 400);
+  win.on('resized', saveBounds);
+  win.on('moved', saveBounds);
+  win.once('ready-to-show', () => win.show());
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+    return { action: 'deny' };
+  });
+  // Closing re-docks: ask the renderer for its snapshot rather than closing on the
+  // spot, so unsaved edits come home. If it never answers (crashed), close anyway.
+  win.on('close', (e) => {
+    if (ideForceClose || allowQuit) return;
+    try { persist.setKv('ide.window.bounds', win.getBounds()); } catch { /* best-effort */ }
+    e.preventDefault();
+    win.webContents.send('ide:closeRequested');
+    setTimeout(() => { if (!win.isDestroyed()) { ideForceClose = true; win.close(); } }, 2500);
+  });
+  win.on('closed', () => {
+    ideWin = null;
+    deliverIdeSession(null); // no-op when the snapshot was already delivered
+    broadcastIdeDetached();
+  });
+  if (isDev && process.env.ELECTRON_RENDERER_URL) {
+    win.loadURL(`${process.env.ELECTRON_RENDERER_URL}#ide`);
+  } else {
+    win.loadFile(join(__dirname, '../renderer/index.html'), { hash: 'ide' });
+  }
+  broadcastIdeDetached();
+  return true;
+}
+
+ipcMain.handle('ide:popOut', (evt, raw) => {
+  const session = sanitizeIdeSession(raw);
+  if (!session) return { ok: false, error: 'invalid session' };
+  return { ok: openIdeWindow(session, evt.sender) };
+});
+ipcMain.handle('ide:takeSession', (evt) => {
+  if (!ideWin || evt.sender !== ideWin.webContents) return null;
+  const s = idePending;
+  idePending = null;
+  return s;
+});
+ipcMain.handle('ide:dock', (evt, raw) => {
+  if (!ideWin || evt.sender !== ideWin.webContents) return { ok: false };
+  deliverIdeSession(sanitizeIdeSession(raw));
+  ideForceClose = true;
+  ideWin.close();
+  return { ok: true };
+});
+ipcMain.handle('ide:state', () => ({ detached: ideAlive() }));
+ipcMain.handle('ide:focus', () => {
+  if (!ideAlive()) return false;
+  if (ideWin!.isMinimized()) ideWin!.restore();
+  ideWin!.focus();
+  return true;
+});
+ipcMain.handle('ide:openFile', (_evt, abs: unknown) => {
+  if (!ideAlive() || typeof abs !== 'string') return false;
+  ideWin!.webContents.send('ide:openFile', abs);
+  if (ideWin!.isMinimized()) ideWin!.restore();
+  ideWin!.focus();
+  return true;
 });
 
 /**
@@ -2605,6 +2730,9 @@ function createWindow(opts: { floor?: boolean } = {}): BrowserWindow {
 
   win.on('closed', () => {
     allWindows.delete(win);
+    // The IDE window belongs to the window that popped it out; if that one goes
+    // away there is nowhere to dock back to, so the IDE goes with it.
+    if (ideAlive() && ideOrigin === wc) { ideDelivered = true; ideWin!.destroy(); }
     // A closed floor must not leave its terminals running headless. (Natural
     // onExit teardown — archive + worktree cleanup — still runs per PTY.)
     if (isFloor) { try { ptyManager.killByOwner(wc); } catch { /* best-effort */ } }
