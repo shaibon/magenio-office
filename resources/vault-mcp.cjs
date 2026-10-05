@@ -62,6 +62,12 @@ function loadScopes(rootRaw, scopesRaw) {
   return { root, scopes };
 }
 
+/** A REAL path (symlinks resolved) with any hidden segment relative to the vault
+ *  root, e.g. a visible `notes` symlink that points into `.obsidian`. */
+function hiddenReal(ctx, abs) {
+  return path.relative(ctx.root, abs).split(path.sep).some((seg) => seg.startsWith('.'));
+}
+
 /** Vault-relative path -> { abs, scope }, or throws. The REAL path (symlinks
  *  followed) must sit inside one scope's real directory. */
 function resolveInScope(ctx, rel) {
@@ -70,7 +76,7 @@ function resolveInScope(ctx, rel) {
   const abs = real(path.join(ctx.root, clean));
   if (!abs) throw new VaultError('not found');
   const scope = ctx.scopes.find((s) => within(s.abs, abs));
-  if (!scope) throw new VaultError('path is outside the folders you may read');
+  if (!scope || hiddenReal(ctx, abs)) throw new VaultError('path is outside the folders you may read');
   return { abs, scope };
 }
 
@@ -86,7 +92,7 @@ function vaultList(ctx, rel) {
   for (const e of fs.readdirSync(abs, { withFileTypes: true })) {
     if (e.name.startsWith('.')) continue;
     const child = real(path.join(abs, e.name));
-    if (!child || !ctx.scopes.some((s) => within(s.abs, child))) continue; // symlink out: invisible
+    if (!child || !ctx.scopes.some((s) => within(s.abs, child)) || hiddenReal(ctx, child)) continue; // symlink out or into a hidden dir: invisible
     const st = fs.statSync(child);
     if (st.isDirectory()) out.push(`${e.name}/`);
     else if (st.isFile() && e.name.toLowerCase().endsWith('.md')) out.push(`${e.name}  (${st.size} bytes)`);
@@ -114,7 +120,7 @@ function* walk(ctx, dir, state) {
   for (const e of entries) {
     if (e.name.startsWith('.') || state.n >= MAX_SEARCH_FILES) continue;
     const child = real(path.join(dir, e.name));
-    if (!child || !ctx.scopes.some((s) => within(s.abs, child))) continue;
+    if (!child || !ctx.scopes.some((s) => within(s.abs, child)) || hiddenReal(ctx, child)) continue;
     let st;
     try { st = fs.statSync(child); } catch { continue; }
     if (st.isDirectory()) yield* walk(ctx, child, state);

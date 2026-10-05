@@ -73,6 +73,17 @@ test('read: symlinks escaping the scope are refused', () => {
   assert.throws(() => call(ctx, 'vault_read', { path: '01-Projects/Acme/otherlink/Stato.md' }), /outside/);
 });
 
+test('a visible symlink into a hidden dir exposes nothing (read, list, search)', () => {
+  const { ctx, root } = fixture();
+  fs.writeFileSync(path.join(root, '01-Projects/Acme/.obsidian/private.md'), 'plugin-secret');
+  fs.symlinkSync(path.join(root, '01-Projects/Acme/.obsidian'), path.join(root, '01-Projects/Acme/notes'));
+  assert.throws(() => call(ctx, 'vault_read', { path: '01-Projects/Acme/notes/private.md' }), /outside/);
+  assert.throws(() => call(ctx, 'vault_list', { path: '01-Projects/Acme/notes' }), /outside/);
+  assert.doesNotMatch(call(ctx, 'vault_list', { path: '01-Projects/Acme' }), /notes/);
+  assert.doesNotMatch(call(ctx, 'vault_search', { query: 'plugin-secret' }), /private|notes/);
+  assert.equal(call(ctx, 'vault_search', { query: 'plugin-secret' }), 'no matches');
+});
+
 test('read: only .md, and large notes are truncated', () => {
   const { ctx, root } = fixture();
   fs.writeFileSync(path.join(root, '99-System/data.json'), '{}');
