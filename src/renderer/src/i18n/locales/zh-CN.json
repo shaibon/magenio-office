@@ -226,7 +226,8 @@
       "autonomyBudgets": "自主权与预算",
       "connections": "连接",
       "voice": "语音",
-      "memoryKnowledge": "记忆与知识"
+      "memoryKnowledge": "记忆与知识",
+      "email": "邮件"
     },
     "changeHome": {
       "newHome": "新的主文件夹",
@@ -1278,6 +1279,91 @@
       "killed": "已终止",
       "preserved-worktree": "保留工作树"
     }
+  },
+  "mail": {
+    "title": "邮件",
+    "loadMore": "加载更早的邮件",
+    "loadingMore": "加载中…",
+    "loadedOnly": "计数仅包含已加载的最新 {{count}} 封邮件。",
+    "readOnly": "只读",
+    "pollNow": "立即检查",
+    "polling": "检查中…",
+    "close": "关闭",
+    "accounts": "账户",
+    "noAccounts": "尚未连接账户。请在 设置 → 邮件 中添加。",
+    "ok": "正常",
+    "error": "错误",
+    "projects": "项目",
+    "all": "全部",
+    "unassigned": "待分配",
+    "unassignedShort": "?",
+    "empty": "这里没有邮件。",
+    "noSubject": "（无主题）",
+    "selectOne": "请选择一封邮件。",
+    "to": "收件人",
+    "triage": "分诊",
+    "needsReply": "需要回复",
+    "assignTo": "分配到项目",
+    "attachments": "附件",
+    "bodyPurged": "正文已在保留期后删除，仅保留元数据。",
+    "category": {
+      "support": "支持",
+      "bug": "缺陷",
+      "feature": "需求",
+      "billing": "账单",
+      "newsletter": "通讯",
+      "spam": "垃圾邮件",
+      "other": "其他"
+    },
+    "urgency": {
+      "low": "低",
+      "normal": "普通",
+      "high": "紧急"
+    },
+    "reason": {
+      "pending": "尚未分诊。",
+      "rule": "由你的发件人规则分配。",
+      "jiraKey": "由主题中的 Jira 编号分配。",
+      "manual": "手动分配。",
+      "model": "模型建议，置信度 {{pct}}%。",
+      "modelNoConf": "由模型建议。",
+      "none": "没有匹配的规则、Jira 编号或高置信度建议。"
+    }
+  },
+  "mailSettings": {
+    "title": "邮件账户",
+    "desc": "只读 IMAP。应用不会发送、删除或标记邮件；连接始终使用 TLS 并验证证书。",
+    "addAccount": "添加账户",
+    "edit": "编辑",
+    "remove": "移除",
+    "address": "邮箱地址",
+    "host": "IMAP 主机",
+    "port": "端口",
+    "username": "用户名",
+    "mailbox": "邮箱文件夹",
+    "password": "密码",
+    "passwordKeep": "密码（留空则保持不变）",
+    "passwordNote": "密码加密保存，之后不会再显示。",
+    "passwordRequired": "新账户必须填写密码。",
+    "couldNotSave": "无法保存。",
+    "save": "保存",
+    "cancel": "取消",
+    "pollMinutes": "检查间隔（分钟）",
+    "retentionDays": "正文保留（天）",
+    "retentionNote": "0 表示永久保留",
+    "rules": "发件人规则",
+    "rulesDesc": "按顺序匹配：地址、域名、关键词。匹配后邮件将分配到对应项目。",
+    "kind": {
+      "fromAddr": "发件人地址",
+      "fromDomain": "发件人域名",
+      "keyword": "关键词"
+    },
+    "ruleKind": "规则类型",
+    "pattern": "匹配内容",
+    "project": "项目键",
+    "addRule": "添加规则",
+    "enable": "启用",
+    "disable": "停用"
   },
   "workersTab": {
     "stopping": "停止中",
