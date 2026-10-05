@@ -47,3 +47,17 @@ export function withCodexRemoteArgs(args: string[], endpoint: string): string[] 
   if (args.includes('--remote')) return args;
   return ['--remote', endpoint, ...args];
 }
+
+/** True when `codex --help` output lists `--no-daemon` (older CLIs reject it). */
+export function codexHelpSupportsNoDaemon(helpText: string): boolean {
+  return /(^|\s)--no-daemon\b/.test(helpText);
+}
+
+/** Codex >= 0.157 starts a shared background app-server daemon by default, whose
+ *  control socket under the per-agent CODEX_HOME can exceed sun_path and kill the
+ *  TUI at startup. `--no-daemon` is a global option, so like `--remote` it goes
+ *  before any `resume` subcommand. No-op when unsupported or already present. */
+export function withCodexNoDaemonArgs(args: string[], supported: boolean): string[] {
+  if (!supported || args.includes('--no-daemon') || args.includes('--remote')) return args;
+  return ['--no-daemon', ...args];
+}
