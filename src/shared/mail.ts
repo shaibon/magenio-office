@@ -376,9 +376,26 @@ export function quotesMail(text: string, mail: { subject: string; body: string }
   return /\d[\d\s-]{6,}\d/.test(text) || /\b(?=[A-Za-z0-9_-]*\d)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{16,}\b/.test(text);
 }
 
+const fold = (s: string): string => s.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+const escapeRe = (t: string): string => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const LB = '(?<![\\p{L}\\p{N}])', LA = '(?![\\p{L}\\p{N}])';   // Unicode word edges ("\b" breaks at é)
+
+/** Deterministic scrubbing that needs no model: links, phone-like numbers and
+ *  addresses never cross, whatever the summary says. */
+export function scrubIdentifiers(s: string): string {
+  return redactAddresses(s)
+    .replace(/\b(?:https?|ftp):\/\/[^\s<>"')\]]+/gi, '[link]')
+    .replace(/\bwww\.[^\s<>"')\]]+/gi, '[link]')
+    // bare hostnames, with or without a path ("private.example.test/path")
+    .replace(/(?<![\p{L}\p{N}@.])(?:[\p{L}\p{N}-]+\.)+[a-z]{2,}(?::\d+)?(?:\/[^\s<>"')\]]*)?(?![\p{L}\p{N}])/giu, '[link]')
+    // any run of digits with phone punctuation holding 7+ digits (+39.333.1234567, (02) 1234 5678)
+    .replace(/\+?\d[\d\s().\-/]{4,}\d/g, (m) => (m.replace(/\D/g, '').length >= 7 ? '[number]' : m));
+}
+
 /** The classification as it may cross to the hive. Names of the sender and every
- *  recipient are masked; if what is left still quotes the mail, summary and action
- *  are dropped altogether and only the metadata (category, urgency) goes. */
+ *  recipient are masked, links/numbers/addresses scrubbed; if what is left still
+ *  quotes the mail, or still contains a known name in any accent/case spelling,
+ *  summary and action are dropped altogether and only the metadata goes. */
 export function classificationForHandoff(
   c: Classification,
   mail: { subject: string; body: string; fromName: string; fromAddress: string; to: string[] }
@@ -387,13 +404,15 @@ export function classificationForHandoff(
   for (const src of [mail.fromName, mail.fromAddress.split('@')[0], ...mail.to.map((a) => a.split('@')[0])]) {
     for (const w of src.split(/[^\p{L}\p{N}]+/u)) if (w.length >= 3) names.add(w);
   }
-  const mask = (s: string): string => {
-    let out = redactAddresses(s);
-    for (const n of names) out = out.replace(new RegExp(`\\b${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'giu'), '[name]');
+  const mask = (text: string): string => {
+    let out = scrubIdentifiers(text);
+    for (const n of names) out = out.replace(new RegExp(`${LB}${escapeRe(n)}${LA}`, 'giu'), '[name]');
     return out;
   };
   const summary = mask(c.summary), suggestedAction = mask(c.suggestedAction);
-  if (quotesMail(`${summary}\n${suggestedAction}`, mail)) {
+  const left = fold(`${summary}\n${suggestedAction}`);
+  const nameLeft = [...names].some((n) => new RegExp(`${LB}${escapeRe(fold(n))}${LA}`, 'iu').test(left));
+  if (nameLeft || quotesMail(`${summary}\n${suggestedAction}`, mail)) {
     return { classification: { ...c, summary: '', suggestedAction: '' }, summaryWithheld: true };
   }
   return { classification: { ...c, summary, suggestedAction }, summaryWithheld: false };

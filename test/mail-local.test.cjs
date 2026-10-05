@@ -271,3 +271,39 @@ test('end to end: a model that echoes the mail verbatim gets a metadata-only han
   // The full summary stays in the local store for the Mail area.
   assert.match(p.store.listMessages()[0].triage.summary, /SECRET BODY/);
 });
+
+test('deterministic scrubbing: links, dotted/spaced phones and accented names never cross (Toby\'s cases)', () => {
+  const src = { subject: 'Help', body: 'Please assist.', fromName: 'José Rossi', fromAddress: 'jose@client.com', to: ['me@x.com'] };
+  const out = (summary, action = 'Follow up') => M.classificationForHandoff(cls(`${summary}\nsecond line\nthird line`, action), src);
+  let r = out('See https://private.example.test/path?token=abc');
+  assert.doesNotMatch(r.classification.summary, /private|example|token|https/);
+  assert.match(r.classification.summary, /\[link\]/);
+  for (const [raw, leak] of [['Call +39.333.1234567', '1234567'], ['Call +39 333 1234567', '1234567'], ['Call (02) 1234-5678', '5678'], ['phone 333.123.4567 now', '4567']]) {
+    r = out(raw);
+    assert.doesNotMatch(r.classification.summary, new RegExp(leak), raw);
+    assert.match(r.classification.summary, /\[number\]/, raw);
+  }
+  assert.match(out('see www.secret-site.org/a and secret-site.org/b and a.co').classification.summary, /see \[link\] and \[link\] and \[link\]/);
+  r = out('José needs help');                                    // accented known name, exact spelling: masked
+  assert.equal(r.summaryWithheld, false);
+  assert.match(r.classification.summary, /^\[name\] needs help/);
+  assert.doesNotMatch(r.classification.summary, /Jos/);
+  // A different accent/case spelling of a known name cannot be masked reliably: withheld, not leaked.
+  for (const sp of ['Jose needs help', 'JOSÉ needs help', 'josé needs help', 'Rossi called']) {
+    const w = out(sp);
+    assert.ok(w.summaryWithheld || !/jos|rossi/i.test(w.classification.summary), sp);
+  }
+  // Version numbers and short numbers are untouched.
+  assert.match(out('release 2.4.1 fixes 12 bugs').classification.summary, /release 2\.4\.1 fixes 12 bugs/);
+  assert.equal(out('release 2.4.1 fixes 12 bugs').summaryWithheld, false);
+});
+
+test('end to end: link/phone/name in the model summary are scrubbed in the hive message', async () => {
+  const reply = JSON.stringify({ category: 'support', urgency: 'normal', project_hint: 'VAI', confidence: 0.9, needs_reply: true,
+    summary: 'José needs help\nSee https://private.example.test/path\nCall +39.333.1234567', suggested_action: 'Ring back' });
+  const p = pipeline({ classify: async () => reply, messages: [mail({ subject: 'Help', text: 'Please assist.', from: { name: 'José Rossi', address: 'jose@client.com' } })] });
+  await runMailPoll(p.deps);
+  const msg = M.handoffMessage(p.handoffs[0]);
+  for (const leak of ['José', 'private.example', 'https', '1234567', 'jose@']) assert.ok(!msg.body.includes(leak), leak);
+  assert.match(msg.body, /\[name\] needs help/);
+});
