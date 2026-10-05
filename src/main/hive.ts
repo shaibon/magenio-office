@@ -3460,6 +3460,23 @@ request is NOT failed or deleted, it waits in \`spawn-requests/\` and runs if th
 If a request of yours has sat there without moving, that is why, and it is a decision to raise with the
 human rather than retry. Route work to an agent already on the floor first either way.
 
+## Scheduled triggers — automations (broker)
+If your environment has \`MD_BROKER_URL\` and \`MD_BROKER_TOKEN\` you can manage recurring
+triggers (the Schedules list in the app) over the loopback broker; send the token as
+\`x-md-broker-token\`. A read-only token (PM) can only list.
+
+- \`GET  $MD_BROKER_URL/automations\` — every trigger, with its \`owner\` (agent id, or null).
+- \`POST $MD_BROKER_URL/automations\` — create. JSON: \`label\`, \`body\` (the message sent on each
+  run), \`to\` (an existing agent id), and EITHER \`intervalMinutes\` (5 to 10080) OR
+  \`weekly\` \`{ "days": [1,2,3,4,5], "minute": 540 }\` (0=Sunday, local time, minute of day).
+  Optional \`enabled\`.
+- \`PATCH  $MD_BROKER_URL/automations/<id>\` — change any of those fields.
+- \`DELETE $MD_BROKER_URL/automations/<id>\`.
+
+Limits: 10 triggers per agent, 5 minutes minimum interval, and you may only change or delete
+triggers you created (god may change any user-level one). Built-in system triggers are read-only.
+Creates, updates and deletes show up in the app and are logged in \`log.jsonl\` under your id.
+
 ## Semantic memory (optional — when \`mempalace\` is installed)
 When \`MEMPALACE_PALACE_PATH\` is set in your environment, the hive shares a
 searchable MemPalace and you have the \`mempalace\` CLI:

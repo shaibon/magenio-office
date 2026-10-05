@@ -434,6 +434,19 @@ const integrationBroker = new IntegrationBroker({
     const current = new Set(readConfig().autoDeliveryPausedAgents ?? []);
     if (frozen) current.add(agentId); else current.delete(agentId);
     writeConfig({ autoDeliveryPausedAgents: Array.from(current).sort() });
+  },
+  // Agent-managed schedules: same store and re-arm as the `missions:save` IPC, so
+  // the Schedules panel shows (and the scheduler runs) whatever an agent made.
+  automations: {
+    list: () => readConfig().missions ?? [],
+    save: (next) => {
+      writeConfig({ missions: next as ScheduledMission[] });
+      syncMissions();
+      try { liveWebContents()?.send('missions:updated'); } catch { /* window gone */ }
+    },
+    targetExists: (id) => id === 'broadcast' || id === 'god' || !!hive.registry().agents[id],
+    isGod: (id) => hive.registry().godId === id,
+    log: (event) => hive.appendLog(event)
   }
 });
 

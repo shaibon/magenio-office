@@ -1028,6 +1028,7 @@
     "promptPlaceholder": "每次运行逐字发送。",
     "fired": "{{time}} 前触发",
     "notFired": "尚未触发",
+    "createdBy": "由 {{agent}} 创建",
     "next": "下次 {{time}}",
     "beat": "♥ 心跳",
     "noPrompt": "未设置提示词。",

@@ -68,6 +68,9 @@ export interface ScheduledMission {
    *  inbox/outbox mtimes, any PTY output) has moved in this many ms. Default
    *  ~5 min. NOT derived from registry.status (which never transitions in main). */
   quietThresholdMs?: number;
+  /** Agent id that created this schedule through the broker's `/automations`.
+   *  Absent on operator-made and built-in ones. Drives ownership checks. */
+  createdBy?: string;
 }
 
 /** The built-in hourly ops standup: god reviews who's doing what + whether tasks

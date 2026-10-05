@@ -27,6 +27,10 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { Readable } from 'node:stream';
 import {
+  createAutomation, deleteAutomation, listAutomations, updateAutomation,
+  type AutomationHost, type AutomationResult
+} from '../shared/agentAutomations';
+import {
   type IntegrationRecord,
   buildAuthHeaders,
   resolveUpstreamUrl,
@@ -92,6 +96,10 @@ export interface IntegrationBrokerDeps {
    *  boundary is the loopback bind plus the token. Optional: absent means the
    *  host did not wire agent control (e.g. a unit-test broker), not an error. */
   setAgentFrozen?: (agentId: string, frozen: boolean) => void;
+  /** Storage + roster behind `/automations` (scheduled triggers). Same trust
+   *  class as agent control: any valid, non-read-only token; ownership and caps are
+   *  enforced in shared/agentAutomations. Optional: absent ⇒ 501. */
+  automations?: AutomationHost;
 }
 
 /** True for IPv4 loopback (127.0.0.0/8) and IPv6 ::1 (incl. v4-mapped). Mirrors slack.ts. */
@@ -117,7 +125,13 @@ export class IntegrationBroker {
   start(preferredPort = 0): Promise<{ ok: boolean; port?: number; error?: string }> {
     return new Promise((resolve) => {
       if (this.server) { resolve({ ok: true, port: this.port }); return; }
-      const server = createServer((req, res) => this.handle(req, res));
+      const server = createServer((req, res) => {
+        // Any throw inside routing (e.g. a malformed %-escape) must become a JSON
+        // 500, never an unhandled exception out of the server callback.
+        try { this.handle(req, res); } catch {
+          IntegrationBroker.sendError(res, 500, 'internal_error', 'internal error');
+        }
+      });
       const onError = (e: Error): void => { server.off('listening', onListening); resolve({ ok: false, error: e.message }); };
       const onListening = (): void => {
         server.off('error', onError);
@@ -279,6 +293,21 @@ export class IntegrationBroker {
       return;
     }
 
+    // 2d) /automations[/<id>] — scheduled triggers. The actor is the capability's
+    // worker id, i.e. the calling agent; it is never taken from the request.
+    const auto = /^\/automations(?:\/([^/?#]+))?\/?(\?[^#]*)?$/.exec(rawUrl);
+    if (auto) {
+      if (!this.deps.automations) {
+        return IntegrationBroker.sendError(res, 501, 'not_supported', 'automations not wired');
+      }
+      let id: string | undefined;
+      try { id = auto[1] ? decodeURIComponent(auto[1]) : undefined; } catch {
+        return IntegrationBroker.sendError(res, 400, 'bad_request', 'malformed automation id');
+      }
+      void this.automations(req, res, cap.workerId, id);
+      return;
+    }
+
     // 3) Parse /i/<integrationId>/<path...>.
     const m = /^\/i\/([^/?#]+)(?:\/([^?#]*))?(\?[^#]*)?$/.exec(rawUrl);
     if (!m) return IntegrationBroker.sendError(res, 404, 'not_found', 'expected /i/<integrationId>/<path>');
@@ -307,6 +336,26 @@ export class IntegrationBroker {
     }
 
     void this.forward(req, res, rec, upstream, secret);
+  }
+
+  private async automations(req: IncomingMessage, res: ServerResponse, actor: string, id: string | undefined): Promise<void> {
+    const host = this.deps.automations!;
+    const method = req.method ?? 'GET';
+    let result: AutomationResult;
+    try {
+      if (method === 'GET' && !id) result = listAutomations(host);
+      else if (method === 'POST' && !id) result = createAutomation(host, actor, await readJson(req));
+      else if ((method === 'PATCH' || method === 'PUT') && id) result = updateAutomation(host, actor, id, await readJson(req));
+      else if (method === 'DELETE' && id) result = deleteAutomation(host, actor, id);
+      else return IntegrationBroker.sendError(res, 405, 'method_not_allowed', 'GET|POST /automations, PATCH|DELETE /automations/<id>');
+    } catch (e) {
+      const m = (e as Error).message;
+      return m === 'too_large'
+        ? IntegrationBroker.sendError(res, 413, 'payload_too_large', 'request body too large')
+        : IntegrationBroker.sendError(res, 400, 'bad_request', m === 'bad_json' ? 'body must be valid JSON' : 'could not read request body');
+    }
+    res.writeHead(result.status, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(result.body));
   }
 
   private async forward(
@@ -382,6 +431,11 @@ export class IntegrationBroker {
       clearTimeout(timer);
     }
   }
+}
+
+async function readJson(req: IncomingMessage): Promise<unknown> {
+  const buf = await readBodyCapped(req);
+  try { return JSON.parse(buf.toString('utf8')); } catch { throw new Error('bad_json'); }
 }
 
 /** Read a request body into a Buffer, aborting past MAX_BODY_BYTES (throws 'too_large'). */
