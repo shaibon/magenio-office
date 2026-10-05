@@ -1028,6 +1028,7 @@
     "promptPlaceholder": "يُرسَل حرفيًا في كل تشغيل.",
     "fired": "عمل {{time}}",
     "notFired": "لم يعمل بعد",
+    "createdBy": "أنشأه {{agent}}",
     "next": "التالي {{time}}",
     "beat": "♥ نبضة",
     "noPrompt": "لا موجّه محدَّد.",

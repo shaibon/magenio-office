@@ -1028,6 +1028,7 @@
     "promptPlaceholder": "Sent word for word on every run.",
     "fired": "fired {{time}}",
     "notFired": "not yet fired",
+    "createdBy": "created by {{agent}}",
     "next": "next {{time}}",
     "beat": "♥ beat",
     "noPrompt": "No prompt set.",
