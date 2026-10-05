@@ -1517,7 +1517,12 @@ export class HiveManager {
         out['munder-vault'] = {
           command: this.nodeLauncher() ?? 'node',
           args: [vault.script],
-          env: { VAULT_ROOT: vault.root, VAULT_SCOPES: JSON.stringify(vault.scopes) }
+          env: {
+            VAULT_ROOT: vault.root, VAULT_SCOPES: JSON.stringify(vault.scopes),
+            // Write tools exist only for the allow-listed writer; the lock is shared
+            // by every writer's server process and lives outside the vault.
+            ...(vault.write ? { VAULT_WRITER_AGENT: vault.write.agentId, VAULT_LOCK_PATH: vault.write.lockPath } : {})
+          }
         };
         continue;
       }

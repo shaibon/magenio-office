@@ -1589,13 +1589,17 @@ function vaultMcpScript(): string {
  *  shared areas. null (→ no vault server) when vault sync is off, no vault path is
  *  set, the cwd resolves to no project, or the mapping's folder is not a plain
  *  relative path. Matches by git origin, like the Knowledge Graph isolation. */
-async function vaultMountForCwd(cwd: string): Promise<VaultMount | null> {
+async function vaultMountForCwd(cwd: string, agentId?: string): Promise<VaultMount | null> {
   const cfg = readConfig().knowledgeGraph?.vaultSync;
   if (!cfg?.enabled || !cfg.vaultPath?.trim()) return null;
   const mapping = await resolveProjectForCwd(cwd, cfg.projects ?? []);
   const scopes = vaultScopesFor(mapping?.vaultFolder);
   if (!scopes) return null;
-  return { root: expandTilde(cfg.vaultPath), scopes, script: vaultMcpScript() };
+  const writer = !!agentId && (mapping?.writerAgentIds ?? []).includes(agentId);
+  return {
+    root: expandTilde(cfg.vaultPath), scopes, script: vaultMcpScript(),
+    ...(writer ? { write: { agentId: agentId!, lockPath: join(app.getPath('userData'), 'vault-write.lock') } } : {})
+  };
 }
 
 function skillsResourceDir(): string {
@@ -3219,7 +3223,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
             config: magentoConfigForProject(project, readConfig().jiraProjects),
             denyRead: magentoDeniedReadPaths(readConfig().jiraProjects)
           },
-          vault: (await vaultMountForCwd(opts.cwd)) ?? undefined,
+          vault: (await vaultMountForCwd(opts.cwd, opts.hive?.id)) ?? undefined,
           skillsDir: skillsResourceDir(),
           // The shared palace is mutated by the agent's own `mempalace` calls, so
           // the OS sandbox must let it through (empty when memory is off).
