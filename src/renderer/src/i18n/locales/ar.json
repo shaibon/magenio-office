@@ -1365,6 +1365,20 @@
     "enable": "تفعيل",
     "disable": "تعطيل"
   },
+  "vaultWriters": {
+    "title": "كتّاب الـ Vault",
+    "hint": "وحدهم هؤلاء الوكلاء يمكنهم الكتابة في مجلد الـ vault لهذا المشروع — عادةً Angela الخاصة بالمشروع. أما البقية فيبقون للقراءة فقط.",
+    "add": "إضافة كاتب…",
+    "none": "لا وكيل نشط آخر في هذا المشروع",
+    "pickProjectFirst": "اختر المشروع أولًا",
+    "remove": "إزالة {{name}}",
+    "warn": {
+      "noOrigin": "بلا git origin",
+      "unknown": "وكيل غير معروف",
+      "archived": "مؤرشف",
+      "otherProject": "مشروع آخر"
+    }
+  },
   "workersTab": {
     "stopping": "يتوقّف",
     "working": "يعمل",
