@@ -4,6 +4,8 @@
  * components so it can be tested; nothing here touches the mailbox.
  */
 
+import { normalizeLocalEndpoint } from './mail';
+
 export interface ViewTriage {
   category: string;
   urgency: string;
@@ -94,3 +96,24 @@ export const pageMayHaveMore = (page: unknown[]): boolean => page.length >= MAIL
 
 /** Counts only cover what is loaded, so say so while older mail is still on the server. */
 export const countLabel = (n: number, hasMore: boolean): string => (hasMore ? `${n}+` : String(n));
+
+/* ─────────────────────────── local mail agent ─────────────────────────── */
+
+
+export type AgentFormIssue = 'notLoopback' | 'modelInvalid' | 'modelRequired';
+
+/** What is wrong with the mail-agent form, as an i18n key suffix; null = fine.
+ *  Same rules as validateMailAgentSettings, split so each case gets its own message. */
+export function agentFormIssue(f: { enabled: boolean; baseUrl: string; model: string }): AgentFormIssue | null {
+  if (!normalizeLocalEndpoint(f.baseUrl)) return 'notLoopback';
+  const model = f.model.trim();
+  if (model.length > 100 || /[\s\0]/.test(model)) return 'modelInvalid';
+  if (f.enabled && !model) return 'modelRequired';
+  return null;
+}
+
+/** Header badge: the state's label key, plus whether to warn "rules only". */
+export function agentBadge(status: { state: string; rulesOnly: boolean } | null): { key: string; rulesOnly: boolean } {
+  if (!status) return { key: 'mail.agent.state.off', rulesOnly: true };
+  return { key: `mail.agent.state.${status.state}`, rulesOnly: status.rulesOnly };
+}

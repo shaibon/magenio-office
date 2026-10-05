@@ -2,7 +2,9 @@ import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { PixelButton } from '../PixelButton';
 import { jiraProjectsClient } from '@/jiraProjects/jiraProjectsClient';
-import { validateMailAccountInput, type MailRuleKind } from '@shared/mail';
+import { validateMailAccountInput, DEFAULT_MAIL_AGENT, type MailAgentSettings, type MailAgentStatus, type MailRuleKind } from '@shared/mail';
+import { OSS_LOCAL_PICKS } from '@shared/ossModels';
+import { agentBadge, agentFormIssue } from '@shared/mailView';
 
 /** Settings → Email: the IMAP account (password is write-only — main never sends it
  *  back, and an empty field on edit keeps the stored one), polling / retention, and
@@ -22,6 +24,61 @@ const row: React.CSSProperties = { display: 'flex', flexWrap: 'wrap', gap: 6, al
 const box: React.CSSProperties = { padding: 8, boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)', display: 'flex', flexDirection: 'column', gap: 6 };
 
 const EMPTY = { id: undefined as string | undefined, address: '', host: '', port: '993', username: '', mailbox: 'INBOX', password: '' };
+
+/** Settings → Email → Mail agent: the LOCAL model that summarises mail. Loopback
+ *  endpoint only (checked here for a clear message, and again in main on every call). */
+function MailAgentBlock() {
+  const { t } = useTranslation();
+  const [form, setForm] = useState<MailAgentSettings>(DEFAULT_MAIL_AGENT);
+  const [status, setStatus] = useState<MailAgentStatus | null>(null);
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    window.cth.mailAgentGet().then((r) => { setForm(r.settings); setStatus(r.status); }).catch(() => { /* main not ready */ });
+  }, []);
+
+  const issue = agentFormIssue(form);
+  const apply = async (next: MailAgentSettings) => {
+    setForm(next);
+    if (agentFormIssue(next)) return; // shown inline; nothing is saved until it is valid
+    const res = await window.cth.mailAgentSet(next);
+    setStatus(res.status);
+    if (res.ok) { setForm(res.settings); setErr(''); } else setErr(res.error || t('mailSettings.couldNotSave'));
+  };
+  const test = async () => { setBusy(true); try { setStatus(await window.cth.mailAgentTest()); } finally { setBusy(false); } };
+  const badge = agentBadge(status);
+
+  return (
+    <div style={box}>
+      <div style={label}>{t('mail.agent.title')}</div>
+      <span style={sub}>{t('mail.agent.privacy')}</span>
+      <label style={{ ...row, fontSize: 12 }}>
+        <input type="checkbox" checked={form.enabled} onChange={(e) => void apply({ ...form, enabled: e.target.checked })} />
+        {t('mail.agent.enable')}
+      </label>
+      <div style={row}>
+        <input style={{ ...input, flex: 2 }} aria-label={t('mail.agent.endpoint')} placeholder={t('mail.agent.endpoint')} value={form.baseUrl}
+          onChange={(e) => setForm({ ...form, baseUrl: e.target.value })} onBlur={() => void apply(form)} />
+        <input style={{ ...input, flex: 1 }} list="mail-agent-models" aria-label={t('mail.agent.model')} placeholder={t('mail.agent.model')} value={form.model}
+          onChange={(e) => setForm({ ...form, model: e.target.value })} onBlur={() => void apply(form)} />
+        <datalist id="mail-agent-models">
+          {OSS_LOCAL_PICKS.map((p) => <option key={p.tag} value={p.tag}>{p.label} · {p.minRam}</option>)}
+        </datalist>
+      </div>
+      {issue && <span role="alert" style={{ fontSize: 12, color: 'var(--cth-red, #b3261e)' }}>{t(`mail.agent.issue.${issue}`)}</span>}
+      {err && !issue && <span role="alert" style={{ fontSize: 12, color: 'var(--cth-red, #b3261e)' }}>{err}</span>}
+      <div style={row}>
+        <PixelButton onClick={test} disabled={busy || !!issue || !form.model.trim()}>
+          {busy ? t('mail.agent.testing') : t('mail.agent.test')}
+        </PixelButton>
+        <span style={{ fontSize: 12 }}>
+          <b>{t(badge.key)}</b>{status?.detail ? ` — ${status.detail}` : ''}
+        </span>
+      </div>
+    </div>
+  );
+}
 
 export function MailSettings() {
   const { t } = useTranslation();
@@ -139,6 +196,8 @@ export function MailSettings() {
         </label>
         <span style={sub}>{t('mailSettings.retentionNote')}</span>
       </div>
+
+      <MailAgentBlock />
 
       <div style={box}>
         <div style={label}>{t('mailSettings.rules')}</div>

@@ -59,3 +59,19 @@ test('paging: merge keeps older pages, de-duplicates and sorts newest first', ()
   assert.equal(countLabel(200, true), '200+');
   assert.equal(countLabel(5, false), '5');
 });
+
+test('mail agent form: loopback-only endpoint, model rules', () => {
+  const { agentFormIssue, agentBadge } = loadTs('src/shared/mailView.ts');
+  const ok = { enabled: true, baseUrl: 'http://127.0.0.1:11434', model: 'gpt-oss:20b' };
+  assert.equal(agentFormIssue(ok), null);
+  assert.equal(agentFormIssue({ ...ok, baseUrl: 'http://localhost:11434' }), null);
+  for (const bad of ['https://api.openai.com', 'http://192.168.1.5:11434', 'http://127.0.0.1.evil.com', 'http://u:p@127.0.0.1', 'nonsense']) {
+    assert.equal(agentFormIssue({ ...ok, baseUrl: bad }), 'notLoopback', bad);
+  }
+  assert.equal(agentFormIssue({ ...ok, model: '' }), 'modelRequired');
+  assert.equal(agentFormIssue({ ...ok, enabled: false, model: '' }), null);
+  assert.equal(agentFormIssue({ ...ok, model: 'has space' }), 'modelInvalid');
+  assert.deepEqual(agentBadge({ state: 'ready', rulesOnly: false }), { key: 'mail.agent.state.ready', rulesOnly: false });
+  assert.deepEqual(agentBadge({ state: 'unreachable', rulesOnly: true }), { key: 'mail.agent.state.unreachable', rulesOnly: true });
+  assert.equal(agentBadge(null).rulesOnly, true);
+});
