@@ -1,6 +1,5 @@
 import * as pty from 'node-pty';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
-import os from 'node:os';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { resolveCommand, userShellPath } from './shellEnv';
 import { expandTilde } from './fs';
@@ -26,12 +25,18 @@ import { ensureKilled } from './procKill';
  * The session runs in a throwaway cwd (see `privateCwd`): the Claude Code project
  * dir is derived from the working directory, so a private one guarantees the call
  * owns its transcript even when the caller's directory also hosts a long-lived
- * session. The transcript is additionally identified by name — the set sampled
- * before the spawn — because a shared directory could grow a newer file mid-call.
+ * session. That directory must sit under one the CLI already trusts — see
+ * `createPrivateCwd`; a session in an untrusted one never writes a transcript at
+ * all. The transcript is additionally identified by name — the set sampled before
+ * the spawn — because a shared directory could grow a newer file mid-call.
  */
 
 /** ms of PTY silence that signals the TUI is ready for input (boot complete). */
 const BOOT_QUIET_MS = 1500;
+
+/** Name prefix of a hidden call's throwaway cwd. Dot-prefixed so it stays out of
+ *  the way in a listing of the directory that hosts it. */
+export const PRIVATE_CWD_PREFIX = '.munder-hidden-';
 
 export interface HiddenClaudeOptions {
   /** Model to use (e.g. 'claude-haiku-4-5'). */
@@ -137,6 +142,35 @@ export function extractLastAssistantText(
   } catch { return null; }
 }
 
+/** The real path of `dir`, or `dir` itself when it cannot be resolved (deleted
+ *  mid-call, permissions). Claude Code keys a transcript on the REAL path of its
+ *  cwd, so every project dir we compute must use the same spelling. */
+export function canonicalDir(dir: string): string {
+  try { return realpathSync(dir); } catch { return dir; }
+}
+
+/** A throwaway directory for one hidden call, created inside `cwd`.
+ *
+ *  Deliberately NOT `os.tmpdir()`. Claude Code runs unattended only in a working
+ *  directory it trusts, and trust is inherited from an ancestor listed in its own
+ *  config (~/.claude.json → projects[<path>].hasTrustDialogAccepted). `/tmp` and
+ *  `/var/folders` are not trusted and cannot be, so a call there stops at the
+ *  "Is this a project you created or one you trust?" dialog — whose default is
+ *  "No, exit" — and the session dies without ever writing a transcript, which the
+ *  caller sees as "no assistant response found in transcript".
+ *
+ *  `cwd` is trusted by construction: the caller's own long-lived session already
+ *  runs in it, which is only possible because it is trusted (or because nothing
+ *  there prompts).
+ *
+ *  Returns null when the directory cannot be created — callers then run in `cwd`
+ *  itself, which the pre-spawn snapshot still disambiguates. */
+export function createPrivateCwd(cwd: string): string | null {
+  try {
+    return canonicalDir(mkdtempSync(path.join(cwd, PRIVATE_CWD_PREFIX)));
+  } catch { return null; }
+}
+
 /** Drop a throwaway cwd and the transcript project dir the session left under it.
  *  Best-effort: a failed cleanup must never affect the caller's result. */
 function disposePrivateCwd(dir: string | null): void {
@@ -149,11 +183,14 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
   return new Promise((resolve) => {
     if (!prompt.trim()) { resolve({ ok: false, error: 'empty prompt' }); return; }
     // Defense-in-depth: `~` is shell syntax, not a path Node understands.
-    const cwd = opts.cwd ? expandTilde(opts.cwd) : opts.cwd;
-    if (!cwd || !existsSync(cwd)) {
+    const given = opts.cwd ? expandTilde(opts.cwd) : opts.cwd;
+    if (!given || !existsSync(given)) {
       resolve({ ok: false, error: `cwd does not exist: ${opts.cwd}` });
       return;
     }
+    // Resolve symlinks: Claude Code keys its transcript on the real path of its cwd,
+    // so an unresolved spelling would send every lookup to the wrong project dir.
+    const cwd = canonicalDir(given);
     opts = { ...opts, cwd };
 
     // A throwaway cwd keeps the session away from the caller's project AND gives
@@ -163,10 +200,8 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
     let privateDir: string | null = null;
     let sessionCwd = cwd;
     if (opts.privateCwd !== false) {
-      try {
-        privateDir = mkdtempSync(path.join(os.tmpdir(), 'munder-hidden-'));
-        sessionCwd = privateDir;
-      } catch { privateDir = null; }
+      privateDir = createPrivateCwd(cwd);
+      if (privateDir) sessionCwd = privateDir;
     }
     const seenTranscripts = listTranscriptFiles(sessionCwd);
 
