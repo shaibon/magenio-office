@@ -300,6 +300,16 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
     tier: 'secret',
     defaultEnabled: false,
     userConfigured: true
+  },
+  {
+    id: 'vault',
+    label: 'Project vault (read-only)',
+    description: 'Read, list and search the notes of the agent\'s own project in the Obsidian vault, plus the shared 99-System and 03-Resources folders. Mounted only for an agent whose repo maps to a vault project (Knowledge Graph → Vault Sync); no write tools.',
+    // Placeholder: the mount swaps in the bundled node, the script path and the
+    // per-agent vault scope (see buildDefaultMcpServers).
+    spec: { command: 'node', args: ['<vault-mcp.cjs>'] },
+    tier: 'safe-readonly',
+    defaultEnabled: true
   }
 ];
 

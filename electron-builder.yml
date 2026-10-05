@@ -69,6 +69,10 @@ extraResources:
     to: kg.cjs
   - from: src/main/kg-core.cjs
     to: kg-core.cjs
+  # Read-only project-vault MCP server (munder-vault), launched per agent with the
+  # bundled node, so it lives outside the asar like kg.cjs.
+  - from: resources/vault-mcp.cjs
+    to: vault-mcp.cjs
   # Bundled default skills (read-only/no-secret). copyBundledSkills() reads these
   # from skillsResourceDir() = <process.resourcesPath>/skills in the packaged app
   # and refreshes each agent's .claude/skills/ per spawn (dev resolves to

@@ -33,6 +33,7 @@ import { CircuitBreaker, type BreakerInput } from './breaker';
 import type { UsageProvider } from './usage';
 import { MemoryManager } from './memory';
 import { KnowledgeManager } from './knowledge';
+import { vaultScopesFor, type VaultMount } from '../shared/vaultMount';
 import { resolveProjectForCwd, runVaultSync, type VaultSyncResult } from './knowledgeVaultSync';
 import { MemoryReflector, type ReflectSettings } from './reflect';
 import { PersistStore } from './db';
@@ -1556,6 +1557,25 @@ function slackReplyScriptPath(): string {
  *  `.claude/skills/` at spawn. Same packaged/dev resolution as the helpers above.
  *  Tolerated-missing until lp-manifest (Kevin) populates it (the hive copy is a
  *  no-op on an absent dir). */
+function vaultMcpScript(): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, 'vault-mcp.cjs')
+    : join(app.getAppPath(), 'resources', 'vault-mcp.cjs');
+}
+
+/** The read-only vault scope for an agent: its own mapped project folder plus the
+ *  shared areas. null (→ no vault server) when vault sync is off, no vault path is
+ *  set, the cwd resolves to no project, or the mapping's folder is not a plain
+ *  relative path. Matches by git origin, like the Knowledge Graph isolation. */
+async function vaultMountForCwd(cwd: string): Promise<VaultMount | null> {
+  const cfg = readConfig().knowledgeGraph?.vaultSync;
+  if (!cfg?.enabled || !cfg.vaultPath?.trim()) return null;
+  const mapping = await resolveProjectForCwd(cwd, cfg.projects ?? []);
+  const scopes = vaultScopesFor(mapping?.vaultFolder);
+  if (!scopes) return null;
+  return { root: expandTilde(cfg.vaultPath), scopes, script: vaultMcpScript() };
+}
+
 function skillsResourceDir(): string {
   return app.isPackaged
     ? join(process.resourcesPath, 'skills')
@@ -2997,6 +3017,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
             config: magentoConfigForProject(project, readConfig().jiraProjects),
             denyRead: magentoDeniedReadPaths(readConfig().jiraProjects)
           },
+          vault: (await vaultMountForCwd(opts.cwd)) ?? undefined,
           skillsDir: skillsResourceDir(),
           // The shared palace is mutated by the agent's own `mempalace` calls, so
           // the OS sandbox must let it through (empty when memory is off).
