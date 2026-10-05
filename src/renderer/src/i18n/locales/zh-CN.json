@@ -1254,6 +1254,31 @@
     "uninstallFailed": "卸载失败",
     "catalogUnreachable": "无法访问目录"
   },
+  "tempHistory": {
+    "title": "临时工历史",
+    "intro": "所有临时工人（过去与现在），数据来自应用自身的记录。",
+    "project": "项目",
+    "allProjects": "全部项目",
+    "status": "状态",
+    "allStatuses": "全部状态",
+    "range24h": "最近 24 小时",
+    "range7d": "最近 7 天",
+    "rangeAll": "全部时间",
+    "empty": "没有符合条件的临时工人。",
+    "started": "开始",
+    "duration": "时长",
+    "tokens": "Token",
+    "cost": "费用",
+    "card": "任务卡",
+    "totals": "{{count}} 个工人",
+    "statuses": {
+      "running": "运行中",
+      "done": "已完成",
+      "failed": "失败",
+      "killed": "已终止",
+      "preserved-worktree": "保留工作树"
+    }
+  },
   "workersTab": {
     "stopping": "停止中",
     "working": "工作中",

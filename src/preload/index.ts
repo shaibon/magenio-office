@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron';
 import type { AgentProvider } from '../shared/agentProvider';
 import type { HireManifest } from '../shared/hire';
+import type { TempRow } from '../shared/tempHistory';
 export type { HireManifest } from '../shared/hire';
 import type { IntegrationRecord, IntegrationTemplate } from '../shared/integrations';
 export type { IntegrationRecord, IntegrationTemplate } from '../shared/integrations';
@@ -816,6 +817,8 @@ const api = {
   /** Live ephemeral workers + worktrees preserved awaiting integration/GC. */
   listWorkers: (): Promise<{ live: WorkerSnapshot[]; preserved: PreservedWorktreeSnapshot[]; maxWorkers: number }> =>
     ipcRenderer.invoke('workers:list'),
+  /** Every ephemeral worker, past and present (Temp History); read-only. */
+  workerHistory: (): Promise<TempRow[]> => ipcRenderer.invoke('workers:history'),
   /** Manually stop a live ephemeral worker (safety-gated teardown; work preserved). */
   stopWorker: (workerId: string): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke('workers:stop', workerId),

@@ -1254,6 +1254,31 @@
     "uninstallFailed": "فشل إلغاء التثبيت",
     "catalogUnreachable": "تعذّر الوصول إلى الفهرس"
   },
+  "tempHistory": {
+    "title": "سجل العمّال المؤقتين",
+    "intro": "كل عامل مؤقت، سابقًا وحاليًا، من سجلات التطبيق نفسه.",
+    "project": "المشروع",
+    "allProjects": "كل المشاريع",
+    "status": "الحالة",
+    "allStatuses": "كل الحالات",
+    "range24h": "آخر 24 ساعة",
+    "range7d": "آخر 7 أيام",
+    "rangeAll": "كل الوقت",
+    "empty": "لا عمّال مؤقتون مطابقون.",
+    "started": "بدأ",
+    "duration": "المدة",
+    "tokens": "الرموز",
+    "cost": "التكلفة",
+    "card": "البطاقة",
+    "totals": "{{count}} عمّال",
+    "statuses": {
+      "running": "يعمل",
+      "done": "مكتمل",
+      "failed": "فشل",
+      "killed": "أُوقف",
+      "preserved-worktree": "شجرة العمل محفوظة"
+    }
+  },
   "workersTab": {
     "stopping": "يتوقّف",
     "working": "يعمل",

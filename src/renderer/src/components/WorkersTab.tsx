@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { PixelButton } from './PixelButton';
 import { useStore } from '@/store/store';
+import { TempHistory } from './TempHistory';
 
 /**
  * WORKERS — live god-triggered ephemeral Slack workers (the Phase-1 spawn loop):
@@ -172,6 +173,8 @@ export function WorkersTab() {
           </div>
         </div>
       )}
+
+      <TempHistory />
     </div>
   );
 }

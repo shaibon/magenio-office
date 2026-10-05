@@ -1254,6 +1254,31 @@
     "uninstallFailed": "uninstall failed",
     "catalogUnreachable": "could not reach the catalog"
   },
+  "tempHistory": {
+    "title": "Temp history",
+    "intro": "Every temporary worker, past and present, from the app's own records.",
+    "project": "Project",
+    "allProjects": "All projects",
+    "status": "Status",
+    "allStatuses": "All statuses",
+    "range24h": "Last 24h",
+    "range7d": "Last 7 days",
+    "rangeAll": "All time",
+    "empty": "No temporary workers match.",
+    "started": "Started",
+    "duration": "Duration",
+    "tokens": "Tokens",
+    "cost": "Cost",
+    "card": "Card",
+    "totals": "{{count}} workers",
+    "statuses": {
+      "running": "running",
+      "done": "done",
+      "failed": "failed",
+      "killed": "killed",
+      "preserved-worktree": "worktree kept"
+    }
+  },
   "workersTab": {
     "stopping": "stopping",
     "working": "working",
