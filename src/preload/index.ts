@@ -4,6 +4,7 @@ import type { HireManifest } from '../shared/hire';
 import type { TempRow } from '../shared/tempHistory';
 import type { MailAccountInput, MailRule } from '../shared/mail';
 import type { MailAccountPublic, MailMessageDetail, MailMessageFilter, MailMessageSummary } from '../main/mail/store';
+import type { IdeSession } from '../shared/ideSession';
 export type { HireManifest } from '../shared/hire';
 import type { IntegrationRecord, IntegrationTemplate } from '../shared/integrations';
 export type { IntegrationRecord, IntegrationTemplate } from '../shared/integrations';
@@ -1030,6 +1031,37 @@ const api = {
   mailAssign: (id: number, projectKey: string | null): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('mail:assign', id, projectKey),
   mailPollNow: (): Promise<{ ok: boolean; results: { accountId: string; ingested: number; skipped: number; error?: string }[] }> => ipcRenderer.invoke('mail:pollNow'),
   mailSettings: (): Promise<{ pollMinutes: number; retentionDays: number }> => ipcRenderer.invoke('mail:settings'),
+  // ─── Detachable IDE window ───────────────────────────────────────────────
+  ideState: (): Promise<{ detached: boolean }> => ipcRenderer.invoke('ide:state'),
+  idePopOut: (session: IdeSession): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('ide:popOut', session),
+  ideTakeSession: (): Promise<IdeSession | null> => ipcRenderer.invoke('ide:takeSession'),
+  ideDock: (session: IdeSession): Promise<{ ok: boolean }> => ipcRenderer.invoke('ide:dock', session),
+  ideSetDirty: (dirty: boolean): Promise<void> => ipcRenderer.invoke('ide:dirty', dirty),
+  ideFocus: (): Promise<boolean> => ipcRenderer.invoke('ide:focus'),
+  ideOpenFile: (abs: string): Promise<boolean> => ipcRenderer.invoke('ide:openFile', abs),
+  onIdeDetached: (cb: (detached: boolean) => void): (() => void) => {
+    const listener = (_e: IpcRendererEvent, d: boolean) => cb(d);
+    ipcRenderer.on('ide:detached', listener);
+    return () => ipcRenderer.removeListener('ide:detached', listener);
+  },
+  /** The popped-out IDE window got a snapshot back (null: it closed without one). */
+  onIdeDocked: (cb: (session: IdeSession | null) => void): (() => void) => {
+    const listener = (_e: IpcRendererEvent, session: IdeSession | null) => cb(session);
+    ipcRenderer.on('ide:docked', listener);
+    return () => ipcRenderer.removeListener('ide:docked', listener);
+  },
+  /** IDE window only: the user closed it — send the snapshot home with ideDock. */
+  onIdeCloseRequested: (cb: () => void): (() => void) => {
+    const listener = (): void => cb();
+    ipcRenderer.on('ide:closeRequested', listener);
+    return () => ipcRenderer.removeListener('ide:closeRequested', listener);
+  },
+  /** IDE window only: "open in IDE" from another window while the IDE is detached. */
+  onIdeOpenFile: (cb: (abs: string) => void): (() => void) => {
+    const listener = (_e: IpcRendererEvent, abs: string) => cb(abs);
+    ipcRenderer.on('ide:openFile', listener);
+    return () => ipcRenderer.removeListener('ide:openFile', listener);
+  },
   onCloseRequested: (cb: (info: { ptyCount: number }) => void): (() => void) => {
     const listener = (_e: IpcRendererEvent, info: { ptyCount: number }) => cb(info);
     ipcRenderer.on('app:closeRequested', listener);

@@ -1581,6 +1581,10 @@
     "ffHoldHint": "Hold it ALONE for a moment to start; release to transcribe into the composer, where you can edit before sending. Either Option key works, and Option+key combos still reach the terminal untouched."
   },
   "idePanel": {
+    "popOut": "Open the IDE in its own window",
+    "popOutLabel": "Pop out",
+    "dock": "Dock the IDE back into the main window (closing this window does the same)",
+    "dockLabel": "Dock",
     "workspace": "{{name}}'s workspace",
     "workspaceInferred": "No agent was named when the IDE opened — showing {{name}}'s workspace (the current selection)",
     "assumed": "assumed",

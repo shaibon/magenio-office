@@ -1581,6 +1581,10 @@
     "ffHoldHint": "单独按住一会儿即可开始；松开后转写到编辑器，发送前可修改。两个 Option 键都可以，Option+按键组合仍会原样到达终端。"
   },
   "idePanel": {
+    "popOut": "在独立窗口中打开 IDE",
+    "popOutLabel": "弹出",
+    "dock": "将 IDE 停靠回主窗口（关闭此窗口效果相同）",
+    "dockLabel": "停靠",
     "workspace": "{{name}} 的工作区",
     "workspaceInferred": "IDE 打开时未指定智能体——正在显示 {{name}} 的工作区（当前选中项）",
     "assumed": "推测",

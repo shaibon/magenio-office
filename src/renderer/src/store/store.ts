@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import type { IdeSession } from '@shared/ideSession';
 import type { AccentColorName } from '@/design/tokens';
 import type { OfficeCharacterName } from '@/scene/office/cast';
 import type { ThemeId } from '@/scene/office/themeRegistry';
@@ -206,6 +207,12 @@ interface State {
    *  Callers therefore state their intent, and `selectedId` stays as the
    *  fallback for anything that genuinely has no particular agent in mind. */
   ideAgentId: string | null;
+  /** The IDE currently lives in its own window (popped out). While true,
+   *  "open in IDE" focuses that window instead of opening a second, divergent
+   *  embedded copy. Mirrors main's state via `ide:detached`. */
+  ideDetached: boolean;
+  /** Snapshot handed back when the IDE window docks; consumed once by IdePanel. */
+  ideSession: IdeSession | null;
   sidebarWidth: number;
   sidebarTab: SidebarTab;
   godStatus: GodStatus;
@@ -333,6 +340,10 @@ interface State {
    *  show; omit it only when the caller truly has no specific agent (the IDE
    *  then falls back to the selection and says so in its title). */
   setIdeOpen: (open: boolean, agentId?: string | null) => void;
+  setIdeDetached: (detached: boolean) => void;
+  /** The IDE window docked back: reopen the embedded IDE on that snapshot. */
+  dockIdeSession: (session: IdeSession) => void;
+  clearIdeSession: () => void;
   setIdeInitialFile: (path: string | null) => void;
   setSidebarWidth: (px: number) => void;
   setSidebarTab: (tab: SidebarTab) => void;
@@ -687,6 +698,8 @@ export const useStore = create<State>((set, get) => ({
   ideInitialFile: null,
   ideOpen: false,
   ideAgentId: null,
+  ideDetached: false,
+  ideSession: null,
   sidebarWidth: initialSidebarWidth,
   sidebarTab: initialSidebarTab,
   godStatus: 'booting',
@@ -1017,12 +1030,21 @@ export const useStore = create<State>((set, get) => ({
     // or a Files-tab click often has nothing selected, and the IDE would
     // otherwise fall back to the selection and open the wrong workspace.
     const owner = s.agents.find((a) => absPath === a.cwd || absPath.startsWith(a.cwd + '/'));
+    // The IDE is in its own window: send the file there rather than opening a
+    // second embedded copy.
+    if (s.ideDetached) { void window.cth.ideOpenFile(absPath); return; }
     set({ ideInitialFile: absPath, ideOpen: true, ideAgentId: owner?.id ?? null });
   },
   // Closing CLEARS the target: the id is scoped to one IDE session, and a stale
   // one left behind would silently win over the selection on the next open from
   // a caller that passes nothing.
-  setIdeOpen: (open, agentId) => set({ ideOpen: open, ideAgentId: open ? (agentId ?? null) : null }),
+  setIdeOpen: (open, agentId) => {
+    if (open && get().ideDetached) { void window.cth.ideFocus(); return; }
+    set({ ideOpen: open, ideAgentId: open ? (agentId ?? null) : null });
+  },
+  setIdeDetached: (detached) => set({ ideDetached: detached }),
+  dockIdeSession: (session) => set({ ideDetached: false, ideSession: session, ideOpen: true, ideAgentId: session.agent?.id ?? null }),
+  clearIdeSession: () => set({ ideSession: null }),
   setIdeInitialFile: (path) => set({ ideInitialFile: path }),
   setSidebarWidth: (px) => {
     const clamped = Math.min(1200, Math.max(320, Math.round(px)));

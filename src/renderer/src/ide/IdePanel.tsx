@@ -9,6 +9,7 @@ import { ImagePreview } from './ImagePreview';
 import { MarkdownPreview } from '@/markdown/MarkdownPreview';
 import { HistoryPane, ComparePane } from './GitPanes';
 import { isImagePath, isSvgPath } from '@shared/imageTypes';
+import { dirtyBuffers, type IdeSession } from '@shared/ideSession';
 import { ideBarStyle, ideIconBtn as iconBtn, ideTextBtn as textBtn } from './chrome';
 
 // v0.3.4 markdown preview: per-md-tab view mode, defaulted from the last choice.
@@ -65,7 +66,7 @@ function statusColor(code: string): string {
 
 /** Which agent's workspace the IDE is showing, and how confidently we know it. */
 interface IdeTarget {
-  agent: Agent | null;
+  agent: Pick<Agent, 'name' | 'isGod'> & { id?: string } | null;
   root: string | null;
   /** True when NOBODY told us which agent this is and we had to guess. The
    *  guess is usually right, but the title says so rather than asserting a name
@@ -93,23 +94,45 @@ function pickIdeTarget(): IdeTarget {
   return { agent: null, root: null, inferred: false };
 }
 
-export function IdePanel() {
+/** A snapshot from the other window (pop-out / dock) is the whole target. */
+function targetFromSession(s: IdeSession): IdeTarget {
+  return {
+    agent: s.agent ? { id: s.agent.id, name: s.agent.name, isGod: s.agent.isGod } : null,
+    root: s.root,
+    inferred: s.inferred
+  };
+}
+
+/** The IDE lives either embedded in a window (`embedded`) or alone in the window
+ *  popped out of it (`window`). `session` restores the other side's tabs and
+ *  unsaved edits; absent, the IDE starts fresh. */
+export function IdePanel({ mode = 'embedded', session = null }: { mode?: 'embedded' | 'window'; session?: IdeSession | null }) {
   const { t } = useTranslation();
   const setIdeOpen = useStore((s) => s.setIdeOpen);
-  const [target] = useState<IdeTarget>(pickIdeTarget);
+  const detachedMode = mode === 'window';
+  // Docked back from the window: the store hands the snapshot over once. Read in
+  // a state initializer so a re-render never re-consumes it.
+  const [restore] = useState<IdeSession | null>(() => session ?? useStore.getState().ideSession);
+  // Cleared after mount, not inside the initializer: StrictMode runs initializers
+  // twice and the second run must still see the snapshot.
+  useEffect(() => { if (useStore.getState().ideSession) useStore.getState().clearIdeSession(); }, []);
+  const [target] = useState<IdeTarget>(() => (restore ? targetFromSession(restore) : pickIdeTarget()));
   const root = target.root;
 
-  const [tabs, setTabs] = useState<Tab[]>([]);
-  const [activeKey, setActiveKey] = useState<string | null>(null);
-  const [editBuffers, setEditBuffers] = useState<Record<string, EditBuffer>>({});
+  const [tabs, setTabs] = useState<Tab[]>(() => restore?.tabs ?? []);
+  const [activeKey, setActiveKey] = useState<string | null>(() => restore?.activeKey ?? null);
+  // Unsaved edits come back as ready buffers; clean files are re-read from disk.
+  const [editBuffers, setEditBuffers] = useState<Record<string, EditBuffer>>(() => Object.fromEntries(
+    Object.entries(restore?.dirty ?? {}).map(([rel, b]) => [rel, { content: b.content, original: b.original, status: 'ready' as const, saveState: 'idle' as const }])
+  ));
   const [diffData, setDiffData] = useState<Record<string, DiffData>>({});
 
   const [isRepo, setIsRepo] = useState<boolean | null>(null);
   const [status, setStatus] = useState<GitStatusT | null>(null);
-  const [treeWidth, setTreeWidth] = useState(300);
+  const [treeWidth, setTreeWidth] = useState(restore?.treeWidth ?? 300);
   // v0.3.4 git visualization: which rail pane is showing, and the repo's MAIN
   // root (a worktree's history/compare must run against the shared repo).
-  const [railTab, setRailTab] = useState<'changes' | 'history' | 'compare'>('changes');
+  const [railTab, setRailTab] = useState<'changes' | 'history' | 'compare'>(restore?.railTab ?? 'changes');
   // Git rail collapse. COLLAPSED BY DEFAULT: the history graph is tall by
   // nature and most IDE opens are "read this file", not "inspect the repo" —
   // starting expanded spent the top 45% of the left column on a pane nobody
@@ -138,7 +161,7 @@ export function IdePanel() {
   }, [root]);
   // Per-markdown-tab view mode (code | split | preview); changing it also
   // updates the sticky default for the next markdown file.
-  const [mdViews, setMdViews] = useState<Record<string, MdView>>({});
+  const [mdViews, setMdViews] = useState<Record<string, MdView>>(restore?.mdViews ?? {});
   const setMdView = useCallback((rel: string, v: MdView) => {
     setMdViews((p) => ({ ...p, [rel]: v }));
     try { window.localStorage.setItem(LS_MD_VIEW, v); } catch { /* noop */ }
@@ -207,16 +230,7 @@ export function IdePanel() {
     openSource(rel);
   }, [openSource, openTab]);
 
-  // v0.3.4: rev-pinned diff tabs (per-commit files + branch compare). Both
-  // sides load through the metadata-guarded git:showFile IPC at the MAIN root.
-  const openRevDiff = useCallback((revA: string, revB: string, rel: string, revLabel: string) => {
-    const repo = gitRoot ?? root;
-    if (!repo) return;
-    const key = `rev::${revA}::${revB}::${rel}`;
-    setTabs((prev) => (prev.some((t) => t.key === key)
-      ? prev
-      : [...prev, { key, rel, mode: 'revdiff', revA, revB, revLabel }]));
-    setActiveKey(key);
+  const loadRevDiff = useCallback((key: string, repo: string, revA: string, revB: string, rel: string) => {
     if (diffDataRef.current[key] && diffDataRef.current[key].status !== 'error') return;
     setDiffData((p) => ({ ...p, [key]: { status: 'loading', head: '', working: '' } }));
     void Promise.all([
@@ -234,16 +248,26 @@ export function IdePanel() {
       }
       setDiffData((p) => ({ ...p, [key]: { status: 'ready', head: a.content, working: b.content } }));
     });
-  }, [gitRoot, root]);
+  }, []);
+
+  // v0.3.4: rev-pinned diff tabs (per-commit files + branch compare). Both
+  // sides load through the metadata-guarded git:showFile IPC at the MAIN root.
+  const openRevDiff = useCallback((revA: string, revB: string, rel: string, revLabel: string) => {
+    const repo = gitRoot ?? root;
+    if (!repo) return;
+    const key = `rev::${revA}::${revB}::${rel}`;
+    setTabs((prev) => (prev.some((t) => t.key === key)
+      ? prev
+      : [...prev, { key, rel, mode: 'revdiff', revA, revB, revLabel }]));
+    setActiveKey(key);
+    loadRevDiff(key, repo, revA, revB, rel);
+  }, [gitRoot, root, loadRevDiff]);
 
   // Entry point from elsewhere in the app ("open in IDE" on the file overlay):
   // consume the queued absolute path once the root is known, open it (preview
   // for markdown), then clear the queue slot so a later IDE open starts fresh.
-  useEffect(() => {
+  const openAbs = useCallback((abs: string) => {
     if (!root) return;
-    const abs = useStore.getState().ideInitialFile;
-    if (!abs) return;
-    useStore.getState().setIdeInitialFile(null);
     const prefix = root.endsWith('/') ? root : `${root}/`;
     if (!abs.startsWith(prefix)) return; // different workspace — tree still lets them browse
     const rel = abs.slice(prefix.length);
@@ -252,6 +276,26 @@ export function IdePanel() {
     openEdit(rel);
     if (isMarkdown(rel)) setMdViews((p) => ({ ...p, [rel]: 'preview' }));
   }, [root, openEdit]);
+  useEffect(() => {
+    if (!root) return;
+    const abs = useStore.getState().ideInitialFile;
+    if (!abs) return;
+    useStore.getState().setIdeInitialFile(null);
+    openAbs(abs);
+  }, [root, openAbs]);
+
+  // Restored session: re-read what the other side could not carry (clean files,
+  // diffs). Unsaved buffers were seeded into state and are skipped by ensureEdit.
+  // Runs once; the order matters, rev tabs would otherwise steal the active tab.
+  useEffect(() => {
+    if (!restore || !root) return;
+    for (const tab of restore.tabs) {
+      if (tab.mode === 'edit') ensureEdit(tab.rel);
+      else if (tab.mode === 'diff') ensureDiff(tab.rel, true);
+      else if (tab.mode === 'revdiff' && tab.revA && tab.revB) loadRevDiff(tab.key, gitRoot ?? root, tab.revA, tab.revB, tab.rel);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const openDiff = useCallback((rel: string) => { ensureDiff(rel, true); openTab('diff', rel); }, [ensureDiff, openTab]);
 
   const closeTab = useCallback((key: string) => {
@@ -314,6 +358,41 @@ export function IdePanel() {
   );
   const anyDirtyRef = useRef(anyDirty); anyDirtyRef.current = anyDirty;
 
+  // ─── Pop out / dock ───────────────────────────────────────────────────────
+  // Only one IDE is ever live. The snapshot is the tabs plus the unsaved buffers;
+  // everything else is re-read by the side that receives it.
+  const collectSession = useCallback((): IdeSession => ({
+    agent: target.agent?.id ? { id: target.agent.id, name: target.agent.name, isGod: !!target.agent.isGod } : null,
+    inferred: target.inferred,
+    root,
+    tabs: tabsRef.current,
+    activeKey: activeKeyRef.current,
+    dirty: dirtyBuffers(editBuffersRef.current),
+    mdViews,
+    treeWidth,
+    railTab
+  }), [target, root, mdViews, treeWidth, railTab]);
+  const collectRef = useRef(collectSession); collectRef.current = collectSession;
+
+  const popOut = useCallback(async () => {
+    const res = await window.cth.idePopOut(collectRef.current());
+    if (res.ok) setIdeOpen(false);
+  }, [setIdeOpen]);
+  const dock = useCallback(() => { void window.cth.ideDock(collectRef.current()); }, []);
+
+  // The IDE window tells main whether it holds unsaved edits, so main never has to
+  // guess when the window is closed or the app quits.
+  useEffect(() => { if (detachedMode) void window.cth.ideSetDirty(anyDirty); }, [detachedMode, anyDirty]);
+
+  // The IDE window: closing it asks for the snapshot first, and "open in IDE"
+  // from the main window lands here as a file to open.
+  useEffect(() => {
+    if (!detachedMode) return;
+    const offClose = window.cth.onIdeCloseRequested(dock);
+    const offOpen = window.cth.onIdeOpenFile(openAbs);
+    return () => { offClose(); offOpen(); };
+  }, [detachedMode, dock, openAbs]);
+
   // ─── Keyboard: Cmd/Ctrl+S saves active edit tab; Esc closes (if nothing dirty) ──
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -322,11 +401,11 @@ export function IdePanel() {
         if (t && t.mode === 'edit') { e.preventDefault(); void save(t.rel); }
         return;
       }
-      if (e.key === 'Escape' && !anyDirtyRef.current) { setIdeOpen(false); }
+      if (e.key === 'Escape' && !anyDirtyRef.current && !detachedMode) { setIdeOpen(false); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [save, setIdeOpen]);
+  }, [save, setIdeOpen, detachedMode]);
 
   // ─── Left splitter drag ───────────────────────────────────────────────────
   const startDrag = (e: React.MouseEvent) => {
@@ -422,11 +501,27 @@ export function IdePanel() {
         </span>
         <button
           className="cth-titlebar-nodrag"
+          onClick={() => (detachedMode ? dock() : void popOut())}
+          title={detachedMode ? t('idePanel.dock') : t('idePanel.popOut')}
+          aria-label={detachedMode ? t('idePanel.dock') : t('idePanel.popOut')}
+          style={{
+            marginLeft: 'auto',
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            height: 28, padding: '0 8px',
+            background: 'var(--cth-paper-100)',
+            boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)',
+            border: 'none', borderRadius: 2, cursor: 'pointer', color: 'var(--cth-ink-900)',
+            fontFamily: 'var(--cth-font-ui)', fontSize: 12
+          }}
+        >
+          {detachedMode ? t('idePanel.dockLabel') : t('idePanel.popOutLabel')}
+        </button>
+        {!detachedMode && <button
+          className="cth-titlebar-nodrag"
           onClick={() => setIdeOpen(false)}
           title={t('idePanel.closeIde')}
           aria-label={t('idePanel.closeIde')}
           style={{
-            marginLeft: 'auto',
             display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
             width: 28, height: 28, padding: 0,
             background: 'var(--cth-paper-100)',
@@ -435,7 +530,7 @@ export function IdePanel() {
           }}
         >
           <Icon name="x" size={1} style={{ width: 16, height: 16 }} />
-        </button>
+        </button>}
       </div>
 
       {/* Body */}

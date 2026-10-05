@@ -147,6 +147,19 @@ export function App() {
   // Quit warning subscription
   useEffect(() => window.cth.onCloseRequested((info) => setQuitWarn(info)), []);
 
+  // Detachable IDE: mirror whether it lives in its own window, and take the
+  // session back when that window docks (a null session = closed without one).
+  useEffect(() => {
+    const st = useStore.getState();
+    void window.cth.ideState().then((r) => st.setIdeDetached(r.detached)).catch(() => { /* noop */ });
+    const offDetached = window.cth.onIdeDetached((d) => useStore.getState().setIdeDetached(d));
+    const offDocked = window.cth.onIdeDocked((session) => {
+      if (session) useStore.getState().dockIdeSession(session);
+      else useStore.getState().setIdeDetached(false);
+    });
+    return () => { offDetached(); offDocked(); };
+  }, []);
+
   // Shareable hires: a validated manifest arriving via the munderdifflin://
   // deep link (or file import) pre-fills the Add-Agent modal. Never spawns by itself.
   const enqueuePendingHires = useStore(s => s.enqueuePendingHires);

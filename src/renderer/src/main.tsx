@@ -1,6 +1,5 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { App } from './App';
 import brandLogo from '@brand/logo.png?url';
 import './design/global.css';
 import './i18n';
@@ -23,8 +22,17 @@ if (splashMark) {
 const root = document.getElementById('root');
 if (!root) throw new Error('No root element');
 
-createRoot(root).render(
-  <StrictMode>
-    <App />
-  </StrictMode>
-);
+// The popped-out IDE window loads this same bundle with `#ide`. It must not run
+// the app shell (hive loops, terminals, timers) — only the IDE.
+const isIdeWindow = window.location.hash === '#ide';
+const entry = isIdeWindow
+  ? import('./ide/IdeWindow').then((m) => m.IdeWindow)
+  : import('./App').then((m) => m.App);
+
+void entry.then((Entry) => {
+  createRoot(root).render(
+    <StrictMode>
+      <Entry />
+    </StrictMode>
+  );
+});
