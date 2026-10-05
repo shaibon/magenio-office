@@ -102,3 +102,17 @@ test('broker: actor comes from the token, read-only token can only list', async 
   assert.equal((await fetch(`${broker.url()}/automations`)).status, 401);
   broker.stop();
 });
+
+test('broker: a malformed percent-escape in the id is a 400, not a crash', async () => {
+  const { host } = makeHost();
+  const broker = new IntegrationBroker({ getRecord: () => undefined, getSecret: () => undefined, automations: host });
+  await broker.start();
+  const tok = broker.grant('andy', []);
+  for (const method of ['GET', 'PATCH', 'DELETE']) {
+    const res = await fetch(`${broker.url()}/automations/%`, { method, headers: { 'x-md-broker-token': tok } });
+    assert.equal(res.status, method === 'GET' ? 400 : 400, method);
+    assert.equal((await res.json()).code, 'bad_request');
+  }
+  assert.equal((await fetch(`${broker.url()}/automations`, { headers: { 'x-md-broker-token': tok } })).status, 200); // still serving
+  broker.stop();
+});

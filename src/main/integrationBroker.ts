@@ -294,7 +294,11 @@ export class IntegrationBroker {
       if (!this.deps.automations) {
         return IntegrationBroker.sendError(res, 501, 'not_supported', 'automations not wired');
       }
-      void this.automations(req, res, cap.workerId, auto[1] ? decodeURIComponent(auto[1]) : undefined);
+      let id: string | undefined;
+      try { id = auto[1] ? decodeURIComponent(auto[1]) : undefined; } catch {
+        return IntegrationBroker.sendError(res, 400, 'bad_request', 'malformed automation id');
+      }
+      void this.automations(req, res, cap.workerId, id);
       return;
     }
 
