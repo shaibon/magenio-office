@@ -44,6 +44,7 @@ import { emptyRoleLedger, ledgerRole, normalizeRoleLedger, rememberLedgerRole, t
 import { mergeTaskLedger } from '../shared/taskLedger';
 import { expandTilde, isInsideGitRepo } from './fs';
 import { resolveGodName } from '../shared/godIdentity';
+import type { VaultMount } from '../shared/vaultMount';
 import { checkMcpPresence, nodePresenceDeps } from './mcpProvision';
 import { probeStdioServer, type McpServerSpec } from './mcpProbe';
 import { codexMcpServers, codexMcpToml } from '../shared/codexMcp';
@@ -787,6 +788,8 @@ export class HiveManager {
        *  lookup lives in main/index.ts): the agent's OWN project config path
        *  (undefined → server not mounted) and every path agents must not read. */
       magento?: { config?: string; denyRead: string[] };
+      /** Read-only vault scope for this agent's project; undefined → not mounted. */
+      vault?: VaultMount;
       /** App-resources `skills/` source dir (W3). The bundled read-only skills are
        *  copied into the agent's `.claude/skills/` per spawn; undefined or missing
        *  is a no-op (tolerated until Kevin populates the resource dir). */
@@ -1093,7 +1096,7 @@ export class HiveManager {
     if (sock && shim) {
       env.HIVE_SOCK = sock;
       const settingsPath = join(dir, 'settings.json');
-      this.writeJson(settingsPath, this.hookSettings(shim, meta.id, meta.cwd, opts.mcpDefaults, opts.theme, this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs), meta, opts.magento));
+      this.writeJson(settingsPath, this.hookSettings(shim, meta.id, meta.cwd, opts.mcpDefaults, opts.theme, this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs), meta, opts.magento, opts.vault));
       args.push('--settings', settingsPath);
       // Claude Code ignores `mcpServers` inside --settings (see hookSettings) —
       // it only reads MCP server definitions from a file passed via
@@ -1102,7 +1105,7 @@ export class HiveManager {
       // just handed to Claude through the flag it actually honors. Omitted
       // entirely when no server is enabled, so a plain worker spawns with no
       // --mcp-config at all.
-      const mcpServers = this.buildDefaultMcpServers(meta.cwd, opts.mcpDefaults, meta.id, meta, opts.magento?.config);
+      const mcpServers = this.buildDefaultMcpServers(meta.cwd, opts.mcpDefaults, meta.id, meta, opts.magento?.config, opts.vault);
       if (Object.keys(mcpServers).length) {
         const mcpConfigPath = join(dir, 'mcp.json');
         this.writeJson(mcpConfigPath, { mcpServers });
@@ -1355,7 +1358,8 @@ export class HiveManager {
     theme?: 'light' | 'dark',
     writableDirs: string[] = [],
     roleMeta?: Pick<AgentMeta, 'role' | 'capabilities' | 'isGod' | 'provider'>,
-    magento?: { config?: string; denyRead: string[] }
+    magento?: { config?: string; denyRead: string[] },
+    vault?: VaultMount
   ): unknown {
     // Bundled node, NOT bare `node` — see nodeLauncherPath(). Claude runs each of
     // these through `sh -c` with a stripped PATH, where `node` is often absent.
@@ -1364,7 +1368,7 @@ export class HiveManager {
       ...(matcher ? { matcher } : {}),
       hooks: [{ type: 'command', command: cmd }]
     });
-    const mcpServers = this.buildDefaultMcpServers(cwd, cfg, agentId, roleMeta, magento?.config);
+    const mcpServers = this.buildDefaultMcpServers(cwd, cfg, agentId, roleMeta, magento?.config, vault);
     // Credential isolation for the Magento MCP: no agent may read any project's
     // magento config or the SSH keys it names (the MCP process itself runs outside
     // the Bash sandbox). Bash children via sandbox.filesystem.denyRead, the Read
@@ -1467,7 +1471,8 @@ export class HiveManager {
     cfg: McpDefaultsMap,
     agentId: string,
     roleMeta?: Pick<AgentMeta, 'role' | 'capabilities' | 'isGod' | 'provider'>,
-    magentoConfig?: string
+    magentoConfig?: string,
+    vault?: VaultMount
   ): Record<string, { command: string; args: string[]; env?: Record<string, string> }> {
     const out: Record<string, { command: string; args: string[]; env?: Record<string, string> }> = {};
     const presenceDeps = nodePresenceDeps();
@@ -1499,6 +1504,21 @@ export class HiveManager {
       if (!idAllowed && !roleAllowed) continue;
       // Magento is opt-in per project; projects without a config are expected.
       if (e.id === 'magento' && !magentoConfig) continue;
+      // Vault: fail closed. An agent whose repo does not map to a vault project
+      // (or whose server script is missing) gets no vault server at all.
+      if (e.id === 'vault') {
+        if (!vault) continue;
+        if (!existsSync(vault.script)) {
+          console.error(`[hive] MCP 'vault' not wired for ${agentId}: ${vault.script} is missing`);
+          continue;
+        }
+        out['munder-vault'] = {
+          command: this.nodeLauncher() ?? 'node',
+          args: [vault.script],
+          env: { VAULT_ROOT: vault.root, VAULT_SCOPES: JSON.stringify(vault.scopes) }
+        };
+        continue;
+      }
       // Empty catalog values name required variables inherited from Munder's
       // environment. Keep their values out of the agent's MCP config on disk.
       const requiredEnv = Object.entries(e.spec.env ?? {});
@@ -2509,9 +2529,9 @@ export class HiveManager {
    */
   private codexMcpTables(
     meta: Pick<AgentMeta, 'id' | 'cwd' | 'role' | 'capabilities' | 'isGod' | 'provider'>,
-    opts: { mcpDefaults?: McpDefaultsMap; magento?: { config?: string } }
+    opts: { mcpDefaults?: McpDefaultsMap; magento?: { config?: string }; vault?: VaultMount }
   ): string {
-    const servers = this.buildDefaultMcpServers(meta.cwd, opts.mcpDefaults, meta.id, meta, opts.magento?.config);
+    const servers = this.buildDefaultMcpServers(meta.cwd, opts.mcpDefaults, meta.id, meta, opts.magento?.config, opts.vault);
     return codexMcpToml(codexMcpServers(servers, { isGod: !!meta.isGod }));
   }
 
