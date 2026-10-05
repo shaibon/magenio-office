@@ -6,6 +6,7 @@ import { Icon } from './Icon';
 import { useStore, type Agent, type QueuedMessage } from '@/store/store';
 import { clearTerminalDraft, dismissTerminalPicker, terminalAutomationBlockFor } from './terminalPool';
 import type { TerminalAutomationBlock } from './terminalAutomation';
+import { ThumbRegistry } from '@shared/thumbRegistry';
 import { freeflowRecorder, useFreeflow } from '@/freeflow/recorder';
 import { useTerminalFontSize } from './terminalFontSize';
 import { isComposingKey } from '@shared/imeGuard';
@@ -80,6 +81,10 @@ export function MessageQueueComposer({ agent }: MessageQueueComposerProps) {
   // persist in the store, attachments deliberately don't carry over).
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [dragOver, setDragOver] = useState(false);
+  // Owns the thumbnail blob URLs; everything it still holds is revoked on unmount
+  // (an agent tab switch remounts this component and drops the attachments).
+  const thumbs = useRef(new ThumbRegistry((b) => URL.createObjectURL(b), (u) => URL.revokeObjectURL(u))).current;
+  useEffect(() => () => thumbs.releaseAll(), [thumbs]);
 
   const addAttachments = (incoming: Attachment[]) =>
     setAttachments((prev) => {
@@ -90,7 +95,7 @@ export function MessageQueueComposer({ agent }: MessageQueueComposerProps) {
 
   const removeAttachment = (path: string) =>
     setAttachments((prev) => {
-      prev.forEach((a) => { if (a.path === path && a.thumb) URL.revokeObjectURL(a.thumb); });
+      prev.forEach((a) => { if (a.path === path) thumbs.release(a.thumb); });
       return prev.filter((a) => a.path !== path);
     });
 
@@ -121,10 +126,14 @@ export function MessageQueueComposer({ agent }: MessageQueueComposerProps) {
       e.preventDefault();
       // Read the blob before the await: clipboardData is cleared once the handler yields.
       const blob = items.find((it) => it.kind === 'file' && it.type.startsWith('image/'))?.getAsFile();
-      const thumb = blob ? URL.createObjectURL(blob) : undefined;
-      const res = await window.cth.saveClipboardImage();
-      if (res.ok) addAttachments([{ ...res.file, thumb }]);
-      else if (thumb) URL.revokeObjectURL(thumb);
+      const thumb = blob ? thumbs.add(blob) : undefined;
+      let kept = false;
+      try {
+        const res = await window.cth.saveClipboardImage();
+        if (res.ok) { addAttachments([{ ...res.file, thumb }]); kept = true; }
+      } finally {
+        if (!kept) thumbs.release(thumb);
+      }
       return;
     }
     const files = Array.from(e.clipboardData?.files ?? []);
@@ -158,7 +167,7 @@ export function MessageQueueComposer({ agent }: MessageQueueComposerProps) {
     // Enter never counts. (TELEMETRY.md → message_sent)
     void window.cth.trackMessageSent('composer');
     setText('');
-    attachments.forEach((a) => { if (a.thumb) URL.revokeObjectURL(a.thumb); });
+    attachments.forEach((a) => thumbs.release(a.thumb));
     setAttachments([]);
   };
 
