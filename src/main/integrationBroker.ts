@@ -125,7 +125,13 @@ export class IntegrationBroker {
   start(preferredPort = 0): Promise<{ ok: boolean; port?: number; error?: string }> {
     return new Promise((resolve) => {
       if (this.server) { resolve({ ok: true, port: this.port }); return; }
-      const server = createServer((req, res) => this.handle(req, res));
+      const server = createServer((req, res) => {
+        // Any throw inside routing (e.g. a malformed %-escape) must become a JSON
+        // 500, never an unhandled exception out of the server callback.
+        try { this.handle(req, res); } catch {
+          IntegrationBroker.sendError(res, 500, 'internal_error', 'internal error');
+        }
+      });
       const onError = (e: Error): void => { server.off('listening', onListening); resolve({ ok: false, error: e.message }); };
       const onListening = (): void => {
         server.off('error', onError);

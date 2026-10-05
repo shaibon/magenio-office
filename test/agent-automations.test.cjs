@@ -105,14 +105,21 @@ test('broker: actor comes from the token, read-only token can only list', async 
 
 test('broker: a malformed percent-escape in the id is a 400, not a crash', async () => {
   const { host } = makeHost();
-  const broker = new IntegrationBroker({ getRecord: () => undefined, getSecret: () => undefined, automations: host });
+  const broker = new IntegrationBroker({ getRecord: () => undefined, getSecret: () => undefined, automations: host, setAgentFrozen: () => {} });
   await broker.start();
+  try {
   const tok = broker.grant('andy', []);
   for (const method of ['GET', 'PATCH', 'DELETE']) {
     const res = await fetch(`${broker.url()}/automations/%`, { method, headers: { 'x-md-broker-token': tok } });
     assert.equal(res.status, method === 'GET' ? 400 : 400, method);
     assert.equal((await res.json()).code, 'bad_request');
   }
+  const half = await fetch(`${broker.url()}/automations/%E0%A4%A`, { method: 'DELETE', headers: { 'x-md-broker-token': tok } });
+  assert.equal(half.status, 400);
+  // The pre-existing agent-control route decodes too: it must answer, not crash.
+  const ctl = await fetch(`${broker.url()}/agents/%/thaw`, { method: 'POST', headers: { 'x-md-broker-token': tok } });
+  assert.equal(ctl.status, 500);
+  assert.equal((await ctl.json()).code, 'internal_error');
   assert.equal((await fetch(`${broker.url()}/automations`, { headers: { 'x-md-broker-token': tok } })).status, 200); // still serving
-  broker.stop();
+  } finally { broker.stop(); }
 });
