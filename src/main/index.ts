@@ -66,6 +66,7 @@ import * as integrations from './integrations';
 import * as jiraProjects from './jiraProjects';
 import { checkMcpPresence, nodePresenceDeps, installTrelloMcp, nodeInstallDeps } from './mcpProvision';
 import { secretRefFor, INTEGRATION_TEMPLATES } from '../shared/integrations';
+import { buildTempHistory, type TempHistoryInput, type TempLogEvent, type TempRequest, type TempRow } from '../shared/tempHistory';
 import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
 import { ControlRegistry } from './control';
@@ -5006,8 +5007,15 @@ function archiveRequest(filePath: string, sub: '.done' | '.failed'): void {
  *  or unparseable. When neither yields a usable timestamp we DON'T count it
  *  (fail toward keeping the worker alive — the idle reaper is the backstop). */
 function workerSignaledDone(workerId: string, spawnedAt: number): boolean {
+  return workerDoneAt(workerId, spawnedAt) !== undefined;
+}
+
+/** Timestamp of the newest terminal `act:"done"` a worker authored after `after`,
+ *  or undefined. The scan behind workerSignaledDone, which only needs the yes/no. */
+function workerDoneAt(workerId: string, after = 0): number | undefined {
   const root = hive.root();
-  if (!root) return false;
+  if (!root) return undefined;
+  let newest: number | undefined;
   const base = join(root, 'agents', workerId, 'outbox');
   for (const dir of [base, join(base, '.sent')]) {
     if (!existsSync(dir)) continue;
@@ -5023,11 +5031,11 @@ function workerSignaledDone(workerId: string, spawnedAt: number): boolean {
         if (!Number.isFinite(ts)) {
           try { ts = statSync(fp).mtimeMs; } catch { ts = NaN; }
         }
-        if (Number.isFinite(ts) && ts > spawnedAt) return true;
+        if (Number.isFinite(ts) && ts > after && (newest === undefined || ts > newest)) newest = ts;
       } catch { /* skip unreadable/partial */ }
     }
   }
-  return false;
+  return newest;
 }
 
 /** Spin up one ephemeral worker from a spawn-request. Terminal failures (bad
@@ -5398,6 +5406,69 @@ ipcMain.handle('workers:list', (): { live: WorkerSnapshot[]; preserved: Preserve
     workerId: e.workerId, wtPath: e.wtPath, baseBranch: e.baseBranch, preservedAt: e.preservedAt
   }));
   return { live, preserved, maxWorkers: Math.max(1, cfg.maxConcurrentWorkers ?? 4) };
+});
+
+/** Temp History: every ephemeral worker, past and present, folded from the app's own
+ *  records — spawn-requests (+ .done/.failed), log.jsonl, the registry, the cost
+ *  ledger and tasks.json. Read-only; the aggregation itself is shared/tempHistory. */
+ipcMain.handle('workers:history', async (): Promise<TempRow[]> => {
+  const root = hive.root();
+  if (!root) return [];
+  const queue = join(root, 'spawn-requests');
+  const requests: TempRequest[] = [];
+  for (const [sub, state] of [['', 'pending'], ['.done', 'done'], ['.failed', 'failed']] as const) {
+    const dir = sub ? join(queue, sub) : queue;
+    let files: string[];
+    try { files = readdirSync(dir); } catch { continue; }
+    for (const f of files) {
+      if (!f.endsWith('.json')) continue;
+      try {
+        const fp = join(dir, f);
+        const raw = JSON.parse(readFileSync(fp, 'utf8')) as SpawnRequest;
+        const reqId = (typeof raw.id === 'string' && raw.id.trim() ? raw.id.trim() : f.replace(/\.json$/i, ''))
+          .replace(/[^A-Za-z0-9._-]/g, '-');
+        requests.push({
+          workerId: `worker-${reqId}`, state, at: statSync(fp).mtimeMs,
+          name: typeof raw.name === 'string' ? raw.name : undefined,
+          objective: typeof raw.objective === 'string' ? raw.objective : undefined,
+          cwd: typeof raw.cwd === 'string' ? raw.cwd : undefined
+        });
+      } catch { /* unreadable request: skip */ }
+    }
+  }
+  // Only worker lines matter and the log is append-only, so filter before parsing.
+  const log: TempLogEvent[] = [];
+  try {
+    for (const line of readFileSync(join(root, 'log.jsonl'), 'utf8').split('\n')) {
+      if (!line.includes('"worker-')) continue;
+      try { log.push(JSON.parse(line) as TempLogEvent); } catch { /* partial line */ }
+    }
+  } catch { /* no log yet */ }
+
+  await costTotals.refreshFully(join(root, 'cost-ledger.jsonl'));
+  const registry = hive.registry().agents;
+  const ids = new Set<string>([
+    ...requests.map((r) => r.workerId), ...log.map((e) => e.agentId ?? ''),
+    ...Object.keys(registry)
+  ].filter((id) => id.startsWith('worker-')));
+  const usage: TempHistoryInput['usage'] = {};
+  const doneAt: Record<string, number> = {};
+  const worktreeKept = new Set([...preservedWorktrees.values()].map((e) => e.workerId));
+  for (const id of ids) {
+    usage[id] = { tokens: costTotals.tokensFor(id) ?? 0, usd: costTotals.usdFor(id) ?? 0 };
+    const d = workerDoneAt(id);
+    if (d !== undefined) doneAt[id] = d;
+    const cwd = registry[id]?.cwd;
+    if (cwd && basename(cwd) === id && existsSync(cwd)) worktreeKept.add(id);
+  }
+  const tasks = (hive.tasks() as { tasks?: { id: string; assignee?: string | null }[] })?.tasks ?? [];
+  return buildTempHistory({
+    now: Date.now(), requests, log, doneAt, usage, tasks,
+    registry: Object.fromEntries(Object.entries(registry).map(([id, a]) =>
+      [id, { name: a.name, cwd: a.cwd, project: a.project, lastSeen: a.lastSeen }])),
+    worktreeKept: [...worktreeKept],
+    live: [...liveWorkers.keys()]
+  });
 });
 
 /** Manually stop a live ephemeral worker. Mirrors the done-release path: mark

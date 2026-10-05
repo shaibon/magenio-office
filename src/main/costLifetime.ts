@@ -47,6 +47,10 @@ interface Segment {
   committed: number;
   /** High-water mark of the segment currently open. */
   peak: number;
+  /** Same fold for the token counter (input+output+cache), which resets with the
+   *  usd one but is tracked on its own so the usd fold above stays untouched. */
+  tokCommitted: number;
+  tokPeak: number;
 }
 
 /** Float noise guard. Real resets drop by cents at minimum, so anything below
@@ -67,6 +71,8 @@ export class CostLedgerTotals {
   private readonly seg = new Map<string, Segment>();
   /** agentId → lifetime usd. Recomputed after each pass. */
   private totals = new Map<string, number>();
+  /** agentId → lifetime tokens. Recomputed after each pass. */
+  private tokenTotals = new Map<string, number>();
   /** One pass at a time; a timer must never stack folds on itself. */
   private folding = false;
   /** True once a full pass has completed, so callers can tell "no spend" from
@@ -78,6 +84,12 @@ export class CostLedgerTotals {
   usdFor(agentId: string): number | null {
     if (!this.warm) return null;
     return this.totals.get(agentId) ?? 0;
+  }
+
+  /** Lifetime tokens for one agent, or null when the ledger has not been folded yet. */
+  tokensFor(agentId: string): number | null {
+    if (!this.warm) return null;
+    return this.tokenTotals.get(agentId) ?? 0;
   }
 
   /** Every agent's lifetime usd. Empty until the first pass completes. */
@@ -160,14 +172,26 @@ export class CostLedgerTotals {
   }
 
   private foldLine(line: string): void {
-    let row: { agent_id?: string; session_id?: string; usd?: number };
+    let row: {
+      agent_id?: string; session_id?: string; usd?: number;
+      input?: number; output?: number; cache_read?: number; cache_creation?: number;
+    };
     try { row = JSON.parse(line); } catch { return; } // half-written tail line
     if (!row || typeof row.agent_id !== 'string') return;
     const usd = typeof row.usd === 'number' && Number.isFinite(row.usd) ? row.usd : 0;
 
     const key = `${row.agent_id}\t${row.session_id ?? ''}`;
     let s = this.seg.get(key);
-    if (!s) { s = { committed: 0, peak: 0 }; this.seg.set(key, s); }
+    if (!s) { s = { committed: 0, peak: 0, tokCommitted: 0, tokPeak: 0 }; this.seg.set(key, s); }
+
+    const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+    const tok = num(row.input) + num(row.output) + num(row.cache_read) + num(row.cache_creation);
+    if (tok < s.tokPeak) {
+      s.tokCommitted += s.tokPeak;
+      s.tokPeak = tok;
+    } else {
+      s.tokPeak = tok;
+    }
 
     if (usd < s.peak - EPS) {
       // Counter went backwards: the previous segment ended at its peak.
@@ -180,11 +204,14 @@ export class CostLedgerTotals {
 
   private recompute(): void {
     const next = new Map<string, number>();
+    const nextTok = new Map<string, number>();
     for (const [key, s] of this.seg) {
       const agentId = key.slice(0, key.indexOf('\t'));
       next.set(agentId, (next.get(agentId) ?? 0) + s.committed + s.peak);
+      nextTok.set(agentId, (nextTok.get(agentId) ?? 0) + s.tokCommitted + s.tokPeak);
     }
     this.totals = next;
+    this.tokenTotals = nextTok;
   }
 
   private reset(): void {
@@ -192,6 +219,7 @@ export class CostLedgerTotals {
     this.tail = Buffer.alloc(0);
     this.seg.clear();
     this.totals = new Map();
+    this.tokenTotals = new Map();
     this.warm = false;
   }
 }
