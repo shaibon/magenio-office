@@ -1,9 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { PixelButton } from '../PixelButton';
 import { Icon } from '../Icon';
 import { jiraProjectsClient } from '@/jiraProjects/jiraProjectsClient';
-import { ageLabel, mailCounts, selectMessages, triageReason, type MailSelection } from '@shared/mailView';
+import {
+  ageLabel, countLabel, mailCounts, mergePage, nextCursor, pageMayHaveMore, selectMessages, triageReason,
+  MAIL_PAGE_SIZE, type MailSelection
+} from '@shared/mailView';
 
 /** Email area (phase 1, read-only): accounts + per-project counts on the left, the
  *  triaged list in the middle, one sanitized message on the right. There is no
@@ -41,10 +44,19 @@ export function MailArea({ onClose }: { onClose: () => void }) {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [projects, setProjects] = useState<string[]>([]);
   const [polling, setPolling] = useState(false);
+  // True while the server may hold mail older than what is loaded; counts then read "N+".
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const pages = useRef(1);
 
   const load = useCallback(() => {
     window.cth.mailAccounts().then(setAccounts).catch(() => { /* main not ready */ });
-    window.cth.mailMessages({ limit: 200 }).then(setMsgs).catch(() => { /* main not ready */ });
+    // A refresh re-reads the newest page and merges it, so older pages already
+    // loaded stay; only while nothing older is loaded does it decide `hasMore`.
+    window.cth.mailMessages({ limit: MAIL_PAGE_SIZE }).then((page) => {
+      setMsgs((prev) => mergePage(prev, page));
+      if (pages.current === 1) setHasMore(pageMayHaveMore(page));
+    }).catch(() => { /* main not ready */ });
   }, []);
 
   useEffect(() => {
@@ -74,6 +86,17 @@ export function MailArea({ onClose }: { onClose: () => void }) {
   const pollNow = async () => {
     setPolling(true);
     try { await window.cth.mailPollNow(); } finally { setPolling(false); load(); }
+  };
+  const loadMore = async () => {
+    const before = nextCursor(msgs);
+    if (before === undefined || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const page = await window.cth.mailMessages({ limit: MAIL_PAGE_SIZE, before });
+      pages.current += 1;
+      setMsgs((prev) => mergePage(prev, page));
+      setHasMore(pageMayHaveMore(page));
+    } catch { /* main not ready */ } finally { setLoadingMore(false); }
   };
   const assign = async (id: number, key: string) => {
     const res = await window.cth.mailAssign(id, key || null);
@@ -131,16 +154,17 @@ export function MailArea({ onClose }: { onClose: () => void }) {
           </div>
           <div>
             <div style={head}>{t('mail.projects')}</div>
+            {hasMore && <div style={small}>{t('mail.loadedOnly', { count: msgs.length })}</div>}
             <button style={selBtn(isSel({ kind: 'all' }))} onClick={() => setSel({ kind: 'all' })}>
-              <span>{t('mail.all')}</span><span>{counts.total}</span>
+              <span>{t('mail.all')}</span><span>{countLabel(counts.total, hasMore)}</span>
             </button>
             {counts.byProject.map(([key, n]) => (
               <button key={key} style={selBtn(isSel({ kind: 'project', key }))} onClick={() => setSel({ kind: 'project', key })}>
-                <span>{key}</span><span>{n}</span>
+                <span>{key}</span><span>{countLabel(n, hasMore)}</span>
               </button>
             ))}
             <button style={selBtn(isSel({ kind: 'unassigned' }))} onClick={() => setSel({ kind: 'unassigned' })}>
-              <span>{t('mail.unassigned')}</span><span>{counts.unassigned}</span>
+              <span>{t('mail.unassigned')}</span><span>{countLabel(counts.unassigned, hasMore)}</span>
             </button>
           </div>
         </div>
@@ -168,6 +192,13 @@ export function MailArea({ onClose }: { onClose: () => void }) {
               </span>
             </button>
           ))}
+          {hasMore && (
+            <div style={{ padding: 10 }}>
+              <PixelButton onClick={loadMore} disabled={loadingMore}>
+                {loadingMore ? t('mail.loadingMore') : t('mail.loadMore')}
+              </PixelButton>
+            </div>
+          )}
         </div>
 
         {/* Right: detail */}

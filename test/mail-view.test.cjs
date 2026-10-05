@@ -42,3 +42,20 @@ test('age label', () => {
   assert.equal(ageLabel(0, 72 * 3600_000), '3d');
   assert.equal(ageLabel(10, 0), 'now'); // clock skew never goes negative
 });
+
+test('paging: merge keeps older pages, de-duplicates and sorts newest first', () => {
+  const { mergePage, nextCursor, pageMayHaveMore, countLabel, MAIL_PAGE_SIZE } = loadTs('src/shared/mailView.ts');
+  const m = (id, receivedAt) => ({ id, receivedAt, triage: null });
+  const first = [m(3, 30), m(2, 20)];
+  const older = [m(1, 10)];
+  const merged = mergePage(first, older);
+  assert.deepEqual(merged.map((x) => x.id), [3, 2, 1]);
+  // refreshing page one (with a new arrival and a duplicate) keeps the older page
+  assert.deepEqual(mergePage(merged, [m(4, 40), m(3, 30)]).map((x) => x.id), [4, 3, 2, 1]);
+  assert.equal(nextCursor(merged), 10);
+  assert.equal(nextCursor([]), undefined);
+  assert.equal(pageMayHaveMore(new Array(MAIL_PAGE_SIZE)), true);
+  assert.equal(pageMayHaveMore(new Array(MAIL_PAGE_SIZE - 1)), false);
+  assert.equal(countLabel(200, true), '200+');
+  assert.equal(countLabel(5, false), '5');
+});

@@ -1256,6 +1256,9 @@
   },
   "mail": {
     "title": "Email",
+    "loadMore": "Load older mail",
+    "loadingMore": "Loading…",
+    "loadedOnly": "Counts cover the {{count}} newest messages loaded so far.",
     "readOnly": "read-only",
     "pollNow": "Check now",
     "polling": "Checking…",

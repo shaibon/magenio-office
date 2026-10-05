@@ -66,3 +66,31 @@ export function ageLabel(ms: number, now: number): string {
   const h = Math.round(m / 60);
   return h < 48 ? `${h}h` : `${Math.round(h / 24)}d`;
 }
+
+/* ─────────────────────────────── paging ─────────────────────────────── */
+
+/** Messages per request; the backend caps a page at 200. */
+export const MAIL_PAGE_SIZE = 200;
+
+/** Add a page to what is already loaded: de-duplicated by id, newest first. A
+ *  refresh of the first page therefore never drops older pages already fetched. */
+export function mergePage<T extends ViewMessage>(loaded: T[], page: T[]): T[] {
+  const byId = new Map<number, T>();
+  for (const m of loaded) byId.set(m.id, m);
+  for (const m of page) byId.set(m.id, m);
+  return [...byId.values()].sort((a, b) => b.receivedAt - a.receivedAt || b.id - a.id);
+}
+
+/** `before` cursor for the next page: the oldest loaded message. The backend
+ *  compares strictly (`received_at < before`), so mail sharing the exact
+ *  millisecond of a page boundary would be skipped — accepted, it needs two
+ *  messages in the same ms right at the 200th. */
+export function nextCursor(loaded: ViewMessage[]): number | undefined {
+  return loaded.length ? Math.min(...loaded.map((m) => m.receivedAt)) : undefined;
+}
+
+/** A page this full may be followed by another. */
+export const pageMayHaveMore = (page: unknown[]): boolean => page.length >= MAIL_PAGE_SIZE;
+
+/** Counts only cover what is loaded, so say so while older mail is still on the server. */
+export const countLabel = (n: number, hasMore: boolean): string => (hasMore ? `${n}+` : String(n));

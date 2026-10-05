@@ -1256,6 +1256,9 @@
   },
   "mail": {
     "title": "邮件",
+    "loadMore": "加载更早的邮件",
+    "loadingMore": "加载中…",
+    "loadedOnly": "计数仅包含已加载的最新 {{count}} 封邮件。",
     "readOnly": "只读",
     "pollNow": "立即检查",
     "polling": "检查中…",
