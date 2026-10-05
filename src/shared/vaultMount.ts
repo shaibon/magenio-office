@@ -14,6 +14,8 @@ export interface VaultMount {
   scopes: string[];
   /** Absolute path of resources/vault-mcp.cjs. */
   script: string;
+  /** Present only for the project's own writer agent (config allow-list). */
+  write?: { agentId: string; lockPath: string };
 }
 
 /** A mapping's `vaultFolder` is user-typed config. Accept only a plain relative

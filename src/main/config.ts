@@ -284,6 +284,9 @@ export interface VaultProjectMapping {
   /** Path to this project's notes, relative to `vaultSync.vaultPath` — e.g.
    *  "01-Projects/BurdaStyle". */
   vaultFolder: string;
+  /** Agent ids allowed to WRITE to this project's vault folder (the project's
+   *  Angela). Everyone else mapped to the project stays read-only. */
+  writerAgentIds?: string[];
 }
 
 /** Daily sync from an Obsidian vault into per-project Knowledge Graph stores.

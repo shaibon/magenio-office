@@ -60,6 +60,8 @@ export interface VaultProjectMapping {
   slug: string;
   repoOrigin: string;
   vaultFolder: string;
+  /** Agent ids allowed to write this project's vault folder (main/config.ts). */
+  writerAgentIds?: string[];
 }
 
 /** Daily sync from an Obsidian vault into per-project Knowledge Graph stores

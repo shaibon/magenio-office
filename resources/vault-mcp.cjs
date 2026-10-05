@@ -10,6 +10,9 @@
  *   VAULT_SCOPES  JSON array of folders, relative to VAULT_ROOT, the agent may read:
  *                 its own project folder plus the shared read-only areas
  *
+ * Only the project's own writer agent (VAULT_WRITER_AGENT, set by the app from its
+ * config) also gets the write tools, below. Everyone else is read-only.
+ *
  * Fail-closed: no root, no scopes, or a scope that is not a plain relative path
  * inside the root means nothing is readable. There is no write tool, and no code
  * path here opens a file for writing.
@@ -17,6 +20,8 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
+const { execFileSync } = require('node:child_process');
 
 const MAX_READ_BYTES = 200 * 1024;
 const MAX_SEARCH_FILE_BYTES = 1024 * 1024;
@@ -47,7 +52,7 @@ function cleanRelative(p) {
 
 /** Resolve the configured scopes to real directories. Anything invalid, missing, or
  *  whose real path leaves the vault root is dropped. */
-function loadScopes(rootRaw, scopesRaw) {
+function loadScopes(rootRaw, scopesRaw, writer) {
   const root = rootRaw ? real(rootRaw) : null;
   if (!root) return { root: null, scopes: [] };
   let list = [];
@@ -59,7 +64,14 @@ function loadScopes(rootRaw, scopesRaw) {
     const abs = real(path.join(root, rel));
     if (abs && within(root, abs) && fs.statSync(abs).isDirectory()) scopes.push({ rel, abs });
   }
-  return { root, scopes };
+  const ctx = { root, scopes };
+  // Write capability is explicit and narrow: a named agent, a lock file OUTSIDE the
+  // vault (so it is never committed by the snapshot), and the project folder (the
+  // first scope). Anything missing means read-only.
+  if (writer && writer.agent && writer.lockPath && scopes.length) {
+    ctx.write = { agent: String(writer.agent), lockPath: String(writer.lockPath), projectScope: scopes[0].rel, session: null };
+  }
+  return ctx;
 }
 
 /** A REAL path (symlinks resolved) with any hidden segment relative to the vault
@@ -162,6 +174,175 @@ function vaultSearch(ctx, query, limit) {
   return hits.slice(0, max).map((h) => `${h.path}  (score ${h.score})\n  ${h.snippet}`).join('\n\n') || 'no matches';
 }
 
+
+/* ─────────────────────────────── write path ──────────────────────────────────
+ * Protocol (99-System/Daily Update Protocol.md): snapshot first and stop if it
+ * fails, enrich never delete, uncertain goes to the Inbox, snapshot again at the
+ * end. One writer at a time across ALL project agents, enforced by a lock that
+ * lives outside the vault. There is no delete and no move anywhere in here. */
+
+const INBOX = '00-Inbox/Inbox.md';
+const MAX_WRITE_BYTES = 200 * 1024;
+const LOCK_TTL_MS = 15 * 60 * 1000;      // a session idle this long loses the lock
+const LOCK_WAIT_MS = 30 * 1000;
+const SNAPSHOT_TIMEOUT_MS = 60 * 1000;
+const sha = (t) => crypto.createHash('sha256').update(t, 'utf8').digest('hex');
+const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+function pidAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
+}
+const readLock = (lockPath) => {
+  try { return JSON.parse(fs.readFileSync(path.join(lockPath, 'info.json'), 'utf8')); } catch { return null; }
+};
+const writeLock = (lockPath, w) =>
+  fs.writeFileSync(path.join(lockPath, 'info.json'), JSON.stringify({ pid: process.pid, agent: w.agent, ts: Date.now() }));
+
+/** Take the global vault lock (atomic mkdir). A lock whose holder is gone or idle
+ *  past the TTL is recovered by renaming it aside first, so of several waiters only
+ *  one can clear it. ponytail: a waiter that read stale info just before the holder
+ *  refreshed it could clear a live lock; the window is the span between two syscalls. */
+function acquireLock(w) {
+  const deadline = Date.now() + (w.waitMs ?? LOCK_WAIT_MS);
+  for (;;) {
+    try {
+      fs.mkdirSync(w.lockPath);
+      writeLock(w.lockPath, w);
+      return;
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw new VaultError('cannot take the vault lock');
+    }
+    const info = readLock(w.lockPath);
+    const stale = !info || !pidAlive(info.pid) || Date.now() - info.ts > LOCK_TTL_MS;
+    if (stale) {
+      const again = readLock(w.lockPath);
+      if (JSON.stringify(again) === JSON.stringify(info)) {
+        const aside = `${w.lockPath}.stale-${process.pid}-${Date.now()}`;
+        try { fs.renameSync(w.lockPath, aside); fs.rmSync(aside, { recursive: true, force: true }); } catch { /* someone else cleared it */ }
+        continue;
+      }
+    }
+    if (Date.now() >= deadline) {
+      throw new VaultError(`the vault is being updated by ${info ? info.agent : 'another agent'}; try again shortly`);
+    }
+    sleep(250);
+  }
+}
+
+function ownsLock(w) {
+  const info = readLock(w.lockPath);
+  return !!info && info.pid === process.pid && info.agent === w.agent;
+}
+function releaseLock(w) {
+  if (ownsLock(w)) fs.rmSync(w.lockPath, { recursive: true, force: true });
+}
+
+function runSnapshot(ctx, message) {
+  const script = path.join(ctx.root, '99-System', 'scripts', 'sb-snapshot.sh');
+  if (!fs.existsSync(script)) throw new VaultError('snapshot script is missing; refusing to write');
+  try {
+    execFileSync('bash', [script, message], { cwd: ctx.root, timeout: SNAPSHOT_TIMEOUT_MS, stdio: 'ignore', env: { PATH: process.env.PATH, HOME: process.env.HOME } });
+  } catch {
+    throw new VaultError('snapshot failed; refusing to write');
+  }
+}
+
+function requireWriter(ctx) {
+  if (!ctx.write) throw new VaultError('this agent has no write access to the vault');
+  return ctx.write;
+}
+function requireSession(ctx) {
+  const w = requireWriter(ctx);
+  if (!w.session || !ownsLock(w)) { w.session = null; throw new VaultError('no active write session (it may have expired): call vault_session_begin first'); }
+  writeLock(w.lockPath, w); // activity keeps the lock alive
+  return w;
+}
+
+function sessionBegin(ctx, reason) {
+  const w = requireWriter(ctx);
+  if (w.session && ownsLock(w)) return 'write session already active';
+  acquireLock(w);
+  try {
+    // Protocol step 0: no modification without the safety net.
+    runSnapshot(ctx, `SB pre-update (${w.agent})${reason ? `: ${String(reason).slice(0, 80)}` : ''}`);
+  } catch (e) {
+    releaseLock(w);
+    throw e;
+  }
+  w.session = { startedAt: Date.now() };
+  return 'write session started: vault locked, pre-update snapshot taken';
+}
+
+function sessionEnd(ctx) {
+  const w = requireWriter(ctx);
+  if (!w.session) throw new VaultError('no active write session');
+  let note = 'write session ended: post-update snapshot taken, lock released';
+  try {
+    if (!ownsLock(w)) note = 'write session had expired; lock was already released';
+    else runSnapshot(ctx, `SB post-update (${w.agent})`);
+  } catch (e) {
+    note = `write session ended, but the post-update snapshot FAILED (${e.message}); the pre-update snapshot still holds the previous state`;
+  } finally {
+    releaseLock(w);
+    w.session = null;
+  }
+  return note;
+}
+
+/** Resolve a write target. Project notes: inside the project folder. Inbox: only
+ *  the exact Inbox note, only for append. The REAL path of the parent (symlinks
+ *  followed) must stay in scope and unhidden, and the file itself must not be a link. */
+function resolveWriteTarget(ctx, rel, { append }) {
+  const w = requireWriter(ctx);
+  const clean = cleanRelative(rel);
+  if (!clean || !clean.toLowerCase().endsWith('.md')) throw new VaultError('invalid path: only .md notes can be written');
+  const isInbox = clean === INBOX;
+  if (isInbox && !append) throw new VaultError('the Inbox is append-only: use vault_append');
+  const base = isInbox ? INBOX.split('/')[0] : w.projectScope;
+  const baseAbs = real(path.join(ctx.root, base));
+  const abs = path.join(ctx.root, clean);
+  const parent = real(path.dirname(abs));
+  if (!baseAbs || !parent || !within(baseAbs, parent) || hiddenReal(ctx, parent)) throw new VaultError('path is outside the folders you may write');
+  let st = null;
+  try { st = fs.lstatSync(abs); } catch { /* new file */ }
+  if (st && (st.isSymbolicLink() || !st.isFile())) throw new VaultError('path is not a regular note');
+  return { abs: path.join(parent, path.basename(abs)), exists: !!st };
+}
+
+function atomicWrite(abs, text) {
+  if (Buffer.byteLength(text, 'utf8') > MAX_WRITE_BYTES) throw new VaultError(`content too large (max ${MAX_WRITE_BYTES} bytes)`);
+  const tmp = path.join(path.dirname(abs), `.tmp-${process.pid}-${Date.now()}`);
+  fs.writeFileSync(tmp, text, { flag: 'wx' });
+  fs.renameSync(tmp, abs);
+}
+
+function vaultAppend(ctx, rel, text) {
+  requireSession(ctx);
+  if (typeof text !== 'string' || !text.trim()) throw new VaultError('text is empty');
+  const t = resolveWriteTarget(ctx, rel, { append: true });
+  const prev = t.exists ? fs.readFileSync(t.abs, 'utf8') : '';
+  atomicWrite(t.abs, `${prev}${prev && !prev.endsWith('\n') ? '\n' : ''}${text.endsWith('\n') ? text : `${text}\n`}`);
+  return `appended ${Buffer.byteLength(text, 'utf8')} bytes to ${rel}`;
+}
+
+/** Create a note, or replace one the caller has read: replacing needs the sha256 of
+ *  the content it based the edit on, so a human's concurrent edit in Obsidian is a
+ *  conflict instead of being overwritten. The pre-update snapshot covers the rest. */
+function vaultWrite(ctx, rel, content, baseHash) {
+  requireSession(ctx);
+  if (typeof content !== 'string') throw new VaultError('content must be text');
+  const t = resolveWriteTarget(ctx, rel, { append: false });
+  if (t.exists) {
+    const cur = fs.readFileSync(t.abs, 'utf8');
+    if (!baseHash) throw new VaultError(`note exists: pass base_hash (sha256 of the content you read: ${sha(cur)})`);
+    if (baseHash !== sha(cur)) throw new VaultError(`conflict: the note changed since you read it (current sha256 ${sha(cur)}); read it again`);
+  } else if (baseHash) {
+    throw new VaultError('base_hash given but the note does not exist');
+  }
+  atomicWrite(t.abs, content);
+  return `${t.exists ? 'replaced' : 'created'} ${rel} (sha256 ${sha(content)})`;
+}
+
 const TOOLS = [
   {
     name: 'vault_list',
@@ -180,12 +361,40 @@ const TOOLS = [
   }
 ];
 
+/** Offered only to the project's writer agent. No delete, no move. */
+const WRITE_TOOLS = [
+  {
+    name: 'vault_session_begin',
+    description: 'Start a write session: takes the vault-wide lock (waits up to 30s if another agent is writing) and runs the pre-update snapshot. Refuses to proceed if the snapshot fails. Call before any write; end with vault_session_end.',
+    inputSchema: { type: 'object', properties: { reason: { type: 'string' } } }
+  },
+  {
+    name: 'vault_append',
+    description: 'Append text to a note in your project folder, or to 00-Inbox/Inbox.md (the place for anything you cannot attribute with certainty). Requires an active session.',
+    inputSchema: { type: 'object', properties: { path: { type: 'string' }, text: { type: 'string' } }, required: ['path', 'text'] }
+  },
+  {
+    name: 'vault_write',
+    description: 'Create a note in your project folder, or replace one you have read by passing base_hash (the sha256 of the content you read; a mismatch is a conflict). Never deletes. Requires an active session.',
+    inputSchema: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' }, base_hash: { type: 'string' } }, required: ['path', 'content'] }
+  },
+  {
+    name: 'vault_session_end',
+    description: 'End the write session: runs the post-update snapshot and releases the lock. Always call it when done.',
+    inputSchema: { type: 'object', properties: {} }
+  }
+];
+
 function callTool(ctx, name, args) {
   const a = args && typeof args === 'object' ? args : {};
   if (!ctx.scopes.length) throw new VaultError('no vault folders are available for this agent');
   if (name === 'vault_list') return vaultList(ctx, a.path);
   if (name === 'vault_read') return vaultRead(ctx, a.path);
   if (name === 'vault_search') return vaultSearch(ctx, a.query, a.limit);
+  if (name === 'vault_session_begin') return sessionBegin(ctx, a.reason);
+  if (name === 'vault_session_end') return sessionEnd(ctx);
+  if (name === 'vault_append') return vaultAppend(ctx, a.path, a.text);
+  if (name === 'vault_write') return vaultWrite(ctx, a.path, a.content, a.base_hash);
   throw new VaultError(`unknown tool ${name}`);
 }
 
@@ -197,13 +406,13 @@ function handle(ctx, msg) {
     return reply({ protocolVersion: (params && params.protocolVersion) || '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'munder-vault', version: '1.0.0' } });
   }
   if (method === 'ping') return reply({});
-  if (method === 'tools/list') return reply({ tools: TOOLS });
+  if (method === 'tools/list') return reply({ tools: ctx.write ? [...TOOLS, ...WRITE_TOOLS] : TOOLS });
   if (method === 'tools/call') {
     try {
       const text = callTool(ctx, params && params.name, params && params.arguments);
       return reply({ content: [{ type: 'text', text }] });
     } catch (e) {
-      const text = e instanceof VaultError ? e.message : 'vault read failed';
+      const text = e instanceof VaultError ? e.message : 'vault operation failed';
       return reply({ content: [{ type: 'text', text }], isError: true });
     }
   }
@@ -212,7 +421,10 @@ function handle(ctx, msg) {
 }
 
 function serve() {
-  const ctx = loadScopes(process.env.VAULT_ROOT, process.env.VAULT_SCOPES);
+  const ctx = loadScopes(process.env.VAULT_ROOT, process.env.VAULT_SCOPES, { agent: process.env.VAULT_WRITER_AGENT, lockPath: process.env.VAULT_LOCK_PATH });
+  // A dying server must not leave the vault locked (a crash is covered by the TTL).
+  process.on('exit', () => { try { const w = ctx.write; if (w && w.session) releaseLock(w); } catch { /* best effort */ } });
+  process.stdin.on('end', () => process.exit(0));
   let buf = '';
   process.stdin.setEncoding('utf8');
   process.stdin.on('data', (chunk) => {
@@ -230,5 +442,5 @@ function serve() {
   });
 }
 
-module.exports = { loadScopes, callTool, handle, cleanRelative, TOOLS, MAX_READ_BYTES };
+module.exports = { loadScopes, callTool, handle, cleanRelative, TOOLS, WRITE_TOOLS, MAX_READ_BYTES, LOCK_TTL_MS, sha };
 if (require.main === module) serve();
