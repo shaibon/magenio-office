@@ -2597,13 +2597,14 @@ export class HiveManager {
       const shim = this.shimPath();
       let config = existsSync(join(userHome, 'config.toml'))
         ? readFileSync(join(userHome, 'config.toml'), 'utf8') : '';
+      let hookCommand = '';
       if (shim) {
         const events = ['PreToolUse', 'PostToolUse', 'Stop', 'SubagentStop',
           'SessionStart', 'UserPromptSubmit', 'PreCompact', 'PostCompact'];
         // Preserve the existing Windows .cmd shape: nested command quotes pass
         // through a different shell stack there (#350). The reported Codex bug
         // is POSIX, where ordinary shell quoting is both necessary and verified.
-        const command = process.platform === 'win32'
+        const command = hookCommand = process.platform === 'win32'
           ? this.nodeRunUnquoted(shim)
           : this.nodeRun(shim);
         config += '\n# --- munder-hive lifecycle hooks (auto-generated; do not edit) ---\n';
@@ -2621,7 +2622,7 @@ export class HiveManager {
       // a daemon that never saw our bypass flag. Record trust for OUR hooks in the
       // config itself (see codexHookTrust.ts); say so loudly if that is not possible.
       if (shim) {
-        const trust = this.codexHookTrustFor(home, config, shim);
+        const trust = this.codexHookTrustFor(home, config, hookCommand);
         if (trust) writeFileSync(join(home, 'config.toml'), config + trust, 'utf8');
         else this.appendLog({ kind: 'codex-hooks-untrusted', agentId, detail: 'could not record hook trust; the agent may report no status and never drain its inbox' });
       }
@@ -2640,15 +2641,15 @@ export class HiveManager {
 
   /** `[hooks.state]` tables trusting our hooks, cached per config content so a
    *  respawn does not start codex again. '' when codex could not say. */
-  private codexHookTrustFor(home: string, config: string, shim: string): string {
+  private codexHookTrustFor(home: string, config: string, command: string): string {
     const cacheFile = join(home, '.hook-trust.json');
-    const sig = createHash('sha1').update(config).update('\0').update(shim).digest('hex');
+    const sig = createHash('sha1').update(config).update('\0').update(command).digest('hex');
     try {
       const c = JSON.parse(readFileSync(cacheFile, 'utf8')) as { sig?: string; toml?: string };
       if (c.sig === sig && typeof c.toml === 'string' && c.toml) return c.toml;
     } catch { /* no usable cache */ }
     try {
-      const toml = hookTrustToml(this.codexHookLister(home, home), shim);
+      const toml = hookTrustToml(this.codexHookLister(home, home), command);
       if (toml) writeFileSync(cacheFile, JSON.stringify({ sig, toml }), 'utf8');
       return toml;
     } catch (e) {

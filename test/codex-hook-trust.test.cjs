@@ -24,17 +24,25 @@ const { HiveManager } = loadTs('src/main/hive.ts');
 
 const H = (c) => 'sha256:' + c.repeat(64);
 
-test('hookTrustToml trusts exactly the hooks that run our shim, from codex\'s own hash', () => {
+test('hookTrustToml trusts exactly the hooks whose command IS ours, from codex\'s own hash', () => {
   const shim = '/hive/bin/cth-hook.cjs';
+  const ours = `"/hive/bin/hive-node" "${shim}"`;
   const toml = hookTrustToml([
-    { key: '/h/config.toml:pre_tool_use:0:0', command: `"/hive/bin/hive-node" "${shim}"`, currentHash: H('a') },
-    { key: '/h/config.toml:stop:0:0', command: `"/hive/bin/hive-node" "${shim}"`, currentHash: H('b') },
+    { key: '/h/config.toml:pre_tool_use:0:0', command: ours, currentHash: H('a') },
+    { key: '/h/config.toml:stop:0:0', command: ours, currentHash: H('b') },
     { key: '/h/config.toml:session_start:0:0', command: 'sh /home/user/own-hook.sh', currentHash: H('c') },   // the user's own: not ours
-    { key: 'plugin:x', command: `"${shim}"`, currentHash: 'not-a-hash' }                                      // malformed hash: skipped
-  ], shim);
+    { key: 'plugin:x', command: ours, currentHash: 'not-a-hash' },                                           // malformed hash: skipped
+    // A user hook that only MENTIONS our shim path (substring, prefix, suffix, wrapper) is not ours.
+    { key: 'user:stop:0:0', command: `sh -c 'echo ${shim}; /tmp/untrusted-hook'`, currentHash: H('e') },
+    { key: 'user:stop:1:0', command: `${ours}; /tmp/untrusted-hook`, currentHash: H('f') },
+    { key: 'user:stop:2:0', command: `/tmp/untrusted-hook ${ours}`, currentHash: H('9') },
+    { key: 'user:stop:3:0', command: ` ${ours}`, currentHash: H('8') },
+    { key: 'user:stop:4:0', currentHash: H('7') }
+  ], ours);
   assert.match(toml, /\[hooks\.state\."\/h\/config\.toml:pre_tool_use:0:0"\]\ntrusted_hash = "sha256:a{64}"/);
   assert.match(toml, /\[hooks\.state\."\/h\/config\.toml:stop:0:0"\]\ntrusted_hash = "sha256:b{64}"/);
-  assert.doesNotMatch(toml, /own-hook|session_start|plugin:x/);
+  assert.doesNotMatch(toml, /own-hook|session_start|plugin:x|user:stop/);
+  assert.equal((toml.match(/trusted_hash/g) || []).length, 2);
 });
 
 test('parseHooksList reads codex\'s reply and ignores anything else', () => {
@@ -58,11 +66,11 @@ function setup(lister) {
 }
 const listerFor = (calls) => (root) => (home) => {
   calls.push(home);
-  const shim = path.join(root, 'bin', 'cth-hook.cjs');
   const cfg = fs.readFileSync(path.join(home, 'config.toml'), 'utf8');
+  const generated = JSON.parse(cfg.match(/^command = (".*")$/m)[1]);          // the command exactly as written for codex
   // Behave like codex: one entry per generated hook, hash derived from its position.
   return [...cfg.matchAll(/^\[\[hooks\.(\w+)\.hooks\]\]/gm)].map((m, i) => ({
-    key: `${home}/config.toml:${m[1].toLowerCase()}:0:0`, command: `"${shim}"`, currentHash: H((i % 10).toString())
+    key: `${home}/config.toml:${m[1].toLowerCase()}:0:0`, command: generated, currentHash: H((i % 10).toString())
   }));
 };
 

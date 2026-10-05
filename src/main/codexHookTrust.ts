@@ -30,11 +30,13 @@ export function parseHooksList(line: string): ListedHook[] {
   } catch { return []; }
 }
 
-/** The `[hooks.state.…]` tables for exactly the hooks that run `shimPath`. Nothing
- *  else is trusted: a user's own hooks seeded into the config keep their own state. */
-export function hookTrustToml(hooks: ListedHook[], shimPath: string): string {
+/** The `[hooks.state.…]` tables for exactly the hooks whose command IS the one we
+ *  generated (string equality, never "contains": a user hook that merely mentions
+ *  the shim path must not inherit trust). Nothing else is trusted; a user's own
+ *  hooks seeded into the config keep their own state. */
+export function hookTrustToml(hooks: ListedHook[], generatedCommand: string): string {
   return hooks
-    .filter((h) => typeof h.key === 'string' && /^sha256:[0-9a-f]{64}$/.test(h.currentHash ?? '') && (h.command ?? '').includes(shimPath))
+    .filter((h) => typeof h.key === 'string' && /^sha256:[0-9a-f]{64}$/.test(h.currentHash ?? '') && h.command === generatedCommand)
     .map((h) => `\n[hooks.state.${JSON.stringify(h.key)}]\ntrusted_hash = ${JSON.stringify(h.currentHash)}\n`)
     .join('');
 }
