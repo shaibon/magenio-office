@@ -54,12 +54,6 @@ input, textarea, [contenteditable='true'] {
 .cth-tabbar { scrollbar-width: none; -ms-overflow-style: none; }
 .cth-tabbar::-webkit-scrollbar { height: 0; display: none; }
 
-/* Same treatment for a vertical list (the fullscreen agent roster): still
-   scrollable by wheel/trackpad, but the bar itself never takes a slice out of an
-   already narrow rail. */
-.cth-scroll-hidden { scrollbar-width: none; -ms-overflow-style: none; }
-.cth-scroll-hidden::-webkit-scrollbar { width: 0; height: 0; display: none; }
-
 /* Pixel-snapping for any rasterised content */
 canvas, img, svg { image-rendering: pixelated; image-rendering: crisp-edges; }
 
