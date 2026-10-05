@@ -179,3 +179,53 @@ test('a failing post-update snapshot is reported, and the lock is still released
   assert.match(end(a), /post-update snapshot FAILED/);
   assert.ok(!fs.existsSync(f.lockPath));
 });
+
+/* ───── TOCTOU: a parent directory swapped for a symlink mid-write never lets content out ───── */
+
+function raceFixture() {
+  const f = fixture(); const a = f.mk('angela-1'); begin(a);
+  const outside = path.join(f.base, 'outside'); fs.mkdirSync(outside);
+  const acme = path.join(f.root, '01-Projects/Acme');
+  const swap = () => { fs.renameSync(acme, acme + '-old'); fs.symlinkSync(outside, acme); };
+  return { f, a, outside, acme, swap };
+}
+
+test('race: parent swapped right after the scope check (Toby\'s repro) leaves nothing outside', () => {
+  const { a, outside, acme, swap } = raceFixture();
+  const real = fs.realpathSync; let done = false, seen = 0;
+  // The 2nd realpath of the project folder is the parent check; swap right after it passes.
+  fs.realpathSync = (p, ...r) => { const v = real(p, ...r); if (!done && String(p).endsWith('01-Projects/Acme') && ++seen === 2) { done = true; swap(); } return v; };
+  try {
+    assert.throws(() => call(a, 'vault_write', { path: '01-Projects/Acme/escaped.md', content: 'outside' }), /changed during the write|outside/);
+  } finally { fs.realpathSync = real; }
+  assert.ok(done, 'the swap happened');
+  assert.deepEqual(fs.readdirSync(outside), []);                       // not even a temp file survives
+});
+
+test('race: parent swapped after the temp file is verified, before the rename: rename cannot complete outside', () => {
+  const { a, outside, acme, swap } = raceFixture();
+  const ws = fs.writeSync; let done = false;
+  fs.writeSync = (...args) => { const n = ws(...args); if (!done) { done = true; swap(); } return n; };
+  try {
+    assert.throws(() => call(a, 'vault_write', { path: '01-Projects/Acme/escaped.md', content: 'outside' }), /changed during the write/);
+  } finally { fs.writeSync = ws; }
+  assert.ok(done);
+  assert.deepEqual(fs.readdirSync(outside), []);                       // content never reached the outside directory
+  assert.ok(!fs.existsSync(path.join(outside, 'escaped.md')));
+  assert.ok(!fs.existsSync(path.join(acme + '-old', 'escaped.md')));   // and the note was not half-created either
+});
+
+test('race: parent swapped before anything else (plain symlinked parent) is refused as before', () => {
+  const { a, outside, acme, swap } = raceFixture();
+  swap();
+  assert.throws(() => call(a, 'vault_write', { path: '01-Projects/Acme/escaped.md', content: 'outside' }), /outside|invalid/);
+  assert.deepEqual(fs.readdirSync(outside), []);
+});
+
+test('normal writes leave no temp files behind', () => {
+  const f = fixture(); const a = f.mk('angela-1'); begin(a);
+  call(a, 'vault_write', { path: '01-Projects/Acme/N.md', content: 'x' });
+  call(a, 'vault_append', { path: '01-Projects/Acme/N.md', text: 'y' });
+  assert.deepEqual(fs.readdirSync(path.join(f.root, '01-Projects/Acme')).filter((n) => n.startsWith('.tmp-')), []);
+  end(a);
+});

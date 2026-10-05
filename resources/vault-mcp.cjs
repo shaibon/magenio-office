@@ -306,14 +306,43 @@ function resolveWriteTarget(ctx, rel, { append }) {
   let st = null;
   try { st = fs.lstatSync(abs); } catch { /* new file */ }
   if (st && (st.isSymbolicLink() || !st.isFile())) throw new VaultError('path is not a regular note');
-  return { abs: path.join(parent, path.basename(abs)), exists: !!st };
+  return { abs: path.join(parent, path.basename(abs)), exists: !!st, baseAbs };
 }
 
-function atomicWrite(abs, text) {
+/**
+ * Write a note without trusting directory NAMES to stay put. Node has no openat, so
+ * a parent could be swapped for a symlink between our checks and the write. The
+ * sequence below makes that harmless instead of racing it:
+ *  1. create a temp file with an unguessable name (O_EXCL|O_NOFOLLOW) and keep its fd;
+ *  2. before any content exists, prove the temp lives where we think: its real path
+ *     is the same inode as our fd, inside the allowed folder, not hidden. A parent
+ *     swapped before this point fails here, having created at most an empty file;
+ *  3. write the content through the FD, so it lands in that verified inode wherever
+ *     the directory name points afterwards;
+ *  4. rename temp -> target. If the parent was swapped after step 2, the temp is not
+ *     in the new directory (nor can anyone pre-place a file of that random name), so
+ *     rename fails with ENOENT instead of completing outside. */
+function atomicWrite(abs, text, ctx, baseAbs) {
   if (Buffer.byteLength(text, 'utf8') > MAX_WRITE_BYTES) throw new VaultError(`content too large (max ${MAX_WRITE_BYTES} bytes)`);
-  const tmp = path.join(path.dirname(abs), `.tmp-${process.pid}-${Date.now()}`);
-  fs.writeFileSync(tmp, text, { flag: 'wx' });
-  fs.renameSync(tmp, abs);
+  const tmp = path.join(path.dirname(abs), `.tmp-${crypto.randomBytes(12).toString('hex')}`);
+  let fd;
+  try {
+    fd = fs.openSync(tmp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o644);
+    const mine = fs.fstatSync(fd);
+    const rp = fs.realpathSync(tmp);
+    const at = fs.lstatSync(rp);
+    if (at.ino !== mine.ino || at.dev !== mine.dev || !within(baseAbs, path.dirname(rp)) || hiddenReal(ctx, path.dirname(rp))) {
+      throw new VaultError('the target folder changed during the write; nothing was written');
+    }
+    fs.writeSync(fd, text);
+    fs.fsyncSync(fd);
+    fs.closeSync(fd); fd = undefined;
+    fs.renameSync(tmp, abs);
+  } catch (e) {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* already closed */ } }
+    try { fs.unlinkSync(tmp); } catch { /* it is not at that name any more */ }
+    throw e instanceof VaultError ? e : new VaultError('the target folder changed during the write; nothing was written');
+  }
 }
 
 function vaultAppend(ctx, rel, text) {
@@ -321,7 +350,7 @@ function vaultAppend(ctx, rel, text) {
   if (typeof text !== 'string' || !text.trim()) throw new VaultError('text is empty');
   const t = resolveWriteTarget(ctx, rel, { append: true });
   const prev = t.exists ? fs.readFileSync(t.abs, 'utf8') : '';
-  atomicWrite(t.abs, `${prev}${prev && !prev.endsWith('\n') ? '\n' : ''}${text.endsWith('\n') ? text : `${text}\n`}`);
+  atomicWrite(t.abs, `${prev}${prev && !prev.endsWith('\n') ? '\n' : ''}${text.endsWith('\n') ? text : `${text}\n`}`, ctx, t.baseAbs);
   return `appended ${Buffer.byteLength(text, 'utf8')} bytes to ${rel}`;
 }
 
@@ -339,7 +368,7 @@ function vaultWrite(ctx, rel, content, baseHash) {
   } else if (baseHash) {
     throw new VaultError('base_hash given but the note does not exist');
   }
-  atomicWrite(t.abs, content);
+  atomicWrite(t.abs, content, ctx, t.baseAbs);
   return `${t.exists ? 'replaced' : 'created'} ${rel} (sha256 ${sha(content)})`;
 }
 
