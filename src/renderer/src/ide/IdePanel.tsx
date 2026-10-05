@@ -380,6 +380,10 @@ export function IdePanel({ mode = 'embedded', session = null }: { mode?: 'embedd
   }, [setIdeOpen]);
   const dock = useCallback(() => { void window.cth.ideDock(collectRef.current()); }, []);
 
+  // The IDE window tells main whether it holds unsaved edits, so main never has to
+  // guess when the window is closed or the app quits.
+  useEffect(() => { if (detachedMode) void window.cth.ideSetDirty(anyDirty); }, [detachedMode, anyDirty]);
+
   // The IDE window: closing it asks for the snapshot first, and "open in IDE"
   // from the main window lands here as a file to open.
   useEffect(() => {

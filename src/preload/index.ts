@@ -1015,6 +1015,7 @@ const api = {
   idePopOut: (session: IdeSession): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('ide:popOut', session),
   ideTakeSession: (): Promise<IdeSession | null> => ipcRenderer.invoke('ide:takeSession'),
   ideDock: (session: IdeSession): Promise<{ ok: boolean }> => ipcRenderer.invoke('ide:dock', session),
+  ideSetDirty: (dirty: boolean): Promise<void> => ipcRenderer.invoke('ide:dirty', dirty),
   ideFocus: (): Promise<boolean> => ipcRenderer.invoke('ide:focus'),
   ideOpenFile: (abs: string): Promise<boolean> => ipcRenderer.invoke('ide:openFile', abs),
   onIdeDetached: (cb: (detached: boolean) => void): (() => void) => {

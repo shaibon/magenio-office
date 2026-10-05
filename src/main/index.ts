@@ -20,7 +20,7 @@ import {
   modelForRole, OPS_STANDUP_MISSION, HEARTBEAT_MISSION, JIRA_POLL_MISSION, TRELLO_INTAKE_MISSION, COMPACT_MAINTENANCE_MISSION, type HarnessConfig, type ScheduledMission
 } from './config';
 import { listDir, readFileText, readFileBinary, writeFileText, statAbs, expandTilde } from './fs';
-import { sanitizeIdeSession, type IdeSession } from '../shared/ideSession';
+import { ideCloseAction, sanitizeIdeSession, type IdeSession } from '../shared/ideSession';
 import { activeWindowDelayMs, normalizeActiveWindow, normalizeWeekly, weeklyDelayMs } from '../shared/weeklySchedule';
 import {
   getBranch, getStatus, getLog, getBranches, getAheadBehind, isRepo, getDiff, mainRepoRoot,
@@ -2455,6 +2455,8 @@ let ideOrigin: Electron.WebContents | null = null;
 let idePending: IdeSession | null = null;
 let ideDelivered = false;
 let ideForceClose = false;
+/** Mirrors the IDE window's "has unsaved edits" state, reported by its renderer. */
+let ideDirty = false;
 
 function ideAlive(): boolean { return !!ideWin && !ideWin.isDestroyed(); }
 
@@ -2469,8 +2471,33 @@ function broadcastIdeDetached(): void {
 function deliverIdeSession(session: IdeSession | null): void {
   if (ideDelivered) return;
   ideDelivered = true;
-  const target = ideOrigin && !ideOrigin.isDestroyed() ? ideOrigin : mainWindow?.webContents;
-  if (target && !target.isDestroyed()) target.send('ide:docked', session);
+  const target = ideDockTarget();
+  if (target) target.send('ide:docked', session);
+}
+
+/** A live window the IDE can dock into: its origin, else any survivor. None while
+ *  the app is quitting (every window is going away with it). */
+function ideDockTarget(): Electron.WebContents | null {
+  if (allowQuit) return null;
+  if (ideOrigin && !ideOrigin.isDestroyed()) return ideOrigin;
+  const w = mainWindow && !mainWindow.isDestroyed() ? mainWindow : [...allWindows].find((x) => !x.isDestroyed());
+  return w && !w.webContents.isDestroyed() ? w.webContents : null;
+}
+
+/** The only way unsaved IDE edits are ever dropped: the user says so. */
+function promptDiscardIde(): boolean {
+  if (!ideAlive()) return true;
+  if (ideWin!.isMinimized()) ideWin!.restore();
+  ideWin!.focus();
+  const choice = dialog.showMessageBoxSync(ideWin!, {
+    type: 'warning',
+    buttons: ['Keep editing', 'Discard changes'],
+    defaultId: 0,
+    cancelId: 0,
+    message: 'The IDE has unsaved changes.',
+    detail: 'There is no window to dock them into. Discarding closes the IDE and loses them.'
+  });
+  return choice === 1;
 }
 
 function openIdeWindow(session: IdeSession, origin: Electron.WebContents): boolean {
@@ -2479,6 +2506,7 @@ function openIdeWindow(session: IdeSession, origin: Electron.WebContents): boole
   ideOrigin = origin;
   ideDelivered = false;
   ideForceClose = false;
+  ideDirty = Object.keys(session.dirty).length > 0;
   let saved: WindowBounds | null = null;
   try { saved = clampBounds(persist.getKv('ide.window.bounds'), IDE_MIN); } catch { saved = null; }
   const win = new BrowserWindow({
@@ -2511,13 +2539,24 @@ function openIdeWindow(session: IdeSession, origin: Electron.WebContents): boole
     return { action: 'deny' };
   });
   // Closing re-docks: ask the renderer for its snapshot rather than closing on the
-  // spot, so unsaved edits come home. If it never answers (crashed), close anyway.
+  // spot, so unsaved edits come home. With nowhere to dock (origin gone, or the app
+  // is quitting) unsaved edits are only dropped after the user confirms.
   win.on('close', (e) => {
-    if (ideForceClose || allowQuit) return;
+    if (ideForceClose) return;
     try { persist.setKv('ide.window.bounds', win.getBounds()); } catch { /* best-effort */ }
+    const action = ideCloseAction({ dirty: ideDirty, hasTarget: !!ideDockTarget(), quitting: allowQuit });
+    if (action === 'close') return;
     e.preventDefault();
+    if (action === 'prompt') {
+      if (promptDiscardIde()) { ideForceClose = true; win.close(); }
+      return;
+    }
     win.webContents.send('ide:closeRequested');
-    setTimeout(() => { if (!win.isDestroyed()) { ideForceClose = true; win.close(); } }, 2500);
+    // An unresponsive renderer must not strand the window, nor silently eat edits.
+    setTimeout(() => {
+      if (win.isDestroyed() || ideForceClose) return;
+      if (!ideDirty || promptDiscardIde()) { ideForceClose = true; win.close(); }
+    }, 2500);
   });
   win.on('closed', () => {
     ideWin = null;
@@ -2546,10 +2585,19 @@ ipcMain.handle('ide:takeSession', (evt) => {
 });
 ipcMain.handle('ide:dock', (evt, raw) => {
   if (!ideWin || evt.sender !== ideWin.webContents) return { ok: false };
-  deliverIdeSession(sanitizeIdeSession(raw));
+  const session = sanitizeIdeSession(raw);
+  if (!ideDockTarget()) {
+    // Nowhere to dock: only close if nothing unsaved is lost, or the user agrees.
+    if (session && Object.keys(session.dirty).length && !promptDiscardIde()) return { ok: false };
+  } else {
+    deliverIdeSession(session);
+  }
   ideForceClose = true;
   ideWin.close();
   return { ok: true };
+});
+ipcMain.handle('ide:dirty', (evt, dirty: unknown) => {
+  if (ideWin && evt.sender === ideWin.webContents) ideDirty = dirty === true;
 });
 ipcMain.handle('ide:state', () => ({ detached: ideAlive() }));
 ipcMain.handle('ide:focus', () => {
@@ -2732,7 +2780,12 @@ function createWindow(opts: { floor?: boolean } = {}): BrowserWindow {
     allWindows.delete(win);
     // The IDE window belongs to the window that popped it out; if that one goes
     // away there is nowhere to dock back to, so the IDE goes with it.
-    if (ideAlive() && ideOrigin === wc) { ideDelivered = true; ideWin!.destroy(); }
+    // The IDE outlives the window it was popped out of (it may hold unsaved edits):
+    // it re-targets a surviving window, or stays as an orphan until closed.
+    if (ideAlive() && ideOrigin === wc) {
+      const survivor = [...allWindows].find((x) => !x.isDestroyed());
+      ideOrigin = survivor ? survivor.webContents : null;
+    }
     // A closed floor must not leave its terminals running headless. (Natural
     // onExit teardown — archive + worktree cleanup — still runs per PTY.)
     if (isFloor) { try { ptyManager.killByOwner(wc); } catch { /* best-effort */ } }

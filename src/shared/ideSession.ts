@@ -109,6 +109,21 @@ export function sanitizeIdeSession(raw: unknown): IdeSession | null {
   };
 }
 
+export type IdeCloseAction = 'close' | 'dock' | 'prompt';
+
+/**
+ * What to do when the detached IDE window is asked to close. Unsaved buffers are
+ * never discarded silently:
+ *  - a window to dock into (and the app is not quitting) → dock, which carries the
+ *    tabs and the unsaved edits home;
+ *  - nowhere to dock (origin gone, or the app is quitting) → ask before discarding
+ *    when there is anything unsaved, otherwise just close.
+ */
+export function ideCloseAction(s: { dirty: boolean; hasTarget: boolean; quitting: boolean }): IdeCloseAction {
+  if (s.hasTarget && !s.quitting) return 'dock';
+  return s.dirty ? 'prompt' : 'close';
+}
+
 /** The unsaved subset of the live edit buffers. */
 export function dirtyBuffers(
   buffers: Record<string, { content: string; original: string; status: string }>

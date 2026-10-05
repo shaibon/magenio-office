@@ -5,7 +5,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const loadTs = require('./load-ts.cjs');
-const { sanitizeIdeSession, dirtyBuffers } = loadTs('src/shared/ideSession.ts');
+const { sanitizeIdeSession, dirtyBuffers, ideCloseAction } = loadTs('src/shared/ideSession.ts');
 
 const good = () => ({
   agent: { id: 'a1', name: 'Dwight', isGod: false }, inferred: false, root: '/w/a1',
@@ -57,4 +57,27 @@ test('dirtyBuffers keeps only ready, modified buffers', () => {
     c: { content: '', original: '', status: 'loading' },
     d: { content: 'x', original: 'y', status: 'error' }
   }), { a: { content: '2', original: '1' } });
+});
+
+test('closing the IDE window never drops unsaved edits silently', () => {
+  const act = (dirty, hasTarget, quitting) => ideCloseAction({ dirty, hasTarget, quitting });
+  // A window to dock into: dock, clean or dirty (tabs and edits go home).
+  assert.equal(act(true, true, false), 'dock');
+  assert.equal(act(false, true, false), 'dock');
+  // Origin gone with no survivor: ask if anything is unsaved, else just close.
+  assert.equal(act(true, false, false), 'prompt');
+  assert.equal(act(false, false, false), 'close');
+  // Quitting: the windows are all going away, so never dock; prompt if dirty.
+  assert.equal(act(true, true, true), 'prompt');
+  assert.equal(act(true, false, true), 'prompt');
+  assert.equal(act(false, true, true), 'close');
+});
+
+test('main wires the decision into every exit path (no silent destroy, no quit bypass)', () => {
+  const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '../src/main/index.ts'), 'utf8');
+  assert.doesNotMatch(src, /ideWin!\.destroy\(\)/);                       // origin close no longer destroys the IDE
+  assert.doesNotMatch(src, /if \(ideForceClose \|\| allowQuit\) return/);    // quit no longer skips the snapshot
+  assert.match(src, /ideCloseAction\(\{ dirty: ideDirty, hasTarget: !!ideDockTarget\(\), quitting: allowQuit \}\)/);
+  assert.match(src, /if \(allowQuit\) return null;/);                       // no dock target while quitting
+  assert.match(src, /promptDiscardIde\(\)/);
 });
