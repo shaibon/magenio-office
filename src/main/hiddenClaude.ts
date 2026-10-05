@@ -64,21 +64,10 @@ export interface HiddenClaudeOptions {
    * Set false only when the response genuinely depends on `cwd` for context.
    */
   privateCwd?: boolean;
-  /**
-   * A pure text transform with NO tools at all: every built-in tool is switched
-   * off (`--tools ""`), no MCP server is loaded (`--strict-mcp-config` with none
-   * given), slash commands are off, and the permission mode is the default instead
-   * of bypassPermissions. A deny-list cannot give this guarantee, since any tool
-   * missing from it (Read, Glob, Grep, an MCP tool) would run unprompted.
-   */
-  noTools?: boolean;
 }
 
 /** The claude CLI arguments for a hidden call. Exported so the no-tools contract is testable. */
-export function hiddenClaudeArgs(opts: Pick<HiddenClaudeOptions, 'model' | 'disallowedTools' | 'addDirs' | 'noTools'>): string[] {
-  if (opts.noTools) {
-    return ['--model', opts.model, '--tools', '', '--strict-mcp-config', '--disable-slash-commands', '--permission-mode', 'default'];
-  }
+export function hiddenClaudeArgs(opts: Pick<HiddenClaudeOptions, 'model' | 'disallowedTools' | 'addDirs'>): string[] {
   const args = [
     '--model', opts.model,
     '--permission-mode', 'bypassPermissions',

@@ -18,8 +18,12 @@ export interface MailPollDeps {
   /** Decrypts the account's secret. MAIN-INTERNAL; undefined when absent/undecryptable. */
   getSecret: (secretRef: string) => string | undefined;
   makeProvider: MailProviderFactory;
-  /** One hidden, tool-less model call; returns its text or null. Optional: absent = rules only. */
+  /** One call to the LOCAL mail agent; returns its text or null. Absent (no local
+   *  model configured/reachable) = rules-only routing and no summary. There is no
+   *  other model in this pipeline and never a cloud fallback. */
   classify?: (prompt: string) => Promise<string | null>;
+  /** Post a routed mail's summary to the hive (see handoffMessage for what crosses). */
+  handoff?: (h: { mailId: number; projectKey: string; fromDomain: string; classification: Classification }) => void;
   /** Jira project keys the Boss has bound (the only keys a mail may route to). */
   knownProjectKeys: () => string[];
   pollIntervalMs: () => number;
@@ -55,17 +59,23 @@ async function ingestOne(deps: MailPollDeps, acct: MailAccountRow, m: RawMail, k
   if (m.automated) {
     // Bulk mail is not worth a model call.
     category = 'newsletter'; urgency = 'low';
-  } else if (!route && deps.classify) {
+  } else if (deps.classify) {
+    // Run for every mail, not only undecided ones: the summary is the point. Rules
+    // still win the routing; the model's hint is only the fallback.
     try {
       const reply = await deps.classify(classifyPrompt(wrapUntrusted({ from: `${m.from.name} <${m.from.address}>`, subject: m.subject, body }), keys));
       classification = parseClassification(reply);
     } catch { classification = null; }
     if (classification) {
       category = classification.category; urgency = classification.urgency;
-      route = routeByModelHint(classification, keys);
+      route = route ?? routeByModelHint(classification, keys);
     }
   }
   store.saveTriage(rowId, { category, urgency, route, classification, model: classification ? deps.model ?? null : null, at: now });
+  // Only a summary ever leaves; a mail with no summary (rules-only mode) is not handed off.
+  if (route && classification && deps.handoff) {
+    try { deps.handoff({ mailId: rowId, projectKey: route.projectKey, fromDomain: m.from.address.split('@')[1] ?? '', classification }); } catch { /* the triage is already stored */ }
+  }
   return true;
 }
 

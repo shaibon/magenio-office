@@ -60,3 +60,8 @@ export const MAIL_SCHEMA_SQL = `
     enabled     INTEGER NOT NULL DEFAULT 1
   );
 `;
+
+/** Phase 1b: the local model's suggested action, stored beside its summary. */
+export const MAIL_SCHEMA_V3_SQL = `
+  ALTER TABLE mail_triage ADD COLUMN suggested_action TEXT NOT NULL DEFAULT '';
+`;

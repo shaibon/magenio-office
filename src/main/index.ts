@@ -68,9 +68,11 @@ import * as integrations from './integrations';
 import { MailStore, type MailAccountPublic, type SqlDb } from './mail/store';
 import { runMailPoll, type AccountPollResult } from './mail/poller';
 import { createImapProvider } from './mail/imapProvider';
-import { runHiddenClaude } from './hiddenClaude';
+import { callLocalModel, probeLocalModel } from './mail/localModel';
 import {
-  DEFAULT_MAIL_POLL_MINUTES, DEFAULT_MAIL_RETENTION_DAYS, MIN_MAIL_POLL_MINUTES, validateMailAccountInput, validateMailRuleInput
+  DEFAULT_MAIL_AGENT, DEFAULT_MAIL_POLL_MINUTES, DEFAULT_MAIL_RETENTION_DAYS, MIN_MAIL_POLL_MINUTES, handoffMessage,
+  validateMailAccountInput, validateMailAgentSettings, validateMailRuleInput,
+  type Classification, type MailAgentSettings, type MailAgentStatus
 } from '../shared/mail';
 import * as jiraProjects from './jiraProjects';
 import { checkMcpPresence, nodePresenceDeps, installTrelloMcp, nodeInstallDeps } from './mcpProvision';
@@ -4322,7 +4324,6 @@ ipcMain.handle('knowledge:vaultSyncNow', () => runVaultSyncTick());
 // renderer, an agent, a log line or the database. Nothing in this section sends,
 // drafts, flags or deletes mail.
 const MAIL_TICK_MS = 60_000;
-const MAIL_CLASSIFY_MODEL = 'claude-haiku-4-5';
 let mailTimer: ReturnType<typeof setInterval> | null = null;
 let mailPollInFlight = false;
 
@@ -4332,20 +4333,51 @@ function mailStore(): MailStore | null {
 }
 const mailSecretRef = (accountId: string): string => `mail:${accountId}`;
 
-/** One hidden session with every tool refused: the reply is data, never an action. */
+// ─── Mail agent: a LOCAL model only (privacy). ─────────────────────────────────
+// Mail text is sent to exactly one place: an OpenAI-compatible endpoint on this Mac
+// (loopback only, see shared/mail.ts normalizeLocalEndpoint + mail/localModel.ts).
+// Cloud agents never see a mail; they receive only the local model's summary.
+// Without a configured and reachable local model the pipeline is rules-only with
+// no summary — there is no cloud fallback anywhere in it.
+function mailAgentSettings(): MailAgentSettings {
+  const raw = readConfig().mailAgent;
+  const v = validateMailAgentSettings({ ...DEFAULT_MAIL_AGENT, ...(raw ?? {}) });
+  return v.ok ? v.value : { ...DEFAULT_MAIL_AGENT };
+}
+let mailAgentStatus: MailAgentStatus = { state: 'untested', detail: 'not tested yet', rulesOnly: true, checkedAt: null };
+function currentMailAgentStatus(): MailAgentStatus {
+  const s = mailAgentSettings();
+  if (!s.enabled || !s.model) {
+    return { state: 'off', detail: 'No local mail agent configured: mail is routed by your rules only, with no summaries.', rulesOnly: true, checkedAt: null };
+  }
+  return mailAgentStatus;
+}
+function setMailAgentStatus(ok: boolean, detail: string): void {
+  mailAgentStatus = { state: ok ? 'ready' : 'unreachable', detail, rulesOnly: !ok, checkedAt: Date.now() };
+}
+
+/** One local-model call per mail, or null (rules-only). Never throws, never goes elsewhere. */
 async function mailClassify(prompt: string): Promise<string | null> {
-  const home = readConfig().harnessHome;
-  if (!home) return null;
-  const r = await runHiddenClaude(prompt, {
-    model: MAIL_CLASSIFY_MODEL,
-    cwd: home,
-    command: readConfig().defaultCommand ?? 'claude',
-    privateCwd: true,
-    // No tools of any kind: the mail text is untrusted, so the session may only answer.
-    noTools: true,
-    timeoutMs: 90_000
-  });
-  return r.ok && r.text ? r.text : null;
+  const s = mailAgentSettings();
+  if (!s.enabled || !s.model) return null;
+  try {
+    const text = await callLocalModel(s, prompt);
+    setMailAgentStatus(true, `model ${s.model} answered`);
+    return text;
+  } catch (e) {
+    setMailAgentStatus(false, `the local model failed: ${e instanceof Error ? e.message : 'error'}; routing by rules only`);
+    return null;
+  }
+}
+
+/** Hand a routed mail's SUMMARY to that project's PM (a binding agent with the PM
+ *  role), else to god. Only handoffMessage's text crosses: no body, subject or address. */
+function mailHandoff(h: { mailId: number; projectKey: string; fromDomain: string; classification: Classification }): void {
+  if (!hive.enabled()) return;
+  const binding = jiraProjects.listBindings().find((b) => b.key.toUpperCase() === h.projectKey.toUpperCase());
+  const pm = (binding?.agents ?? []).find((id) => hive.isPrivilegedPm(id));
+  const msg = handoffMessage(h);
+  hive.send({ to: pm ?? hive.registry().godId ?? 'god', act: 'inform', subject: msg.subject, body: msg.body }, 'mail');
 }
 
 async function runMailTick(force = false): Promise<AccountPollResult[]> {
@@ -4358,8 +4390,9 @@ async function runMailTick(force = false): Promise<AccountPollResult[]> {
       store,
       getSecret: (ref) => integrations.getSecret(ref),
       makeProvider: createImapProvider,
-      classify: mailClassify,
-      model: MAIL_CLASSIFY_MODEL,
+      classify: mailAgentSettings().enabled ? mailClassify : undefined,
+      handoff: mailHandoff,
+      model: mailAgentSettings().model,
       knownProjectKeys: () => jiraProjects.listBindings().filter((b) => b.enabled).map((b) => b.key),
       pollIntervalMs: () => Math.max(MIN_MAIL_POLL_MINUTES, cfg.mailPollMinutes ?? DEFAULT_MAIL_POLL_MINUTES) * 60_000,
       retentionDays: () => cfg.mailRetentionDays ?? DEFAULT_MAIL_RETENTION_DAYS,
@@ -4446,6 +4479,22 @@ ipcMain.handle('mail:assign', (_evt, id: unknown, projectKey: unknown) => {
   return { ok: store.assign(id, key) };
 });
 ipcMain.handle('mail:pollNow', async () => ({ ok: true, results: await runMailTick(true) }));
+ipcMain.handle('mail:agentGet', () => ({ settings: mailAgentSettings(), status: currentMailAgentStatus() }));
+ipcMain.handle('mail:agentSet', (_evt, raw: unknown) => {
+  const v = validateMailAgentSettings({ ...mailAgentSettings(), ...(raw && typeof raw === 'object' ? raw : {}) });
+  if (!v.ok) return { ok: false, error: v.error, settings: mailAgentSettings(), status: currentMailAgentStatus() };
+  writeConfig({ mailAgent: v.value });
+  mailAgentStatus = { state: 'untested', detail: 'settings changed; not tested yet', rulesOnly: true, checkedAt: null };
+  return { ok: true, settings: v.value, status: currentMailAgentStatus() };
+});
+// Checks the endpoint and the model name only (GET /v1/models); no mail is involved.
+ipcMain.handle('mail:agentTest', async () => {
+  const s = mailAgentSettings();
+  if (!s.enabled || !s.model) return currentMailAgentStatus();
+  const r = await probeLocalModel(s);
+  setMailAgentStatus(r.ok, r.ok ? r.detail : `${r.detail}; routing by rules only`);
+  return currentMailAgentStatus();
+});
 ipcMain.handle('mail:settings', () => ({
   pollMinutes: readConfig().mailPollMinutes ?? DEFAULT_MAIL_POLL_MINUTES,
   retentionDays: readConfig().mailRetentionDays ?? DEFAULT_MAIL_RETENTION_DAYS
