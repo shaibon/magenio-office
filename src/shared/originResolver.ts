@@ -16,7 +16,10 @@ export function createOriginResolver(
   const limit = opts.limit ?? 4;
   const ttl = opts.ttlMs ?? 60_000;
   const now = opts.now ?? Date.now;
-  const cache = new Map<string, { at: number; p: Promise<string | null> }>();
+  // `at` is null while the lookup is in flight: such an entry is always shared, however
+  // long it takes (a real git call can sit queued behind others past the TTL). The TTL
+  // clock starts when the lookup settles.
+  const cache = new Map<string, { at: number | null; p: Promise<string | null> }>();
   const waiting: (() => void)[] = [];
   let running = 0;
 
@@ -33,11 +36,15 @@ export function createOriginResolver(
 
   return {
     get(cwd) {
+      const t = now();
+      // Evict settled entries past their TTL so a long session does not keep every cwd it ever saw.
+      for (const [k, e] of cache) if (e.at !== null && t - e.at >= ttl) cache.delete(k);
       const hit = cache.get(cwd);
-      if (hit && now() - hit.at < ttl) return hit.p;
-      const p = run(cwd);
-      cache.set(cwd, { at: now(), p });
-      return p;
+      if (hit) return hit.p;
+      const entry: { at: number | null; p: Promise<string | null> } = { at: null, p: undefined as unknown as Promise<string | null> };
+      entry.p = run(cwd).then((o) => { entry.at = now(); return o; });
+      cache.set(cwd, entry);
+      return entry.p;
     }
   };
 }

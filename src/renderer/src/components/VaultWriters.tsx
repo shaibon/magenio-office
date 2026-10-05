@@ -25,6 +25,8 @@ export function VaultWriters({ repoOrigin, value, onChange }: {
   const liveCwds = useMemo(() => [...new Set(live.map((a) => a.cwd))].sort(), [live]);
   const cwdKey = liveCwds.join('\n');
   const mounted = useRef(true);
+  // Latest request per cwd: an older answer arriving late never overwrites a newer one.
+  const seq = useRef<Record<string, number>>({});
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
 
   // The effect depends on the SET of cwds only. It used to depend on its own result
@@ -33,8 +35,9 @@ export function VaultWriters({ repoOrigin, value, onChange }: {
   // that left the select empty or stuck. Answers now always land (shared resolver).
   useEffect(() => {
     for (const cwd of liveCwds) {
+      const mine = (seq.current[cwd] = (seq.current[cwd] ?? 0) + 1);
       void originResolver.get(cwd).then((o) => {
-        if (mounted.current) setOrigins((p) => (cwd in p && p[cwd] === o ? p : { ...p, [cwd]: o }));
+        if (mounted.current && seq.current[cwd] === mine) setOrigins((p) => (cwd in p && p[cwd] === o ? p : { ...p, [cwd]: o }));
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

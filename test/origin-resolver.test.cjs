@@ -34,6 +34,24 @@ test('a throwing lookup resolves to null and does not block the queue', async ()
   assert.equal(b, 'o');
 });
 
+test('a lookup still in flight past the ttl is shared, not restarted; ttl runs from settlement', async () => {
+  let calls = 0, t = 0, release;
+  const gate = new Promise((r) => { release = r; });
+  const r = createOriginResolver(async () => { calls++; await gate; return 'correct'; }, { ttlMs: 60_000, now: () => t });
+  const first = r.get('/w/Angela');
+  t = 60_001; // queued/running longer than the ttl
+  const second = r.get('/w/Angela');
+  assert.equal(calls, 1);
+  release();
+  assert.deepEqual(await Promise.all([first, second]), ['correct', 'correct']);
+  t = 60_001 + 59_999; // still fresh: the clock started when it settled
+  await r.get('/w/Angela');
+  assert.equal(calls, 1);
+  t = 60_001 + 60_001;
+  await r.get('/w/Angela');
+  assert.equal(calls, 2);
+});
+
 test('results are cached until the ttl expires', async () => {
   let calls = 0, t = 0;
   const r = createOriginResolver(async () => { calls++; return 'o'; }, { ttlMs: 100, now: () => t });
