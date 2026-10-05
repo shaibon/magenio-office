@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useStore } from '@/store/store';
 import { createOriginResolver } from '@shared/originResolver';
-import { addWriter, eligibleWriters, removeWriter, writerChips, type WriterAgent } from '@shared/vaultWriters';
+import { jiraProjectsClient } from '@/jiraProjects/jiraProjectsClient';
+import { addWriter, eligibleWriters, removeWriter, writerChips, writerLabel, type WriterAgent } from '@shared/vaultWriters';
 
 /** One resolver for the whole Settings session, shared by every project's panel. */
 const originResolver = createOriginResolver((cwd) => window.cth.gitRemoteUrl(cwd));
@@ -20,11 +21,16 @@ export function VaultWriters({ repoOrigin, value, onChange }: {
   const archived = useStore((s) => s.archivedAgents);
   const [origins, setOrigins] = useState<Record<string, string | null>>({});
 
+  const mounted = useRef(true);
+  const [bindings, setBindings] = useState<{ key: string; repo: string }[]>([]);
+  useEffect(() => {
+    jiraProjectsClient.list().then((l) => { if (mounted.current) setBindings(l.map((b) => ({ key: b.key, repo: b.repo }))); }).catch(() => { /* no bindings: origin match alone */ });
+  }, []);
+
   // Only live agents can be offered or judged by origin; archived ones are flagged
   // by state alone, so they never cost a lookup.
-  const liveCwds = useMemo(() => [...new Set(live.map((a) => a.cwd))].sort(), [live]);
+  const liveCwds = useMemo(() => [...new Set([...live.map((a) => a.cwd), ...bindings.map((b) => b.repo)])].sort(), [live, bindings]);
   const cwdKey = liveCwds.join('\n');
-  const mounted = useRef(true);
   // Latest request per cwd: an older answer arriving late never overwrites a newer one.
   const seq = useRef<Record<string, number>>({});
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
@@ -45,10 +51,12 @@ export function VaultWriters({ repoOrigin, value, onChange }: {
 
   const all = useMemo(() => [...live.map((a) => ({ a, archived: false })), ...archived.map((a) => ({ a, archived: true }))], [live, archived]);
   const agents: WriterAgent[] = all.map(({ a, archived: arch }) => ({
-    id: a.id, name: a.name, archived: arch, origin: arch ? null : origins[a.cwd]
+    id: a.id, name: a.name, archived: arch, origin: arch ? null : origins[a.cwd], project: a.project, role: a.description
   }));
-  const options = eligibleWriters(repoOrigin, value, agents);
-  const chips = writerChips(repoOrigin, value, agents);
+  // Jira keys whose repo has this mapping's origin: the project names this mapping stands for.
+  const projectKeys = bindings.filter((b) => origins[b.repo] === repoOrigin).map((b) => b.key);
+  const options = eligibleWriters(repoOrigin, value, agents, projectKeys);
+  const chips = writerChips(repoOrigin, value, agents, projectKeys);
   const warn = (s: string) => s !== 'ok';
 
   return (
@@ -82,7 +90,7 @@ export function VaultWriters({ repoOrigin, value, onChange }: {
         }}
       >
         <option value="">{!repoOrigin ? t('vaultWriters.pickProjectFirst') : options.length === 0 ? t('vaultWriters.none') : t('vaultWriters.add')}</option>
-        {options.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+        {options.map((a) => <option key={a.id} value={a.id}>{writerLabel(a)}</option>)}
       </select>
     </div>
   );
