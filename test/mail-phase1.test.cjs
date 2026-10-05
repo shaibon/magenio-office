@@ -58,7 +58,7 @@ function setup({ messages = [], rules = [], keys = ['BURD', 'VAI'], classifyRepl
   return { db, store, deps, calls, state, now };
 }
 
-const goodReply = JSON.stringify({ category: 'bug', urgency: 'high', project_hint: 'VAI', confidence: 0.9, needs_reply: true, summary: 'Checkout is broken\nCustomer cannot pay', suggested_action: 'Open a bug and reply today' });
+const goodReply = JSON.stringify({ category: 'bug', urgency: 'high', project_hint: 'VAI', confidence: 0.9, needs_reply: true, summary: 'Checkout is broken\nCustomer cannot pay\nNeeds a fix today', suggested_action: 'Open a bug and reply today' });
 
 /* ───────────────────────────────── routing ───────────────────────────────── */
 
@@ -94,7 +94,7 @@ test('rules decide the route even when the local model also runs; undecided mail
   assert.equal(a.calls.classify.length, 1);                       // the summary is wanted for every mail
   const ta = a.store.listMessages()[0].triage;
   assert.deepEqual([ta.projectKey, ta.via], ['BURD', 'rule']);    // but the Boss's rule wins over the model's VAI hint
-  assert.equal(ta.summary, 'Checkout is broken\nCustomer cannot pay');
+  assert.equal(ta.summary, 'Checkout is broken\nCustomer cannot pay\nNeeds a fix today');
   assert.equal(ta.suggestedAction, 'Open a bug and reply today');
 
   const b = setup({ messages: [raw()], classifyReply: goodReply });
@@ -102,7 +102,7 @@ test('rules decide the route even when the local model also runs; undecided mail
   const t = b.store.listMessages()[0].triage;
   assert.deepEqual([t.projectKey, t.via, t.category, t.urgency], ['VAI', 'model', 'bug', 'high']);
 
-  const c = setup({ messages: [raw()], classifyReply: JSON.stringify({ category: 'bug', urgency: 'low', project_hint: 'VAI', confidence: 0.2, needs_reply: false, summary: 's', suggested_action: 'none' }) });
+  const c = setup({ messages: [raw()], classifyReply: JSON.stringify({ category: 'bug', urgency: 'low', project_hint: 'VAI', confidence: 0.2, needs_reply: false, summary: 'a\nb\nc', suggested_action: 'none' }) });
   await runMailPoll(c.deps);
   assert.equal(c.store.listMessages({ unassigned: true }).length, 1);
 
@@ -121,7 +121,7 @@ test('automated bulk mail is never sent to the model', async () => {
 
 test('classifier output is validated strictly', () => {
   assert.equal(M.parseClassification(goodReply).projectHint, 'VAI');
-  assert.equal(M.parseClassification(`sure! ${goodReply} done`).category, 'bug');
+  assert.equal(M.parseClassification(`sure! ${goodReply} done`), null);
   for (const bad of [
     '{"category":"hack","urgency":"low","project_hint":null,"confidence":0.5,"needs_reply":false,"summary":"x"}',
     '{"category":"bug","urgency":"low","project_hint":null,"confidence":2,"needs_reply":false,"summary":"x"}',

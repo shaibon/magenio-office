@@ -214,10 +214,15 @@ export function parseClassification(text: string | undefined | null): Classifica
   const raw = (text ?? '').trim();
   const a = raw.indexOf('{'), b = raw.lastIndexOf('}');
   if (a < 0 || b <= a) return null;
+  // The reply must BE the object: no prose around it, no extra keys.
+  if (a !== 0 || b !== raw.length - 1) return null;
   let o: unknown;
-  try { o = JSON.parse(raw.slice(a, b + 1)); } catch { return null; }
+  try { o = JSON.parse(raw); } catch { return null; }
   if (!o || typeof o !== 'object' || Array.isArray(o)) return null;
   const r = o as Record<string, unknown>;
+  const KEYS = ['category', 'urgency', 'project_hint', 'confidence', 'needs_reply', 'summary', 'suggested_action'];
+  const ks = Object.keys(r);
+  if (ks.length !== KEYS.length || !KEYS.every((k) => k in r)) return null;
   if (!MAIL_CATEGORIES.includes(r.category as MailCategory)) return null;
   if (!MAIL_URGENCIES.includes(r.urgency as MailUrgency)) return null;
   if (typeof r.confidence !== 'number' || !Number.isFinite(r.confidence) || r.confidence < 0 || r.confidence > 1) return null;
@@ -225,7 +230,7 @@ export function parseClassification(text: string | undefined | null): Classifica
   if (r.project_hint !== null && (typeof r.project_hint !== 'string' || r.project_hint.length > 64)) return null;
   if (typeof r.suggested_action !== 'string' || !r.suggested_action.trim() || r.suggested_action.length > 400) return null;
   const lines = r.summary.split('\n').map((l) => l.trim()).filter(Boolean);
-  if (lines.length < 1 || lines.length > 5) return null;
+  if (lines.length < 3 || lines.length > 5) return null;
   return {
     category: r.category as MailCategory, urgency: r.urgency as MailUrgency,
     projectHint: (r.project_hint as string | null) || null,
@@ -334,7 +339,7 @@ export const redactAddresses = (s: string): string => s.replace(EMAIL_RE_G, '[ad
  *  sender's domain, and the local model's own category/urgency/summary/action. No
  *  body, no subject, no addresses, no names. */
 export function handoffMessage(h: {
-  mailId: number; projectKey: string; fromDomain: string; classification: Classification;
+  mailId: number; projectKey: string; fromDomain: string; classification: Classification; summaryWithheld?: boolean;
 }): { subject: string; body: string } {
   const c = h.classification;
   const domain = h.fromDomain.replace(/[^a-z0-9.-]/gi, '').slice(0, 100) || 'unknown';
@@ -343,10 +348,53 @@ export function handoffMessage(h: {
     body: [
       `Mail #${h.mailId} was routed to ${h.projectKey} (sender domain: ${domain}).`,
       `Category: ${c.category} | Urgency: ${c.urgency} | Needs reply: ${c.needsReply ? 'yes' : 'no'}`,
-      'Summary (generated locally):',
-      redactAddresses(c.summary),
-      `Suggested action: ${redactAddresses(c.suggestedAction)}`,
+      ...(h.summaryWithheld
+        ? ['Summary withheld: the local model quoted the mail, so nothing but the metadata above leaves this machine.']
+        : ['Summary (generated locally):', redactAddresses(c.summary), `Suggested action: ${redactAddresses(c.suggestedAction)}`]),
       'The original mail stays on this machine; open the Mail area for it.'
     ].join('\n')
   };
+}
+
+/* ───────────────── keeping the mail's own words out of the hand-off ───────────────── */
+
+const words = (t: string): string[] => t.toLowerCase().replace(/[^\p{L}\p{N}@.+-]+/gu, ' ').split(/\s+/).filter(Boolean);
+
+/** Does `text` repeat the mail's own words? A model summary may paraphrase, but it
+ *  must not quote: a run of 4+ words from the body, the whole subject (2+ words), or
+ *  any long token that looks like a secret/number is a quote. */
+export function quotesMail(text: string, mail: { subject: string; body: string }): boolean {
+  const t = words(text);
+  const joined = ` ${t.join(' ')} `;
+  const subj = words(mail.subject);
+  if (subj.length >= 2 && joined.includes(` ${subj.join(' ')} `)) return true;
+  const body = words(mail.body);
+  const grams = new Set<string>();
+  for (let i = 0; i + 4 <= body.length; i++) grams.add(body.slice(i, i + 4).join(' '));
+  for (let i = 0; i + 4 <= t.length; i++) if (grams.has(t.slice(i, i + 4).join(' '))) return true;
+  // Long digit runs and long mixed tokens (phone numbers, tokens, ids) never cross.
+  return /\d[\d\s-]{6,}\d/.test(text) || /\b(?=[A-Za-z0-9_-]*\d)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{16,}\b/.test(text);
+}
+
+/** The classification as it may cross to the hive. Names of the sender and every
+ *  recipient are masked; if what is left still quotes the mail, summary and action
+ *  are dropped altogether and only the metadata (category, urgency) goes. */
+export function classificationForHandoff(
+  c: Classification,
+  mail: { subject: string; body: string; fromName: string; fromAddress: string; to: string[] }
+): { classification: Classification; summaryWithheld: boolean } {
+  const names = new Set<string>();
+  for (const src of [mail.fromName, mail.fromAddress.split('@')[0], ...mail.to.map((a) => a.split('@')[0])]) {
+    for (const w of src.split(/[^\p{L}\p{N}]+/u)) if (w.length >= 3) names.add(w);
+  }
+  const mask = (s: string): string => {
+    let out = redactAddresses(s);
+    for (const n of names) out = out.replace(new RegExp(`\\b${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'giu'), '[name]');
+    return out;
+  };
+  const summary = mask(c.summary), suggestedAction = mask(c.suggestedAction);
+  if (quotesMail(`${summary}\n${suggestedAction}`, mail)) {
+    return { classification: { ...c, summary: '', suggestedAction: '' }, summaryWithheld: true };
+  }
+  return { classification: { ...c, summary, suggestedAction }, summaryWithheld: false };
 }

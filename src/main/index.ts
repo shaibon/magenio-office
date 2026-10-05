@@ -4372,7 +4372,7 @@ async function mailClassify(prompt: string): Promise<string | null> {
 
 /** Hand a routed mail's SUMMARY to that project's PM (a binding agent with the PM
  *  role), else to god. Only handoffMessage's text crosses: no body, subject or address. */
-function mailHandoff(h: { mailId: number; projectKey: string; fromDomain: string; classification: Classification }): void {
+function mailHandoff(h: { mailId: number; projectKey: string; fromDomain: string; classification: Classification; summaryWithheld: boolean }): void {
   if (!hive.enabled()) return;
   const binding = jiraProjects.listBindings().find((b) => b.key.toUpperCase() === h.projectKey.toUpperCase());
   const pm = (binding?.agents ?? []).find((id) => hive.isPrivilegedPm(id));

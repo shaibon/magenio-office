@@ -175,7 +175,7 @@ test('with a model: classification, summary and suggested action are stored, and
   assert.match(t.summary, /Checkout broken/);
   assert.match(prompts[0], /SECRET BODY/);                       // the local model does see the mail (that is the point)
   assert.equal(p.handoffs.length, 1);
-  assert.deepEqual(Object.keys(p.handoffs[0]).sort(), ['classification', 'fromDomain', 'mailId', 'projectKey']);
+  assert.deepEqual(Object.keys(p.handoffs[0]).sort(), ['classification', 'fromDomain', 'mailId', 'projectKey', 'summaryWithheld']);
   assert.equal(p.handoffs[0].fromDomain, 'client.com');
   const msg = M.handoffMessage(p.handoffs[0]);
   const all = `${msg.subject}\n${msg.body}`;
@@ -204,7 +204,15 @@ test('the summary schema is strict: 1-5 lines, a suggested action, valid enums',
   assert.equal(bad({ suggested_action: undefined }), null);
   assert.equal(bad({ suggested_action: 'x'.repeat(401) }), null);
   assert.equal(bad({ category: 'weird' }), null);
-  assert.equal(M.parseClassification(JSON.stringify({ ...REPLY, summary: 'one line' })).summary, 'one line');
+  assert.equal(bad({ summary: 'one line only' }), null);            // the contract is 3-5 lines
+  assert.equal(bad({ summary: 'a\nb' }), null);
+  assert.equal(bad({ raw_body: 'SECRET' }), null);                   // no extra keys
+  assert.equal(M.parseClassification(JSON.stringify((({ urgency, ...r }) => r)(REPLY))), null);   // none missing
+  assert.equal(M.parseClassification(`Sure! ${JSON.stringify(REPLY)}`), null);                   // no prose around the object
+  assert.equal(M.parseClassification(`${JSON.stringify(REPLY)}\nHope that helps`), null);
+  assert.equal(M.parseClassification('```json\n' + JSON.stringify(REPLY) + '\n```'), null);
+  assert.equal(M.parseClassification(`  ${JSON.stringify(REPLY)}\n`).category, 'bug');           // whitespace is fine
+  assert.equal(M.parseClassification(JSON.stringify({ ...REPLY, summary: 'a\nb\nc\nd\ne' })).summary.split('\n').length, 5);
   assert.match(M.classifyPrompt('<<<UNTRUSTED_EMAIL_BEGIN>>>x', ['VAI']), /suggested_action/);
   assert.equal(M.redactAddresses('mail bob@x.co.uk, (eve@y.org)!'), 'mail [address], ([address])!');
 });
@@ -220,4 +228,46 @@ test('main wires the local agent only: PM-or-god hand-off, rules-only when disab
   for (const ch of ['mail:agentGet', 'mail:agentSet', 'mail:agentTest']) assert.match(src, new RegExp(`ipcMain\\.handle\\('${ch}'`));
   const pre = fs.readFileSync(path.join(__dirname, '../src/preload/index.ts'), 'utf8');
   for (const fn of ['mailAgentGet', 'mailAgentSet', 'mailAgentTest']) assert.match(pre, new RegExp(fn));
+});
+
+/* ───────────── adversarial echo: the model quotes the mail; the hand-off must not ───────────── */
+
+const SRC = { subject: 'Secret subject', body: 'SECRET BODY with the payment token tok_live_9f8e7d6c5b4a3210 for Ann Rossi', fromName: 'Ann Rossi', fromAddress: 'ann@client.com', to: ['me@x.com'] };
+const cls = (summary, suggestedAction) => ({ category: 'bug', urgency: 'high', projectHint: 'VAI', confidence: 0.9, needsReply: true, summary, suggestedAction });
+
+test('quotesMail: body runs, the whole subject and secret-looking tokens count as quoting; paraphrase does not', () => {
+  assert.equal(M.quotesMail('they mention SECRET BODY with the payment token', SRC), true);
+  assert.equal(M.quotesMail('Re: secret subject', SRC), true);
+  assert.equal(M.quotesMail('token is tok_live_9f8e7d6c5b4a3210', SRC), true);
+  assert.equal(M.quotesMail('call +39 333 1234567', SRC), true);
+  assert.equal(M.quotesMail('The customer reports a payment failure and wants a fix', SRC), false);
+});
+
+test('classificationForHandoff masks names and withholds a quoting summary', () => {
+  const echo = M.classificationForHandoff(cls('Ann asks us to copy Secret subject\nSECRET BODY with the payment token\nplease act', 'Tell Ann about Secret subject'), SRC);
+  assert.equal(echo.summaryWithheld, true);
+  assert.deepEqual([echo.classification.summary, echo.classification.suggestedAction], ['', '']);
+  assert.deepEqual([echo.classification.category, echo.classification.urgency], ['bug', 'high']);   // metadata survives
+
+  const named = M.classificationForHandoff(cls('Ann Rossi reports a failed payment\nShe wants a call back\nme will follow', 'Reply to ann@client.com'), SRC);
+  assert.equal(named.summaryWithheld, false);
+  const t = `${named.classification.summary}\n${named.classification.suggestedAction}`;
+  assert.doesNotMatch(t, /Ann|Rossi|ann@|client\.com/i);
+  assert.match(t, /\[name\] \[name\] reports a failed payment/);
+});
+
+test('end to end: a model that echoes the mail verbatim gets a metadata-only hand-off', async () => {
+  const echoReply = JSON.stringify({ category: 'bug', urgency: 'high', project_hint: 'VAI', confidence: 0.9, needs_reply: true,
+    summary: 'Ann asks us to copy Secret subject\nSECRET BODY with the payment token\nplease act', suggested_action: 'Tell Ann about Secret subject' });
+  const p = pipeline({ classify: async () => echoReply, messages: [mail({ subject: 'Secret subject', from: { name: 'Ann', address: 'ann@client.com' }, text: 'SECRET BODY with the payment token tok_live_9f8e7d6c5b4a3210' })] });
+  await runMailPoll(p.deps);
+  assert.equal(p.handoffs.length, 1);
+  assert.equal(p.handoffs[0].summaryWithheld, true);
+  const msg = M.handoffMessage(p.handoffs[0]);
+  const all = `${msg.subject}\n${msg.body}`;
+  for (const leak of ['Secret subject', 'SECRET BODY', 'payment token', 'tok_live', 'Ann', 'ann@', 'Tell ']) assert.ok(!all.includes(leak), `leaked: ${leak}`);
+  assert.match(msg.body, /Summary withheld/);
+  assert.match(msg.body, /Category: bug \| Urgency: high/);
+  // The full summary stays in the local store for the Mail area.
+  assert.match(p.store.listMessages()[0].triage.summary, /SECRET BODY/);
 });

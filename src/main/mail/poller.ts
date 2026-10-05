@@ -7,7 +7,7 @@
  * in-memory database and never touch a mailbox.
  */
 import {
-  classifyPrompt, mailBackoffMs, parseClassification, plainBody, resolveThreadId, routeByModelHint, routeByRules, wrapUntrusted,
+  classificationForHandoff, classifyPrompt, mailBackoffMs, parseClassification, plainBody, resolveThreadId, routeByModelHint, routeByRules, wrapUntrusted,
   type Classification, type RawMail, type Route
 } from '../../shared/mail';
 import type { MailAccountRow, MailStore } from './store';
@@ -23,7 +23,7 @@ export interface MailPollDeps {
    *  other model in this pipeline and never a cloud fallback. */
   classify?: (prompt: string) => Promise<string | null>;
   /** Post a routed mail's summary to the hive (see handoffMessage for what crosses). */
-  handoff?: (h: { mailId: number; projectKey: string; fromDomain: string; classification: Classification }) => void;
+  handoff?: (h: { mailId: number; projectKey: string; fromDomain: string; classification: Classification; summaryWithheld: boolean }) => void;
   /** Jira project keys the Boss has bound (the only keys a mail may route to). */
   knownProjectKeys: () => string[];
   pollIntervalMs: () => number;
@@ -74,7 +74,10 @@ async function ingestOne(deps: MailPollDeps, acct: MailAccountRow, m: RawMail, k
   store.saveTriage(rowId, { category, urgency, route, classification, model: classification ? deps.model ?? null : null, at: now });
   // Only a summary ever leaves; a mail with no summary (rules-only mode) is not handed off.
   if (route && classification && deps.handoff) {
-    try { deps.handoff({ mailId: rowId, projectKey: route.projectKey, fromDomain: m.from.address.split('@')[1] ?? '', classification }); } catch { /* the triage is already stored */ }
+    // What the local model wrote is free text and may echo the mail: names are masked
+    // and a quoting summary is withheld entirely before anything leaves.
+    const safe = classificationForHandoff(classification, { subject: m.subject, body, fromName: m.from.name, fromAddress: m.from.address, to: m.to });
+    try { deps.handoff({ mailId: rowId, projectKey: route.projectKey, fromDomain: m.from.address.split('@')[1] ?? '', ...safe, summaryWithheld: safe.summaryWithheld }); } catch { /* the triage is already stored */ }
   }
   return true;
 }
