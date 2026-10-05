@@ -6,6 +6,7 @@ import { Icon } from './Icon';
 import { useStore, type Agent, type QueuedMessage } from '@/store/store';
 import { clearTerminalDraft, dismissTerminalPicker, terminalAutomationBlockFor } from './terminalPool';
 import type { TerminalAutomationBlock } from './terminalAutomation';
+import { ThumbRegistry } from '@shared/thumbRegistry';
 import { freeflowRecorder, useFreeflow } from '@/freeflow/recorder';
 import { useTerminalFontSize } from './terminalFontSize';
 import { isComposingKey } from '@shared/imeGuard';
@@ -17,6 +18,8 @@ const EMPTY_QUEUE: QueuedMessage[] = [];
 interface Attachment {
   path: string;
   name: string;
+  /** blob: URL of a pasted image, for the chip thumbnail (the CSP blocks file:// images). */
+  thumb?: string;
 }
 
 // Prepended (only to the enqueued value, never the visible draft) when the
@@ -78,6 +81,10 @@ export function MessageQueueComposer({ agent }: MessageQueueComposerProps) {
   // persist in the store, attachments deliberately don't carry over).
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [dragOver, setDragOver] = useState(false);
+  // Owns the thumbnail blob URLs; everything it still holds is revoked on unmount
+  // (an agent tab switch remounts this component and drops the attachments).
+  const thumbs = useRef(new ThumbRegistry((b) => URL.createObjectURL(b), (u) => URL.revokeObjectURL(u))).current;
+  useEffect(() => () => thumbs.releaseAll(), [thumbs]);
 
   const addAttachments = (incoming: Attachment[]) =>
     setAttachments((prev) => {
@@ -87,7 +94,10 @@ export function MessageQueueComposer({ agent }: MessageQueueComposerProps) {
     });
 
   const removeAttachment = (path: string) =>
-    setAttachments((prev) => prev.filter((a) => a.path !== path));
+    setAttachments((prev) => {
+      prev.forEach((a) => { if (a.path === path) thumbs.release(a.thumb); });
+      return prev.filter((a) => a.path !== path);
+    });
 
   // '+' button → OS picker (images group + all files).
   const pickFiles = async () => {
@@ -114,8 +124,16 @@ export function MessageQueueComposer({ agent }: MessageQueueComposerProps) {
     const hasImage = items.some((it) => it.kind === 'file' && it.type.startsWith('image/'));
     if (hasImage) {
       e.preventDefault();
-      const res = await window.cth.saveClipboardImage();
-      if (res.ok) addAttachments([res.file]);
+      // Read the blob before the await: clipboardData is cleared once the handler yields.
+      const blob = items.find((it) => it.kind === 'file' && it.type.startsWith('image/'))?.getAsFile();
+      const thumb = blob ? thumbs.add(blob) : undefined;
+      let kept = false;
+      try {
+        const res = await window.cth.saveClipboardImage();
+        if (res.ok) { addAttachments([{ ...res.file, thumb }]); kept = true; }
+      } finally {
+        if (!kept) thumbs.release(thumb);
+      }
       return;
     }
     const files = Array.from(e.clipboardData?.files ?? []);
@@ -149,6 +167,7 @@ export function MessageQueueComposer({ agent }: MessageQueueComposerProps) {
     // Enter never counts. (TELEMETRY.md → message_sent)
     void window.cth.trackMessageSent('composer');
     setText('');
+    attachments.forEach((a) => thumbs.release(a.thumb));
     setAttachments([]);
   };
 
@@ -322,7 +341,9 @@ export function MessageQueueComposer({ agent }: MessageQueueComposerProps) {
                 color: 'var(--cth-ink-900)'
               }}
             >
-              <Icon name="folder" />
+              {a.thumb
+                ? <img src={a.thumb} alt="" style={{ width: 24, height: 24, objectFit: 'cover', flexShrink: 0 }} />
+                : <Icon name="folder" />}
               <span style={{
                 overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', maxWidth: 180
               }}>{a.name}</span>
