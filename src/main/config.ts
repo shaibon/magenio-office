@@ -422,6 +422,10 @@ export interface HarnessConfig {
   circuitBreaker?: CircuitBreakerConfig;
   /** Enterprise Knowledge Graph (multimodal context for agents). Default OFF. */
   knowledgeGraph?: KnowledgeGraphConfig;
+  /** Mail area (phase 1, read-only): minutes between polls (default 5, min 1) and
+   *  days a message BODY is kept before only its metadata remains (default 30, 0 = keep). */
+  mailPollMinutes?: number;
+  mailRetentionDays?: number;
   /** Fire native desktop notifications on agent lifecycle events (idle finish / waiting for input). */
   notifications?: boolean;
   /** Opt-in "strong keep-alive": while ≥1 agent PTY is live, escalate the power
