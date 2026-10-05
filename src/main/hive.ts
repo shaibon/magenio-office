@@ -45,6 +45,8 @@ import { mergeTaskLedger } from '../shared/taskLedger';
 import { expandTilde, isInsideGitRepo } from './fs';
 import { resolveGodName } from '../shared/godIdentity';
 import type { VaultMount } from '../shared/vaultMount';
+import { hookTrustToml, listCodexHooks, type ListedHook } from './codexHookTrust';
+import { resolveCommand, userShellPath } from './shellEnv';
 import { checkMcpPresence, nodePresenceDeps } from './mcpProvision';
 import { probeStdioServer, type McpServerSpec } from './mcpProbe';
 import { codexMcpServers, codexMcpToml } from '../shared/codexMcp';
@@ -2615,13 +2617,14 @@ export class HiveManager {
       const shim = this.shimPath();
       let config = existsSync(join(userHome, 'config.toml'))
         ? readFileSync(join(userHome, 'config.toml'), 'utf8') : '';
+      let hookCommand = '';
       if (shim) {
         const events = ['PreToolUse', 'PostToolUse', 'Stop', 'SubagentStop',
           'SessionStart', 'UserPromptSubmit', 'PreCompact', 'PostCompact'];
         // Preserve the existing Windows .cmd shape: nested command quotes pass
         // through a different shell stack there (#350). The reported Codex bug
         // is POSIX, where ordinary shell quoting is both necessary and verified.
-        const command = process.platform === 'win32'
+        const command = hookCommand = process.platform === 'win32'
           ? this.nodeRunUnquoted(shim)
           : this.nodeRun(shim);
         config += '\n# --- munder-hive lifecycle hooks (auto-generated; do not edit) ---\n';
@@ -2635,6 +2638,14 @@ export class HiveManager {
       // config, whose own `[mcp_servers.*]` entries stay intact and visible.
       config += mcpTables;
       writeFileSync(join(home, 'config.toml'), config, 'utf8');
+      // Hooks Codex does not trust are skipped in silence — and the session runs in
+      // a daemon that never saw our bypass flag. Record trust for OUR hooks in the
+      // config itself (see codexHookTrust.ts); say so loudly if that is not possible.
+      if (shim) {
+        const trust = this.codexHookTrustFor(home, config, hookCommand);
+        if (trust) writeFileSync(join(home, 'config.toml'), config + trust, 'utf8');
+        else this.appendLog({ kind: 'codex-hooks-untrusted', agentId, detail: 'could not record hook trust; the agent may report no status and never drain its inbox' });
+      }
 
       // Keep each worker's CODEX_HOME isolated while putting its rollout data
       // below Codex's standard scan roots. External usage tools can then discover
@@ -2642,6 +2653,29 @@ export class HiveManager {
       this.exposeCodexDataDirs(home, userHome, agentId);
     } catch (e) { console.error('[hive] installCodexHooks failed:', e); }
     return home;
+  }
+
+  /** Test seam: how to learn Codex's own hash for each hook (default: ask codex). */
+  codexHookLister: (home: string, cwd: string) => ListedHook[] = (home, cwd) =>
+    listCodexHooks(resolveCommand('codex'), home, cwd, process.execPath, { ...process.env, PATH: userShellPath() });
+
+  /** `[hooks.state]` tables trusting our hooks, cached per config content so a
+   *  respawn does not start codex again. '' when codex could not say. */
+  private codexHookTrustFor(home: string, config: string, command: string): string {
+    const cacheFile = join(home, '.hook-trust.json');
+    const sig = createHash('sha1').update(config).update('\0').update(command).digest('hex');
+    try {
+      const c = JSON.parse(readFileSync(cacheFile, 'utf8')) as { sig?: string; toml?: string };
+      if (c.sig === sig && typeof c.toml === 'string' && c.toml) return c.toml;
+    } catch { /* no usable cache */ }
+    try {
+      const toml = hookTrustToml(this.codexHookLister(home, home), command);
+      if (toml) writeFileSync(cacheFile, JSON.stringify({ sig, toml }), 'utf8');
+      return toml;
+    } catch (e) {
+      console.error('[hive] codex hook trust probe failed:', e instanceof Error ? e.message : e);
+      return '';
+    }
   }
 
   private exposeCodexDataDirs(home: string, userHome: string, agentId: string): void {
@@ -3497,6 +3531,17 @@ const HOOK_SHIM = `#!/usr/bin/env node
 'use strict';
 const net = require('net');
 const isStatus = process.argv.includes('--status');
+// A hook that cannot reach the harness must not fail silently: one line per
+// failure in <hive>/hook-failures.log (capped), never an error to the CLI.
+function fail(why) {
+  try {
+    const fs = require('fs'), path = require('path');
+    const dir = process.env.HIVE_SOCK ? path.dirname(process.env.HIVE_SOCK) : __dirname;
+    const f = path.join(dir, 'hook-failures.log');
+    if (fs.existsSync(f) && fs.statSync(f).size > 262144) return;
+    fs.appendFileSync(f, new Date().toISOString() + ' agent=' + (process.env.AGENT_ID || '?') + ' ' + why + '\\n');
+  } catch (_) {}
+}
 let data = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (d) => { data += d; });
@@ -3530,14 +3575,14 @@ process.stdin.on('end', () => {
     setTimeout(() => process.exit(0), 1500).unref();
     return;
   }
-  if (!sock) { process.exit(0); }
+  if (!sock) { fail('HIVE_SOCK is not set'); process.exit(0); }
   let resp = '';
   const done = (code) => { if (resp) process.stdout.write(resp); process.exit(code); };
   const c = net.createConnection(sock, () => c.write(JSON.stringify(payload) + '\\n'));
   c.setEncoding('utf8');
   c.on('data', (d) => { resp += d; });
   c.on('end', () => done(0));
-  c.on('error', () => process.exit(0));
+  c.on('error', (e) => { fail('connect ' + (e && e.code || e)); process.exit(0); });
   setTimeout(() => process.exit(0), 5000).unref();
 });
 `;
