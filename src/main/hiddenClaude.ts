@@ -64,6 +64,28 @@ export interface HiddenClaudeOptions {
    * Set false only when the response genuinely depends on `cwd` for context.
    */
   privateCwd?: boolean;
+  /**
+   * A pure text transform with NO tools at all: every built-in tool is switched
+   * off (`--tools ""`), no MCP server is loaded (`--strict-mcp-config` with none
+   * given), slash commands are off, and the permission mode is the default instead
+   * of bypassPermissions. A deny-list cannot give this guarantee, since any tool
+   * missing from it (Read, Glob, Grep, an MCP tool) would run unprompted.
+   */
+  noTools?: boolean;
+}
+
+/** The claude CLI arguments for a hidden call. Exported so the no-tools contract is testable. */
+export function hiddenClaudeArgs(opts: Pick<HiddenClaudeOptions, 'model' | 'disallowedTools' | 'addDirs' | 'noTools'>): string[] {
+  if (opts.noTools) {
+    return ['--model', opts.model, '--tools', '', '--strict-mcp-config', '--disable-slash-commands', '--permission-mode', 'default'];
+  }
+  const args = [
+    '--model', opts.model,
+    '--permission-mode', 'bypassPermissions',
+    '--disallowedTools', ...(opts.disallowedTools ?? ['Edit', 'Write', 'NotebookEdit']),
+  ];
+  for (const d of (opts.addDirs ?? []).filter((x) => x && existsSync(x))) { args.push('--add-dir', d); }
+  return args;
 }
 
 export interface HiddenClaudeResult {
@@ -207,15 +229,7 @@ export function runHiddenClaude(prompt: string, opts: HiddenClaudeOptions): Prom
 
     const binary = (opts.command || 'claude').trim().split(/\s+/)[0] || 'claude';
     const exe = resolveCommand(binary);
-    const disallowed = opts.disallowedTools ?? ['Edit', 'Write', 'NotebookEdit'];
-    const addDirs = (opts.addDirs ?? []).filter((d) => d && existsSync(d));
-
-    const args: string[] = [
-      '--model', opts.model,
-      '--permission-mode', 'bypassPermissions',
-      '--disallowedTools', ...disallowed,
-    ];
-    for (const d of addDirs) { args.push('--add-dir', d); }
+    const args = hiddenClaudeArgs(opts);
 
     const bootCapMs = opts.bootCapMs ?? 7000;
     const idleMs = opts.idleMs ?? 3500;

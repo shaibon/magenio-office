@@ -2,6 +2,8 @@ import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'ele
 import type { AgentProvider } from '../shared/agentProvider';
 import type { HireManifest } from '../shared/hire';
 import type { TempRow } from '../shared/tempHistory';
+import type { MailAccountInput, MailRule } from '../shared/mail';
+import type { MailAccountPublic, MailMessageDetail, MailMessageFilter, MailMessageSummary } from '../main/mail/store';
 export type { HireManifest } from '../shared/hire';
 import type { IntegrationRecord, IntegrationTemplate } from '../shared/integrations';
 export type { IntegrationRecord, IntegrationTemplate } from '../shared/integrations';
@@ -1014,6 +1016,20 @@ const api = {
   },
 
   // ─── Quit confirmation ───────────────────────────────────────────────────
+  // ─── Mail area (phase 1, read-only) ──────────────────────────────────────
+  // No secret ever crosses this bridge (an account reports only `hasSecret`), lists
+  // carry no bodies, and there is no send/draft/flag call: the mailbox is read-only.
+  mailAccounts: (): Promise<MailAccountPublic[]> => ipcRenderer.invoke('mail:accounts'),
+  mailAccountSave: (a: MailAccountInput): Promise<{ ok: boolean; id?: string; error?: string }> => ipcRenderer.invoke('mail:accountSave', a),
+  mailAccountRemove: (id: string): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('mail:accountRemove', id),
+  mailMessages: (f?: MailMessageFilter): Promise<MailMessageSummary[]> => ipcRenderer.invoke('mail:messages', f ?? {}),
+  mailMessage: (id: number): Promise<MailMessageDetail | null> => ipcRenderer.invoke('mail:message', id),
+  mailRules: (): Promise<MailRule[]> => ipcRenderer.invoke('mail:rules'),
+  mailRuleSave: (r: Omit<MailRule, 'id'> & { id?: number }): Promise<{ ok: boolean; id?: number; error?: string }> => ipcRenderer.invoke('mail:ruleSave', r),
+  mailRuleDelete: (id: number): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('mail:ruleDelete', id),
+  mailAssign: (id: number, projectKey: string | null): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('mail:assign', id, projectKey),
+  mailPollNow: (): Promise<{ ok: boolean; results: { accountId: string; ingested: number; skipped: number; error?: string }[] }> => ipcRenderer.invoke('mail:pollNow'),
+  mailSettings: (): Promise<{ pollMinutes: number; retentionDays: number }> => ipcRenderer.invoke('mail:settings'),
   onCloseRequested: (cb: (info: { ptyCount: number }) => void): (() => void) => {
     const listener = (_e: IpcRendererEvent, info: { ptyCount: number }) => cb(info);
     ipcRenderer.on('app:closeRequested', listener);

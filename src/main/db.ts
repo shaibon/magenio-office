@@ -18,6 +18,7 @@
 import Database from 'better-sqlite3';
 import { app } from 'electron';
 import { join } from 'node:path';
+import { MAIL_SCHEMA_SQL } from './mail/schema';
 
 /** A captured user prompt, as returned to the renderer (camelCase columns). */
 export interface CommandHistoryRow {
@@ -64,7 +65,9 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
       );
       CREATE INDEX IF NOT EXISTS idx_ch_agent_ts ON command_history(agent_id, ts DESC);
     `);
-  }
+  },
+  // → user_version 2: mail area, phase 1 (read-only ingest + triage).
+  (db) => { db.exec(MAIL_SCHEMA_SQL); }
 ];
 
 export class PersistStore {
@@ -108,6 +111,9 @@ export class PersistStore {
   }
 
   get isOpen(): boolean { return this.db !== null; }
+
+  /** The open handle for modules that own their own tables (mail). Null until open(). */
+  get handle(): Database.Database | null { return this.db; }
 
   // ─── kv (scalar app state) ─────────────────────────────────────────────────
 

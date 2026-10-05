@@ -64,6 +64,13 @@ import { analytics, isRendererMessageSurface } from './analytics';
 import type { SpawnFailReason } from './analytics';
 import { IntegrationBroker } from './integrationBroker';
 import * as integrations from './integrations';
+import { MailStore, type MailAccountPublic, type SqlDb } from './mail/store';
+import { runMailPoll, type AccountPollResult } from './mail/poller';
+import { createImapProvider } from './mail/imapProvider';
+import { runHiddenClaude } from './hiddenClaude';
+import {
+  DEFAULT_MAIL_POLL_MINUTES, DEFAULT_MAIL_RETENTION_DAYS, MIN_MAIL_POLL_MINUTES, validateMailAccountInput, validateMailRuleInput
+} from '../shared/mail';
 import * as jiraProjects from './jiraProjects';
 import { checkMcpPresence, nodePresenceDeps, installTrelloMcp, nodeInstallDeps } from './mcpProvision';
 import { secretRefFor, INTEGRATION_TEMPLATES } from '../shared/integrations';
@@ -4124,6 +4131,141 @@ ipcMain.handle('knowledge:chooseVaultSubfolder', async (evt, vaultPath: unknown)
 // "wait for the timer" can never drift into two different code paths.
 ipcMain.handle('knowledge:vaultSyncNow', () => runVaultSyncTick());
 
+// ─── Mail area, phase 1: read-only IMAP ingest + triage ──────────────────────
+// Main-process only. The mailbox password lives in the encrypted secret store and
+// is read here, once per poll, to hand to the IMAP adapter; it never reaches the
+// renderer, an agent, a log line or the database. Nothing in this section sends,
+// drafts, flags or deletes mail.
+const MAIL_TICK_MS = 60_000;
+const MAIL_CLASSIFY_MODEL = 'claude-haiku-4-5';
+let mailTimer: ReturnType<typeof setInterval> | null = null;
+let mailPollInFlight = false;
+
+function mailStore(): MailStore | null {
+  const h = persist.handle;
+  return h ? new MailStore(h as unknown as SqlDb) : null;
+}
+const mailSecretRef = (accountId: string): string => `mail:${accountId}`;
+
+/** One hidden session with every tool refused: the reply is data, never an action. */
+async function mailClassify(prompt: string): Promise<string | null> {
+  const home = readConfig().harnessHome;
+  if (!home) return null;
+  const r = await runHiddenClaude(prompt, {
+    model: MAIL_CLASSIFY_MODEL,
+    cwd: home,
+    command: readConfig().defaultCommand ?? 'claude',
+    privateCwd: true,
+    // No tools of any kind: the mail text is untrusted, so the session may only answer.
+    noTools: true,
+    timeoutMs: 90_000
+  });
+  return r.ok && r.text ? r.text : null;
+}
+
+async function runMailTick(force = false): Promise<AccountPollResult[]> {
+  const store = mailStore();
+  if (!store || mailPollInFlight) return [];
+  mailPollInFlight = true;
+  try {
+    const cfg = readConfig();
+    return await runMailPoll({
+      store,
+      getSecret: (ref) => integrations.getSecret(ref),
+      makeProvider: createImapProvider,
+      classify: mailClassify,
+      model: MAIL_CLASSIFY_MODEL,
+      knownProjectKeys: () => jiraProjects.listBindings().filter((b) => b.enabled).map((b) => b.key),
+      pollIntervalMs: () => Math.max(MIN_MAIL_POLL_MINUTES, cfg.mailPollMinutes ?? DEFAULT_MAIL_POLL_MINUTES) * 60_000,
+      retentionDays: () => cfg.mailRetentionDays ?? DEFAULT_MAIL_RETENTION_DAYS,
+      log: (e) => { try { hive.appendLog(e); } catch { /* best-effort */ } }
+    }, { force });
+  } catch (e) {
+    console.error('[mail-poll] tick failed:', e instanceof Error ? e.message : String(e));
+    return [];
+  } finally {
+    mailPollInFlight = false;
+  }
+}
+
+/** The tick only does work for accounts that are due, so it is cheap to run often. */
+function startMailTimer(): void {
+  if (mailTimer) return;
+  mailTimer = setInterval(() => { void runMailTick(); }, MAIL_TICK_MS);
+}
+function stopMailTimer(): void {
+  if (mailTimer) { clearInterval(mailTimer); mailTimer = null; }
+}
+
+// IPC contract (renderer-safe: no secret, no bodies in lists, no outgoing action).
+const NO_STORE = { ok: false, error: 'mail storage is unavailable' } as const;
+ipcMain.handle('mail:accounts', (): MailAccountPublic[] => {
+  const store = mailStore();
+  return (store?.listAccounts() ?? []).map(({ secretRef, ...a }) => ({ ...a, hasSecret: integrations.hasSecret(secretRef) }));
+});
+ipcMain.handle('mail:accountSave', (_evt, raw: unknown) => {
+  const store = mailStore();
+  if (!store) return NO_STORE;
+  const v = validateMailAccountInput(raw);
+  if (!v.ok) return { ok: false, error: v.error };
+  const a = v.value;
+  const id = a.id ?? `mail-${randomBytes(4).toString('hex')}`;
+  const existing = store.getAccount(id);
+  if (!existing && !a.password) return { ok: false, error: 'password required for a new account' };
+  // Fail closed: the account is only saved if its secret was stored encrypted.
+  if (a.password) {
+    const r = integrations.setSecret(mailSecretRef(id), a.password);
+    if (!r.ok) return { ok: false, error: r.error ?? 'could not store the password' };
+  }
+  store.upsertAccount({ id, address: a.address, host: a.host, port: a.port, username: a.username, mailbox: a.mailbox ?? 'INBOX', secretRef: mailSecretRef(id) });
+  return { ok: true, id };
+});
+ipcMain.handle('mail:accountRemove', (_evt, id: unknown) => {
+  const store = mailStore();
+  if (!store) return NO_STORE;
+  if (typeof id !== 'string') return { ok: false, error: 'id required' };
+  const acct = store.getAccount(id);
+  if (acct) { integrations.deleteSecret(acct.secretRef); store.removeAccount(id); }
+  return { ok: true };
+});
+ipcMain.handle('mail:messages', (_evt, f: unknown) => {
+  const o = (f && typeof f === 'object' ? f : {}) as Record<string, unknown>;
+  const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined);
+  const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+  return mailStore()?.listMessages({
+    accountId: str(o.accountId), projectKey: str(o.projectKey), threadId: str(o.threadId), state: str(o.state),
+    unassigned: o.unassigned === true, limit: num(o.limit), before: num(o.before)
+  }) ?? [];
+});
+ipcMain.handle('mail:message', (_evt, id: unknown) =>
+  typeof id === 'number' && Number.isInteger(id) ? mailStore()?.getMessage(id) ?? null : null);
+ipcMain.handle('mail:rules', () => mailStore()?.listRules() ?? []);
+ipcMain.handle('mail:ruleSave', (_evt, raw: unknown) => {
+  const store = mailStore();
+  if (!store) return NO_STORE;
+  const v = validateMailRuleInput(raw);
+  return v.ok ? { ok: true, id: store.saveRule(v.value) } : { ok: false, error: v.error };
+});
+ipcMain.handle('mail:ruleDelete', (_evt, id: unknown) => {
+  const store = mailStore();
+  if (!store) return NO_STORE;
+  if (typeof id === 'number' && Number.isInteger(id)) store.deleteRule(id);
+  return { ok: true };
+});
+ipcMain.handle('mail:assign', (_evt, id: unknown, projectKey: unknown) => {
+  const store = mailStore();
+  if (!store) return NO_STORE;
+  if (typeof id !== 'number' || !Number.isInteger(id)) return { ok: false, error: 'id required' };
+  const key = typeof projectKey === 'string' && projectKey ? projectKey.toUpperCase() : null;
+  if (key && !/^[A-Z][A-Z0-9]{1,9}$/.test(key)) return { ok: false, error: 'invalid project key' };
+  return { ok: store.assign(id, key) };
+});
+ipcMain.handle('mail:pollNow', async () => ({ ok: true, results: await runMailTick(true) }));
+ipcMain.handle('mail:settings', () => ({
+  pollMinutes: readConfig().mailPollMinutes ?? DEFAULT_MAIL_POLL_MINUTES,
+  retentionDays: readConfig().mailRetentionDays ?? DEFAULT_MAIL_RETENTION_DAYS
+}));
+
 // ─── IPC: composer attachments (images + arbitrary files, attached by PATH) ──
 // The message queue pipes raw text into a Claude CLI PTY, so attachments travel
 // as a file PATH the agent reads with its Read tool (same convention as Slack).
@@ -4189,6 +4331,7 @@ function teardownAndQuit(): void {
   try { clearContextTimers(); } catch (e) { console.error('[quit] clearContextTimers:', e); }
   try { stopWebhookDoneObserver(); } catch (e) { console.error('[quit] stopWebhookDoneObserver:', e); }
   try { stopVaultSyncTimer(); } catch (e) { console.error('[quit] stopVaultSyncTimer:', e); }
+  try { stopMailTimer(); } catch (e) { console.error('[quit] stopMailTimer:', e); }
   try { stopEphemeralWorkerWatcher(); } catch (e) { console.error('[quit] stopWorkerWatcher:', e); }
   try { integrationBroker.stop(); } catch (e) { console.error('[quit] broker.stop:', e); }
   try { hive.stopRouter(); } catch (e) { console.error('[quit] stopRouter:', e); }
@@ -4251,6 +4394,7 @@ ipcMain.handle('app:resetAll', () => {
   try { clearContextTimers(); } catch (e) { console.error('[reset] clearContextTimers:', e); }
   try { stopWebhookDoneObserver(); } catch (e) { console.error('[reset] stopWebhookDoneObserver:', e); }
   try { stopVaultSyncTimer(); } catch (e) { console.error('[reset] stopVaultSyncTimer:', e); }
+  try { stopMailTimer(); } catch (e) { console.error('[reset] stopMailTimer:', e); }
   try { stopEphemeralWorkerWatcher(); } catch (e) { console.error('[reset] stopWorkerWatcher:', e); }
   try { integrationBroker.stop(); } catch (e) { console.error('[reset] broker.stop:', e); }
   try { hive.stopRouter(); } catch (e) { console.error('[reset] stopRouter:', e); }
@@ -5857,6 +6001,7 @@ app.whenReady().then(() => {
   // its own config flags (re-checked every tick) — it must run even for an
   // install that has never touched the hive.
   startVaultSyncTimer();
+  startMailTimer();
   // Survive sleep/lock. macOS freezes libuv timers during true system sleep, so a
   // locked/idle/slept Mac stops firing schedules and can wedge PTYs. On wake we
   // re-arm the scheduler (catching up missed missions ONCE) + beats + keep-awake,
