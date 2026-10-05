@@ -40,6 +40,8 @@ export interface ScheduledMission {
   lastFiredAt?: number;
   kind?: 'dispatch' | 'heartbeat' | 'compact';
   quietThresholdMs?: number;
+  /** Agent id that created this schedule via the broker; absent otherwise. */
+  createdBy?: string;
 }
 
 /** Circuit-breaker thresholds (mirrors src/main/config.ts CircuitBreakerConfig). */

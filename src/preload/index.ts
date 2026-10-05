@@ -252,6 +252,8 @@ export interface ScheduledMission {
   kind?: 'dispatch' | 'heartbeat' | 'compact';
   /** Heartbeat only: floor-quiet threshold in ms. */
   quietThresholdMs?: number;
+  /** Agent id that created this schedule via the broker; absent otherwise. */
+  createdBy?: string;
 }
 
 /** Circuit-breaker thresholds (Lane A #6.6b). Mirrors src/main/config.ts. */

@@ -34,6 +34,7 @@ interface ScheduledMission {
   lastFiredAt?: number;
   kind?: 'dispatch' | 'heartbeat' | 'compact';
   quietThresholdMs?: number;
+  createdBy?: string;
   /** Day-of-week + time. Present ⇒ this replaces intervalMs (main/config.ts). */
   weekly?: { days: number[]; minute: number };
   /** Interval mission with a full-rate window; see main/config.ts. */
@@ -275,7 +276,7 @@ function MissionRow({ mission, targetName, agents, onPatch, onDelete }: {
             </span>
           </span>
         }
-        sub={<>{`→ ${targetName(mission.to)}`} · {fired}{next}</>}
+        sub={<>{`→ ${targetName(mission.to)}`} · {fired}{next}{mission.createdBy ? ` · ${t('schedulesSection.createdBy', { agent: targetName(mission.createdBy) })}` : ''}</>}
         right={<Toggle on={mission.enabled} onClick={() => onPatch({ enabled: !mission.enabled })} />}
       />
 
