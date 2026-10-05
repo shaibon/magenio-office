@@ -24,7 +24,7 @@ export function eligibleWriters(repoOrigin: string, selected: string[], agents: 
 }
 
 /** One chip per saved id, flagged when it would not pass the filter today. A
- *  still-unresolved origin is not judged: it reads 'ok' rather than raising a false warning. */
+ *  origin still being resolved (undefined) is not judged; one that resolved to nothing (null) is flagged. */
 export function writerChips(repoOrigin: string, selected: string[], agents: WriterAgent[]): WriterChip[] {
   const byId = new Map(agents.map((a) => [a.id, a]));
   return selected.map((id) => {
