@@ -475,6 +475,11 @@ export interface HarnessConfig {
   slackSigningSecret?: string;
   /** Bot token (xoxb-…) — only needed if the bot ever replies; optional for now. */
   slackBotToken?: string;
+  /** Inbound transport: 'events' = Events API behind a tunnel (default), 'socket' = Socket Mode
+   *  (outbound WebSocket, no tunnel). */
+  slackMode?: 'events' | 'socket';
+  /** Socket Mode app-level token (xapp-, scope connections:write). Never logged. */
+  slackAppToken?: string;
   /** Restrict ingestion to one channel id; empty/undefined = any channel. */
   slackChannelId?: string;
   /** Local HTTP port the webhook server binds to (default 3847). */
@@ -599,6 +604,8 @@ const DEFAULTS: HarnessConfig = {
   slackEnabled: false,
   slackSigningSecret: undefined,
   slackBotToken: undefined,
+  slackMode: 'events',
+  slackAppToken: undefined,
   slackChannelId: undefined,
   slackPort: undefined,
   slackProactivePosting: false,

@@ -125,6 +125,8 @@ export interface HarnessConfig {
   slackEnabled?: boolean;
   slackSigningSecret?: string;
   slackBotToken?: string;
+  slackMode?: 'events' | 'socket';
+  slackAppToken?: string;
   slackChannelId?: string;
   slackPort?: number;
   /** Opt-in app/voice-initiated proactive Slack posting (default OFF). Mirrors

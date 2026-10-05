@@ -160,7 +160,61 @@ function shouldTrigger(ev, botUserId, channelId, activatedThreads) {
   return { trigger: true, text, files };
 }
 
+/** Strip a single leading `<@BOTID>` app-mention so "@bot do X" enqueues "do X". */
+function stripLeadingMention(text) {
+  return text.replace(/^\s*<@[A-Z0-9]+>\s*/i, '').trim();
+}
+
+/**
+ * The ONE inbound-event path shared by the Events API (HTTP) and Socket Mode:
+ * learns the bot user id, applies the mention / activated-thread filter, dedups
+ * on channel:ts, and hands a de-mentioned message to `onMessage`. Transport-level
+ * concerns (signature check, envelope ack) stay with the callers.
+ */
+class SlackDispatcher {
+  constructor({ channelId, onMessage }) {
+    this.channelId = channelId;
+    this.onMessage = onMessage;
+    this.botUserId = null;
+    this.activatedThreads = new ActivatedThreads();
+    this.seenEvents = new SeenEvents();
+  }
+
+  /** @param {object} payload an `event_callback` body. Returns true when forwarded. */
+  dispatch(payload) {
+    if (!payload || payload.type !== 'event_callback' || !payload.event) return false;
+    const authUserId = payload.authorizations && payload.authorizations[0] && payload.authorizations[0].user_id;
+    if (authUserId && !this.botUserId) this.botUserId = authUserId;
+
+    const ev = payload.event;
+    const { trigger, text: rawText, files: rawFiles } = shouldTrigger(
+      ev, this.botUserId, this.channelId, this.activatedThreads
+    );
+    if (!trigger) return false;
+    const text = stripLeadingMention(rawText);
+    const channel = typeof ev.channel === 'string' ? ev.channel : '';
+    const ts = typeof ev.ts === 'string' ? ev.ts : '';
+    const thread_ts = (typeof ev.thread_ts === 'string' && ev.thread_ts) || ts;
+    // Fire when text is non-empty OR files are attached (file_share may have no caption).
+    if (!((text || rawFiles.length > 0) && channel && ts)) return false;
+    // Dedup: one onMessage (and one ack reply) per logical message. `app_mention`
+    // and `message.*` both arrive for a single @-mention and share channel:ts; this
+    // also absorbs Slack's retry of an un-acked event. Gated AFTER the filter.
+    const dupKey = dedupKey(ev);
+    if (dupKey && this.seenEvents.seen(dupKey)) return false;
+    const msg = { text, channel, ts, thread_ts };
+    if (rawFiles.length > 0) msg._rawFiles = rawFiles;
+    try {
+      const r = this.onMessage(msg);
+      if (r && typeof r.catch === 'function') r.catch(() => { /* delivery is best-effort */ });
+    } catch { /* delivery is best-effort */ }
+    return true;
+  }
+}
+
 module.exports = {
+  SlackDispatcher,
+  stripLeadingMention,
   shouldTrigger,
   ActivatedThreads,
   SeenEvents,

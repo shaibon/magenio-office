@@ -27,6 +27,7 @@ const defineMain = {
 function copyMainSidecars() {
   const ASSETS: Array<[string, string]> = [
     ['src/main/slack-trigger.cjs', 'out/main/slack-trigger.cjs'],
+    ['src/main/slack-socket.cjs', 'out/main/slack-socket.cjs'],
     // Knowledge Graph core: required by knowledge.ts at runtime (pure-JS, no
     // native deps), so it must be emitted next to the main bundle like the
     // Slack sidecar above.

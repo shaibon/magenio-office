@@ -413,6 +413,8 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
   const [slackEnabled, setSlackEnabled] = useState(config.slackEnabled ?? false);
   const [slackSecret, setSlackSecret] = useState(config.slackSigningSecret ?? '');
   const [slackBotToken, setSlackBotToken] = useState(config.slackBotToken ?? '');
+  const [slackMode, setSlackMode] = useState<'events' | 'socket'>(config.slackMode === 'socket' ? 'socket' : 'events');
+  const [slackAppToken, setSlackAppToken] = useState(config.slackAppToken ?? '');
   const [slackChannel, setSlackChannel] = useState(config.slackChannelId ?? '');
   const [slackPort, setSlackPort] = useState(String(config.slackPort ?? 3847));
   // App/voice-initiated proactive posting (the "queued" ack). Default OFF —
@@ -712,6 +714,8 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
       setSlackEnabled(cc.slackEnabled ?? false);
       setSlackSecret(cc.slackSigningSecret ?? '');
       setSlackBotToken(cc.slackBotToken ?? '');
+      setSlackMode(cc.slackMode === 'socket' ? 'socket' : 'events');
+      setSlackAppToken(cc.slackAppToken ?? '');
       setSlackChannel(cc.slackChannelId ?? '');
       setSlackPort(String(cc.slackPort ?? 3847));
       setSlackProactivePosting(cc.slackProactivePosting ?? false);
@@ -758,6 +762,8 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
   const slackPatch = (enabled: boolean) => ({
     signingSecret: slackSecret,
     botToken: slackBotToken,
+    mode: slackMode,
+    appToken: slackAppToken,
     channelId: slackChannel,
     port: Number(slackPort) || 3847,
     enabled,
@@ -785,7 +791,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
         setRunning(true);
         // Keep the last URL if this start returned none (tunnel hiccup) - don't blank it.
         if (res.url) setTunnelUrl(res.url);
-        setSlackNote(res.url ? 'listening' : (res.error ?? 'started, but tunnel unavailable'));
+        setSlackNote(slackMode === 'socket' ? 'connected' : res.url ? 'listening' : (res.error ?? 'started, but tunnel unavailable'));
       } else {
         setSlackNote(res.error ?? 'failed to start');
       }
@@ -1852,8 +1858,34 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
 
                         {slackEnabled && (
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                            {/* Signing secret + bot token side-by-side in the wider layout */}
+                            {/* Transport: Events API (tunnel) or Socket Mode (outbound WebSocket, no tunnel).
+                                A switch needs a fresh Start, so it is disabled while running. */}
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                              <span style={slackLabelStyle}>{t('settings.connections.slackMode')}</span>
+                              <select
+                                value={slackMode}
+                                disabled={running}
+                                onChange={(e) => setSlackMode(e.target.value === 'socket' ? 'socket' : 'events')}
+                                style={slackInputStyle}
+                              >
+                                <option value="events">{t('settings.connections.modeEvents')}</option>
+                                <option value="socket">{t('settings.connections.modeSocket')}</option>
+                              </select>
+                            </label>
+                            {/* Signing secret (Events API) or app-level token (Socket Mode) + bot token */}
                             <div style={{ display: 'flex', gap: 16 }}>
+                              {slackMode === 'socket' ? (
+                                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1 }}>
+                                  <span style={slackLabelStyle}>{t('settings.connections.appToken')}</span>
+                                  <input
+                                    type="password"
+                                    value={slackAppToken}
+                                    onChange={(e) => setSlackAppToken(e.target.value)}
+                                    placeholder="xapp-..."
+                                    style={{ ...slackInputStyle, fontFamily: 'var(--cth-font-mono)' }}
+                                  />
+                                </label>
+                              ) : (
                               <label style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1 }}>
                                 <span style={slackLabelStyle}>{t('settings.connections.signingSecret')}</span>
                                 <input
@@ -1864,6 +1896,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                                   style={{ ...slackInputStyle, fontFamily: 'var(--cth-font-mono)' }}
                                 />
                               </label>
+                              )}
                               {/* Bot token: stays in main; never leaves the main process. */}
                               <label style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1 }}>
                                 <span style={slackLabelStyle}>{t('settings.connections.botToken')}</span>
@@ -1887,6 +1920,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                                   style={{ ...slackInputStyle, fontFamily: 'var(--cth-font-mono)' }}
                                 />
                               </label>
+                              {slackMode === 'events' && (
                               <label style={{ display: 'flex', flexDirection: 'column', gap: 4, width: 100 }}>
                                 <span style={slackLabelStyle}>{t('settings.connections.port')}</span>
                                 <input
@@ -1897,6 +1931,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                                   style={{ ...slackInputStyle, fontFamily: 'var(--cth-font-mono)' }}
                                 />
                               </label>
+                              )}
                             </div>
 
                             {/* App/voice-INITIATED proactive posting — OFF by
@@ -1918,7 +1953,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
 
                             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                               {/* Start disabled once connected; Stop only when running. */}
-                              <PixelButton variant="primary" size="sm" onClick={startSlack} disabled={slackBusy || !slackSecret.trim() || running}>
+                              <PixelButton variant="primary" size="sm" onClick={startSlack} disabled={slackBusy || !(slackMode === 'socket' ? slackAppToken : slackSecret).trim() || running}>
                                 {slackBusy ? '...' : running ? t('settings.connections.connectedBtn') : t('settings.connections.start')}
                               </PixelButton>
                               <PixelButton variant="secondary" size="sm" onClick={stopSlack} disabled={slackBusy || !running}>
@@ -1935,7 +1970,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                             {/* Keep the Request URL visible while connected even after a
                                 modal reopen; when stopped, show the last URL greyed
                                 since Slack reuses it until the next Start. */}
-                            {(running || tunnelUrl) && (
+                            {slackMode === 'events' && (running || tunnelUrl) && (
                               <div style={{ display: 'flex', flexDirection: 'column', gap: 4, opacity: running ? 1 : 0.55 }}>
                                 <span style={slackLabelStyle}>
                                   {running
