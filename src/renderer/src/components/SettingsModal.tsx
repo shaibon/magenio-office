@@ -23,6 +23,7 @@ import { OfficeThemePicker } from './OfficeThemePicker';
 import { McpDefaultsSettings } from './McpDefaultsSettings';
 import { IntegrationsRegistry } from './IntegrationsRegistry';
 import { JiraProjectsRegistry } from './JiraProjectsRegistry';
+import { VaultWriters } from './VaultWriters';
 import { AiEnginesSettings } from './AiEnginesSettings';
 import { REALTIME_MODEL } from '@shared/realtimePricing';
 import { RealtimeDevicePicker } from '@/realtime/DevicePicker';
@@ -1697,6 +1698,15 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                                       {t('settings.memory.vaultRemoveMapping')}
                                     </PixelButton>
                                   </div>
+                                  <VaultWriters
+                                    repoOrigin={mapping.repoOrigin}
+                                    value={mapping.writerAgentIds ?? []}
+                                    onChange={(ids) => {
+                                      const rows = vsProjects.slice();
+                                      rows[idx] = { ...rows[idx], writerAgentIds: ids };
+                                      updateVsProjects(rows);
+                                    }}
+                                  />
                                   {mapping.slug && (
                                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                                       <span style={{ fontSize: 12, color: 'var(--cth-ink-500)' }}>

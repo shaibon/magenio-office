@@ -1254,6 +1254,19 @@
     "uninstallFailed": "uninstall failed",
     "catalogUnreachable": "could not reach the catalog"
   },
+  "vaultWriters": {
+    "title": "Vault writers",
+    "hint": "Only these agents can write to this project's vault folder — normally the project's Angela. Everyone else stays read-only.",
+    "add": "Add a writer…",
+    "none": "No other live agent in this project",
+    "pickProjectFirst": "Pick the project first",
+    "remove": "Remove {{name}}",
+    "warn": {
+      "unknown": "unknown agent",
+      "archived": "archived",
+      "otherProject": "other project"
+    }
+  },
   "workersTab": {
     "stopping": "stopping",
     "working": "working",

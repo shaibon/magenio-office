@@ -1254,6 +1254,19 @@
     "uninstallFailed": "卸载失败",
     "catalogUnreachable": "无法访问目录"
   },
+  "vaultWriters": {
+    "title": "Vault 写入者",
+    "hint": "只有这些智能体可以写入该项目的 vault 文件夹——通常是该项目的 Angela。其他智能体保持只读。",
+    "add": "添加写入者…",
+    "none": "该项目没有其他在线智能体",
+    "pickProjectFirst": "请先选择项目",
+    "remove": "移除 {{name}}",
+    "warn": {
+      "unknown": "未知智能体",
+      "archived": "已归档",
+      "otherProject": "其他项目"
+    }
+  },
   "workersTab": {
     "stopping": "停止中",
     "working": "工作中",
