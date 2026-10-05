@@ -23,6 +23,7 @@ import { OfficeThemePicker } from './OfficeThemePicker';
 import { McpDefaultsSettings } from './McpDefaultsSettings';
 import { IntegrationsRegistry } from './IntegrationsRegistry';
 import { JiraProjectsRegistry } from './JiraProjectsRegistry';
+import { MailSettings } from './mail/MailSettings';
 import { AiEnginesSettings } from './AiEnginesSettings';
 import { REALTIME_MODEL } from '@shared/realtimePricing';
 import { RealtimeDevicePicker } from '@/realtime/DevicePicker';
@@ -199,8 +200,8 @@ const sectionHeadFlush = { ...sectionHead, marginBottom: 0 } as const;
 /** The 2px rule between Settings sections. */
 const sectionRule = { height: 2, background: 'var(--cth-ink-300)' } as const;
 
-export type Section = 'General' | 'Prerequisites' | 'Agents & Models' | 'Autonomy & Budgets' | 'Connections' | 'Voice' | 'Memory & Knowledge';
-const NAV_SECTIONS: Section[] = ['General', 'Prerequisites', 'Agents & Models', 'Autonomy & Budgets', 'Connections', 'Voice', 'Memory & Knowledge'];
+export type Section = 'General' | 'Prerequisites' | 'Agents & Models' | 'Autonomy & Budgets' | 'Connections' | 'Voice' | 'Memory & Knowledge' | 'Email';
+const NAV_SECTIONS: Section[] = ['General', 'Prerequisites', 'Agents & Models', 'Autonomy & Budgets', 'Connections', 'Voice', 'Memory & Knowledge', 'Email'];
 /** i18n key for each nav section's label — the Section values themselves stay
  *  as stable identifiers (tab state, deep links). */
 const NAV_SECTION_KEYS: Record<Section, string> = {
@@ -210,7 +211,8 @@ const NAV_SECTION_KEYS: Record<Section, string> = {
   'Autonomy & Budgets': 'settings.nav.autonomyBudgets',
   'Connections': 'settings.nav.connections',
   'Voice': 'settings.nav.voice',
-  'Memory & Knowledge': 'settings.nav.memoryKnowledge'
+  'Memory & Knowledge': 'settings.nav.memoryKnowledge',
+  'Email': 'settings.nav.email'
 };
 
 export function SettingsModal({ config, onClose, initialSection }: SettingsModalProps) {
@@ -1780,6 +1782,8 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                   )}
 
                   {/* CONNECTIONS — everything external (MCP + Slack + webhook + REST) */}
+                  {activeSection === 'Email' && <MailSettings />}
+
                   {activeSection === 'Connections' && (
                     <>
                       <McpDefaultsSettings config={config} />

@@ -226,7 +226,8 @@
       "autonomyBudgets": "Autonomy & Budgets",
       "connections": "Connections",
       "voice": "Voice",
-      "memoryKnowledge": "Memory & Knowledge"
+      "memoryKnowledge": "Memory & Knowledge",
+      "email": "Email"
     },
     "changeHome": {
       "newHome": "New home folder",
@@ -1252,6 +1253,88 @@
     "removeFailed": "could not remove it",
     "uninstallFailed": "uninstall failed",
     "catalogUnreachable": "could not reach the catalog"
+  },
+  "mail": {
+    "title": "Email",
+    "readOnly": "read-only",
+    "pollNow": "Check now",
+    "polling": "Checking…",
+    "close": "Close",
+    "accounts": "Accounts",
+    "noAccounts": "No account connected. Add one in Settings → Email.",
+    "ok": "OK",
+    "error": "error",
+    "projects": "Projects",
+    "all": "All",
+    "unassigned": "To assign",
+    "unassignedShort": "?",
+    "empty": "No mail here.",
+    "noSubject": "(no subject)",
+    "selectOne": "Select a message.",
+    "to": "To",
+    "triage": "Triage",
+    "needsReply": "needs a reply",
+    "assignTo": "Assign to project",
+    "attachments": "Attachments",
+    "bodyPurged": "The body was removed after the retention period; only the metadata is kept.",
+    "category": {
+      "support": "support",
+      "bug": "bug",
+      "feature": "feature",
+      "billing": "billing",
+      "newsletter": "newsletter",
+      "spam": "spam",
+      "other": "other"
+    },
+    "urgency": {
+      "low": "low",
+      "normal": "normal",
+      "high": "urgent"
+    },
+    "reason": {
+      "pending": "Not triaged yet.",
+      "rule": "Routed by one of your sender rules.",
+      "jiraKey": "Routed by the Jira key in the subject.",
+      "manual": "Assigned by hand.",
+      "model": "Suggested by the model, {{pct}}% confidence.",
+      "modelNoConf": "Suggested by the model.",
+      "none": "No rule, Jira key or confident suggestion matched."
+    }
+  },
+  "mailSettings": {
+    "title": "Email account",
+    "desc": "Read-only IMAP. The app never sends, deletes or marks mail; the connection always uses TLS with a verified certificate.",
+    "addAccount": "Add account",
+    "edit": "Edit",
+    "remove": "Remove",
+    "address": "Email address",
+    "host": "IMAP host",
+    "port": "Port",
+    "username": "Username",
+    "mailbox": "Mailbox",
+    "password": "Password",
+    "passwordKeep": "Password (leave empty to keep)",
+    "passwordNote": "The password is stored encrypted and is never shown again.",
+    "passwordRequired": "A password is required for a new account.",
+    "couldNotSave": "Could not save.",
+    "save": "Save",
+    "cancel": "Cancel",
+    "pollMinutes": "Check every (min)",
+    "retentionDays": "Keep bodies (days)",
+    "retentionNote": "0 keeps them forever",
+    "rules": "Sender rules",
+    "rulesDesc": "Checked in order: address, domain, keyword. A match routes the mail to the project.",
+    "kind": {
+      "fromAddr": "sender address",
+      "fromDomain": "sender domain",
+      "keyword": "keyword"
+    },
+    "ruleKind": "Rule type",
+    "pattern": "Pattern",
+    "project": "Project key",
+    "addRule": "Add rule",
+    "enable": "Enable",
+    "disable": "Disable"
   },
   "workersTab": {
     "stopping": "stopping",

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useStore, selectedAgent } from '@/store/store';
 import { startMockLoop, stopMockLoop } from '@/store/mockEvents';
 import type { HarnessConfig } from '@/store/config';
@@ -21,6 +22,7 @@ import { CompletionToast } from '@/realtime/CompletionToast';
 import { UpdateToast } from '@/components/UpdateToast';
 import { UpdateBadge } from '@/components/UpdateBadge';
 import { useAppTheme, toggleAppTheme } from '@/design/theme';
+import { MailArea } from '@/components/mail/MailArea';
 import { SettingsModal, type Section as SettingsSection } from '@/components/SettingsModal';
 import { PixelPanel } from '@/components/PixelPanel';
 import { PixelButton } from '@/components/PixelButton';
@@ -51,6 +53,7 @@ export function App() {
   const setAddAgentOpen = useStore(s => s.setAddAgentOpen);
   const clearPendingHires = useStore(s => s.clearPendingHires);
   const godStatus = useStore(s => s.godStatus);
+  const { t } = useTranslation();
   const fullscreenAgentId = useStore(s => s.fullscreenAgentId);
   const appThemeNow = useAppTheme();
   const sidebarWidth = useStore(s => s.sidebarWidth);
@@ -73,6 +76,7 @@ export function App() {
     return false;
   });
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [mailOpen, setMailOpen] = useState(false);
   /** Which tab Settings opens on. Set by a `cth:open-settings` deep link, reset
    *  to undefined (→ General) whenever the modal is opened the normal way. */
   const [settingsSection, setSettingsSection] = useState<SettingsSection | undefined>(undefined);
@@ -347,6 +351,22 @@ export function App() {
         {/* v0.3.4: the IDE button moved to agent level — every agent's header
             (sidebar detail, god Command Center, fullscreen) carries it. */}
         <button
+          className="cth-titlebar-nodrag cth-tip"
+          onClick={() => setMailOpen(true)}
+          data-tip={t('mail.title')}
+          aria-label={t('mail.title')}
+          style={{
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            width: 28, height: 28, padding: 0,
+            background: 'var(--cth-paper-100)',
+            boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)',
+            border: 'none', borderRadius: 2, cursor: 'pointer',
+            color: 'var(--cth-ink-900)'
+          }}
+        >
+          <MailGlyph />
+        </button>
+        <button
           className="cth-titlebar-nodrag cth-settings-btn cth-tip"
           onClick={() => { setSettingsSection(undefined); setSettingsOpen(true); }}
           data-tip="Settings"
@@ -511,6 +531,7 @@ export function App() {
 
       {fullscreenAgentId && <FullscreenTerminal config={config} />}
       {ideOpen && <IdePanel />}
+      {mailOpen && <MailArea onClose={() => setMailOpen(false)} />}
       <TaskDetailOverlay />
     </div>
   );
@@ -531,6 +552,16 @@ function Glyph({ children }: { children: React.ReactNode }) {
       strokeLinecap="round" strokeLinejoin="round"
       aria-hidden="true" focusable="false"
     >{children}</svg>
+  );
+}
+
+/** An envelope — opens the Email area. */
+function MailGlyph() {
+  return (
+    <Glyph>
+      <rect x="2" y="3.5" width="12" height="9" rx="1" />
+      <path d="M2.5 4.5 8 9l5.5-4.5" />
+    </Glyph>
   );
 }
 
