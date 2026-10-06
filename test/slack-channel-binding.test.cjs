@@ -94,11 +94,19 @@ test('migration: legacy file folded into bindings once, file untouched, persiste
 test('migration: not re-run after the user removes a channel on purpose', () => {
   profile('latched', { jiraProjects: [b('BURD')], slackChannelsImported: true }, LEGACY);
   assert.equal(readConfig().jiraProjects[0].slackChannels, undefined);
-  assert.equal(JP.slackProjectFor('C03G9FGU2RE'), null); // BURD has a binding: removal is authoritative, legacy does not resurrect it
-  assert.equal(JP.slackProjectFor('CBCT8Q00Z'), 'RISTO');  // no RISTO binding: legacy fallback still answers
+  assert.equal(JP.slackProjectFor('C03G9FGU2RE'), null); // latch set: bindings only, removal is authoritative
+  assert.equal(JP.slackProjectFor('CBCT8Q00Z'), null);   // ...and the legacy file is ignored entirely
 });
 
-test('migration: waits (no latch) while there are no bindings', () => {
+test('migration: waits (no latch) while there are no bindings; legacy fallback answers until then', () => {
   profile('nobind', { jiraProjects: [] }, LEGACY);
   assert.equal(readConfig().slackChannelsImported, undefined);
+  assert.equal(JP.slackProjectFor('CBCT8Q00Z'), 'RISTO');
+});
+
+test('post-latch: disabled binding and removed channel are unmapped even though the legacy file lists them', () => {
+  profile('disabled', { jiraProjects: [b('BURD', { enabled: false, slackChannels: ['C03G9FGU2RE'] })], slackChannelsImported: true }, LEGACY);
+  assert.equal(JP.slackProjectFor('C03G9FGU2RE'), null);
+  profile('removed', { jiraProjects: [b('BURD', { slackChannels: [] })], slackChannelsImported: true }, LEGACY);
+  assert.equal(JP.slackProjectFor('C03G9FGU2RE'), null);
 });

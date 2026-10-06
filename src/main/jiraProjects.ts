@@ -167,13 +167,14 @@ export function removeBinding(key: string): JiraProjectBinding[] {
   return next;
 }
 
-/** The project a Slack channel belongs to (binding first, legacy
- *  <harnessHome>/hive/slack-channels.json as fallback); null = unmapped. */
+/** The project a Slack channel belongs to (binding first; legacy
+ *  <harnessHome>/hive/slack-channels.json only until the migration latch is set); null = unmapped. */
 export function slackProjectFor(channel: string): string | null {
   const cfg = readConfig();
   let legacy: Record<string, string> = {};
   try {
-    if (cfg.harnessHome) legacy = parseSlackChannelsJson(readFileSync(join(expandTilde(cfg.harnessHome), 'hive', 'slack-channels.json'), 'utf8'));
+    // Once the one-shot import has run, the bindings are the only source of truth.
+    if (cfg.harnessHome && !cfg.slackChannelsImported) legacy = parseSlackChannelsJson(readFileSync(join(expandTilde(cfg.harnessHome), 'hive', 'slack-channels.json'), 'utf8'));
   } catch { /* no legacy file */ }
   return resolveSlackProject(cfg.jiraProjects, channel, legacy);
 }
