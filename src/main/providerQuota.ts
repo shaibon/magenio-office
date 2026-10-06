@@ -12,7 +12,7 @@ import { existsSync, readFileSync, readdirSync, statSync, openSync, readSync, cl
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {
-  normalizeProviderQuota, parseClaudeUsage, parseCodexRateLimits, parseCodexRollout, parseDeepseekBalance, spentToday,
+  normalizeProviderQuota, parseClaudeUsage, parseCodexRateLimits, parseCodexRollout, parseDeepcodeSettings, parseDeepseekBalance, spentToday,
   type ProviderQuotaConfig, type QuotaChip, type QuotaProvider
 } from '../shared/providerQuota';
 
@@ -184,14 +184,8 @@ function deepseekKey(): string | null {
   return k || null;
 }
 
-/** The `deepcode` CLI's key: ~/.deepcode/settings.json env.API_KEY (+ env.BASE_URL, https only). */
-function deepcodeSettings(): { key: string; base: string | null } | null {
-  try {
-    const e = (JSON.parse(readFileSync(join(homedir(), '.deepcode', 'settings.json'), 'utf8')) as { env?: { API_KEY?: unknown; BASE_URL?: unknown } }).env;
-    if (typeof e?.API_KEY !== 'string' || !e.API_KEY.trim()) return null;
-    const base = typeof e.BASE_URL === 'string' && /^https:\/\/[^\s/]+$/.test(e.BASE_URL.replace(/\/+$/, '')) ? e.BASE_URL.replace(/\/+$/, '') : null;
-    return { key: e.API_KEY.trim(), base };
-  } catch { return null; }
+function deepcodeSettings(): ReturnType<typeof parseDeepcodeSettings> {
+  try { return parseDeepcodeSettings(readFileSync(join(homedir(), '.deepcode', 'settings.json'), 'utf8')); } catch { return null; }
 }
 
 export function realDeps(
@@ -210,7 +204,7 @@ export function realDeps(
       const env = deepseekKey() ?? loginShellEnv('DEEPSEEK_API_KEY');
       const dc = env ? null : deepcodeSettings();
       const key = env ?? dc?.key;
-      if (!key) throw new Error('no-deepseek-key: configure deepcode (~/.deepcode/settings.json) or set DEEPSEEK_API_KEY');
+      if (!key) throw new Error('no-deepseek-key: configure deepcode (~/.deepcode/settings.json)');
       return getJson(`${dc?.base ?? 'https://api.deepseek.com'}/user/balance`, { authorization: `Bearer ${key}`, accept: 'application/json' });
     },
     loadDay: () => { try { return JSON.parse(readFileSync(dayFile, 'utf8')); } catch { return null; } },

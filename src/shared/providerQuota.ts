@@ -209,6 +209,17 @@ export function parseCodexRateLimits(result: unknown, now = Date.now()): QuotaWi
   return out.length ? out : null;
 }
 
+/** `deepcode` CLI settings text (~/.deepcode/settings.json) → key + https base URL, or null
+ *  for missing/broken JSON or a missing API_KEY. */
+export function parseDeepcodeSettings(text: string | null): { key: string; base: string | null } | null {
+  try {
+    const e = (JSON.parse(text ?? '') as { env?: { API_KEY?: unknown; BASE_URL?: unknown } } | null)?.env;
+    if (typeof e?.API_KEY !== 'string' || !e.API_KEY.trim()) return null;
+    const url = typeof e.BASE_URL === 'string' ? e.BASE_URL.trim().replace(/\/+$/, '') : '';
+    return { key: e.API_KEY.trim(), base: /^https:\/\/[^\s/]+$/.test(url) ? url : null };
+  } catch { return null; }
+}
+
 /** A reading older than this is shown with its date instead of as current. */
 export const QUOTA_STALE_MS = 6 * 3600_000;
 

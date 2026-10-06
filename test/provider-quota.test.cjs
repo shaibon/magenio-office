@@ -127,3 +127,13 @@ test('codex: app-server down falls back to the rollout and keeps ITS timestamp (
   assert.equal(c.fetchedAt, Date.parse('2026-10-05T11:00:00Z'));
   assert.ok(NOW - c.fetchedAt > Q.QUOTA_STALE_MS);
 });
+
+test('deepcode settings: key + https base; absent file, broken JSON, missing key, http base', () => {
+  const ok = Q.parseDeepcodeSettings('{"env":{"API_KEY":" k ","BASE_URL":"https://api.deepseek.com/"}}');
+  assert.deepEqual(ok, { key: 'k', base: 'https://api.deepseek.com' });
+  assert.equal(Q.parseDeepcodeSettings('{"env":{"API_KEY":"k","BASE_URL":"http://evil"}}').base, null);
+  assert.equal(Q.parseDeepcodeSettings(null), null);
+  assert.equal(Q.parseDeepcodeSettings('{nope'), null);
+  assert.equal(Q.parseDeepcodeSettings('{"env":{"BASE_URL":"https://x.y"}}'), null);
+  assert.equal(Q.parseDeepcodeSettings('{"env":{"API_KEY":"  "}}'), null);
+});
