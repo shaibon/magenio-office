@@ -41,6 +41,15 @@ export function projectAgrees(a: WriterAgent, projectKeys: string[]): boolean {
   return projectKeys.some((k) => k.trim().toLowerCase() === p);
 }
 
+/** Names a mapping's project goes by: each Jira binding whose repo has the mapping's origin
+ *  contributes its key AND its repo folder name. Agents hired later carry the folder name
+ *  as their roster project (e.g. "magenio-M2-sardiniaecommerce"), older ones the key ("VAI"). */
+export function projectNamesFor(bindings: { key: string; repo: string }[], origins: Record<string, string | null | undefined>, repoOrigin: string): string[] {
+  return bindings
+    .filter((b) => origins[b.repo] === repoOrigin)
+    .flatMap((b) => [b.key, b.repo.split('/').filter(Boolean).pop() ?? '']);
+}
+
 /** Live agents of this project that are not selected yet (the multi-select options):
  *  unique by id, documentation agents first, then by name and id. */
 export function eligibleWriters(repoOrigin: string, selected: string[], agents: WriterAgent[], projectKeys: string[] = []): WriterAgent[] {

@@ -229,3 +229,32 @@ test('normal writes leave no temp files behind', () => {
   assert.deepEqual(fs.readdirSync(path.join(f.root, '01-Projects/Acme')).filter((n) => n.startsWith('.tmp-')), []);
   end(a);
 });
+
+test('t-151: a writer whose project folder does not exist yet creates it under lock + snapshot', () => {
+  const f = fixture();
+  const scopes = JSON.stringify(['01-Projects/NewCo', '99-System', '03-Resources']);
+  const ctx = V.loadScopes(f.root, scopes, { agent: 'angela-new', lockPath: f.lockPath });
+  assert.equal(ctx.write.projectScope, '01-Projects/NewCo');           // not the shared folder that happens to be first
+  assert.ok(!fs.existsSync(path.join(f.root, '01-Projects/NewCo')));   // loading creates nothing
+  assert.throws(() => call(ctx, 'vault_write', { path: '01-Projects/NewCo/N.md', content: 'x' }), /no active write session/);
+  assert.ok(!fs.existsSync(path.join(f.root, '01-Projects/NewCo')));
+  begin(ctx);
+  assert.ok(f.log()[0].startsWith('SB pre-update'));                    // snapshot came first
+  call(ctx, 'vault_write', { path: '01-Projects/NewCo/N.md', content: 'hello' });
+  end(ctx);
+  assert.equal(fs.readFileSync(path.join(f.root, '01-Projects/NewCo/N.md'), 'utf8'), 'hello');
+  assert.throws(() => call(ctx, 'vault_write', { path: '99-System/x.md', content: 'x' }), /no active write session|outside/);
+  // a read-only agent never creates anything
+  const ro = V.loadScopes(f.root, JSON.stringify(['01-Projects/Nope', '99-System']));
+  assert.equal(ro.write, undefined);
+  assert.ok(!fs.existsSync(path.join(f.root, '01-Projects/Nope')));
+});
+
+test('t-151: the project folder path may not be a symlink out of the vault', () => {
+  const f = fixture();
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'out-'));
+  fs.symlinkSync(outside, path.join(f.root, '01-Projects/Evil'));
+  const ctx = V.loadScopes(f.root, JSON.stringify(['01-Projects/Evil/Sub', '99-System']), { agent: 'a', lockPath: f.lockPath });
+  assert.throws(() => begin(ctx), /not a plain folder|outside/);
+  assert.deepEqual(fs.readdirSync(outside), []);
+});

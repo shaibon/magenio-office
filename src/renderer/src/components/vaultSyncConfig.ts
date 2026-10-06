@@ -54,3 +54,10 @@ export function dedupeSlug(slug: string, existing: string[]): string {
   }
   return `${base}-${Date.now().toString(36)}`;
 }
+
+/** Where a project's notes go by default: `01-Projects/<Name>`. The folder need not exist yet:
+ *  the project's writer agent creates it on its first update. Null when the name leaves nothing usable. */
+export function defaultVaultFolder(name: string): string | null {
+  const n = name.replace(/[\\/\0]/g, ' ').replace(/^[.\s]+/, '').trim();
+  return n ? `01-Projects/${n}` : null;
+}
