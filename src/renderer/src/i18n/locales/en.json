@@ -317,6 +317,7 @@
       "vaultPathPlaceholder": "/path/to/Obsidian/SecondBrain",
       "vaultMappingsLabel": "Project mappings",
       "vaultNoMappings": "No projects mapped yet.",
+      "vaultUseDefaultFolder": "use {{folder}}",
       "vaultPickProject": "pick a project…",
       "vaultUnlistedProject": "not in your registered projects",
       "vaultFolderPlaceholder": "no folder chosen",

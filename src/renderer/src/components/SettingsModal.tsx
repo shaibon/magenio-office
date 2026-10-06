@@ -1,7 +1,7 @@
 import { useState, useEffect, type CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
 import { agentModels, type HarnessConfig, type KnowledgeGraphConfig, type VaultProjectMapping } from '@/store/config';
-import { mergeKnowledgeGraphPatch, slugifyProjectName, dedupeSlug } from './vaultSyncConfig';
+import { mergeKnowledgeGraphPatch, slugifyProjectName, dedupeSlug, defaultVaultFolder } from './vaultSyncConfig';
 import type { KnowledgeDoc } from '../../../preload';
 import { useStore } from '@/store/store';
 import {
@@ -551,6 +551,10 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
   };
 
   const addVsMapping = () => updateVsProjects([...vsProjects, { slug: '', repoOrigin: '', vaultFolder: '' }]);
+  const proposedFolder = (m: VaultProjectMapping): string | null => {
+    const path = m.repoOrigin ? pathForOrigin(m.repoOrigin) : undefined;
+    return path ? defaultVaultFolder(basenamePath(path)) : null;
+  };
   const removeVsMapping = (idx: number) => updateVsProjects(vsProjects.filter((_, i) => i !== idx));
 
   /** Resolve the picked project's git origin automatically — the operator
@@ -565,7 +569,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
     const existingSlugs = vsProjects.filter((_, i) => i !== idx).map((p) => p.slug).filter(Boolean);
     const slug = vsProjects[idx].slug || dedupeSlug(slugifyProjectName(basenamePath(repoPath)), existingSlugs);
     const rows = vsProjects.slice();
-    rows[idx] = { ...rows[idx], repoOrigin: origin, slug };
+    rows[idx] = { ...rows[idx], repoOrigin: origin, slug, vaultFolder: rows[idx].vaultFolder || defaultVaultFolder(basenamePath(repoPath)) || '' };
     updateVsProjects(rows);
   };
 
@@ -1688,6 +1692,14 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                                     >
                                       {mapping.vaultFolder || t('settings.memory.vaultFolderPlaceholder')}
                                     </span>
+                                    {!mapping.vaultFolder && proposedFolder(mapping) && (
+                                      <PixelButton
+                                        variant="secondary" size="sm"
+                                        onClick={() => { const rows = vsProjects.slice(); rows[idx] = { ...rows[idx], vaultFolder: proposedFolder(mapping)! }; updateVsProjects(rows); }}
+                                      >
+                                        {t('settings.memory.vaultUseDefaultFolder', { folder: proposedFolder(mapping) })}
+                                      </PixelButton>
+                                    )}
                                     <PixelButton
                                       variant="secondary" size="sm"
                                       onClick={() => void pickVsFolder(idx)}

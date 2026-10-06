@@ -54,3 +54,14 @@ test('real registry shape: two Angelas per project are distinct, labelled, uniqu
   assert.equal(projectAgrees(odd[0], []), true);
   assert.equal(projectAgrees({ ...odd[0], project: '' }, ['BRAVI']), true);
 });
+
+test('t-151: agents whose roster project is the repo folder name (not the Jira key) are offered', () => {
+  const { projectNamesFor } = loadTs('src/shared/vaultWriters.ts');
+  const V = 'git@bitbucket.org:magenio/sardiniaecommerce-m2.git';
+  const bindings = [{ key: 'VAI', repo: '/Users/m/www/magenio-M2-sardiniaecommerce' }, { key: 'GROW', repo: '/Users/m/www/magenio-M2-growshopitalia' }];
+  const names = projectNamesFor(bindings, { [bindings[0].repo]: V, [bindings[1].repo]: 'other' }, V);
+  assert.deepEqual(names, ['VAI', 'magenio-M2-sardiniaecommerce']);
+  const mk = (id, project) => ({ id, name: 'Angela', origin: V, archived: false, project, role: 'Documentation curator' });
+  const ids = eligibleWriters(V, [], [mk('a-key', 'VAI'), mk('a-dir', 'magenio-M2-sardiniaecommerce'), mk('a-other', 'GROW')], names).map((a) => a.id);
+  assert.deepEqual(ids, ['a-dir', 'a-key']);
+});

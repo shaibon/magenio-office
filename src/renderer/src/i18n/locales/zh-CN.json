@@ -317,6 +317,7 @@
       "vaultPathPlaceholder": "/path/to/Obsidian/SecondBrain",
       "vaultMappingsLabel": "项目映射",
       "vaultNoMappings": "尚未映射任何项目。",
+      "vaultUseDefaultFolder": "使用 {{folder}}",
       "vaultPickProject": "选择一个项目…",
       "vaultUnlistedProject": "不在已注册的项目中",
       "vaultFolderPlaceholder": "未选择文件夹",

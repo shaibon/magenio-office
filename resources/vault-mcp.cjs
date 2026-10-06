@@ -65,11 +65,14 @@ function loadScopes(rootRaw, scopesRaw, writer) {
     if (abs && within(root, abs) && fs.statSync(abs).isDirectory()) scopes.push({ rel, abs });
   }
   const ctx = { root, scopes };
+  // The project folder is the FIRST configured scope. A missing one is not an error for
+  // its writer: sessionBegin creates it (under lock + snapshot) before the first write.
+  const projectRel = cleanRelative(Array.isArray(list) ? list[0] : null);
   // Write capability is explicit and narrow: a named agent, a lock file OUTSIDE the
   // vault (so it is never committed by the snapshot), and the project folder (the
   // first scope). Anything missing means read-only.
-  if (writer && writer.agent && writer.lockPath && scopes.length) {
-    ctx.write = { agent: String(writer.agent), lockPath: String(writer.lockPath), projectScope: scopes[0].rel, session: null };
+  if (writer && writer.agent && writer.lockPath && projectRel && (!real(path.join(root, projectRel)) || (scopes[0] && scopes[0].rel === projectRel))) {
+    ctx.write = { agent: String(writer.agent), lockPath: String(writer.lockPath), projectScope: projectRel, session: null };
   }
   return ctx;
 }
@@ -258,6 +261,25 @@ function requireSession(ctx) {
   return w;
 }
 
+/** Create the writer's own (missing) project folder, one plain directory at a time.
+ *  Called with the lock held and the pre-update snapshot taken. Every existing segment
+ *  must be a real directory inside the vault root; nothing outside the project path is made. */
+function ensureProjectFolder(ctx) {
+  const w = ctx.write;
+  if (ctx.scopes.length && ctx.scopes[0].rel === w.projectScope) return;
+  let cur = ctx.root;
+  for (const seg of w.projectScope.split('/')) {
+    cur = path.join(cur, seg);
+    let st = null;
+    try { st = fs.lstatSync(cur); } catch { /* missing: create below */ }
+    if (!st) fs.mkdirSync(cur);
+    else if (st.isSymbolicLink() || !st.isDirectory()) throw new VaultError('the project folder path is not a plain folder');
+    const r = real(cur);
+    if (!r || !within(ctx.root, r) || hiddenReal(ctx, r)) throw new VaultError('the project folder path is outside the vault');
+  }
+  ctx.scopes.unshift({ rel: w.projectScope, abs: real(cur) });
+}
+
 function sessionBegin(ctx, reason) {
   const w = requireWriter(ctx);
   if (w.session && ownsLock(w)) return 'write session already active';
@@ -265,6 +287,7 @@ function sessionBegin(ctx, reason) {
   try {
     // Protocol step 0: no modification without the safety net.
     runSnapshot(ctx, `SB pre-update (${w.agent})${reason ? `: ${String(reason).slice(0, 80)}` : ''}`);
+    ensureProjectFolder(ctx);
   } catch (e) {
     releaseLock(w);
     throw e;
@@ -416,7 +439,7 @@ const WRITE_TOOLS = [
 
 function callTool(ctx, name, args) {
   const a = args && typeof args === 'object' ? args : {};
-  if (!ctx.scopes.length) throw new VaultError('no vault folders are available for this agent');
+  if (!ctx.scopes.length && !ctx.write) throw new VaultError('no vault folders are available for this agent');
   if (name === 'vault_list') return vaultList(ctx, a.path);
   if (name === 'vault_read') return vaultRead(ctx, a.path);
   if (name === 'vault_search') return vaultSearch(ctx, a.query, a.limit);

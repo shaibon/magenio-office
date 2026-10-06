@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useStore } from '@/store/store';
 import { createOriginResolver } from '@shared/originResolver';
 import { jiraProjectsClient } from '@/jiraProjects/jiraProjectsClient';
-import { addWriter, eligibleWriters, removeWriter, writerChips, writerLabel, type WriterAgent } from '@shared/vaultWriters';
+import { addWriter, projectNamesFor, eligibleWriters, removeWriter, writerChips, writerLabel, type WriterAgent } from '@shared/vaultWriters';
 
 /** One resolver for the whole Settings session, shared by every project's panel. */
 const originResolver = createOriginResolver((cwd) => window.cth.gitRemoteUrl(cwd));
@@ -54,7 +54,7 @@ export function VaultWriters({ repoOrigin, value, onChange }: {
     id: a.id, name: a.name, archived: arch, origin: arch ? null : origins[a.cwd], project: a.project, role: a.description
   }));
   // Jira keys whose repo has this mapping's origin: the project names this mapping stands for.
-  const projectKeys = bindings.filter((b) => origins[b.repo] === repoOrigin).map((b) => b.key);
+  const projectKeys = projectNamesFor(bindings, origins, repoOrigin);
   const options = eligibleWriters(repoOrigin, value, agents, projectKeys);
   const chips = writerChips(repoOrigin, value, agents, projectKeys);
   const warn = (s: string) => s !== 'ok';

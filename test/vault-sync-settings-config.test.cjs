@@ -69,3 +69,11 @@ test('dedupeSlug: appends -2, -3, ... until free', () => {
   assert.equal(dedupeSlug('a', ['a']), 'a-2');
   assert.equal(dedupeSlug('a', ['a', 'a-2']), 'a-3');
 });
+
+test('defaultVaultFolder proposes 01-Projects/<Name>, no matter whether it exists yet', () => {
+  const { defaultVaultFolder } = loadTs('src/renderer/src/components/vaultSyncConfig.ts');
+  assert.equal(defaultVaultFolder('growshopitalia'), '01-Projects/growshopitalia');
+  assert.equal(defaultVaultFolder('Bindi Giochi'), '01-Projects/Bindi Giochi');
+  assert.equal(defaultVaultFolder('../x/y'), '01-Projects/x y');
+  assert.equal(defaultVaultFolder('  '), null);
+});
