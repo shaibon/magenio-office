@@ -172,7 +172,7 @@ export function parseSlackChannelsJson(raw: string): Record<string, string> {
 }
 
 /** The project a Slack channel belongs to: an enabled binding's `slackChannels`
- *  first, then the legacy map as a fallback; null = unmapped (behaves as before). */
+ *  first, then the legacy map, only for projects with no binding at all; null = unmapped (behaves as before). */
 export function resolveSlackProject(
   bindings: readonly JiraProjectBinding[] | undefined,
   channel: string,
@@ -180,8 +180,14 @@ export function resolveSlackProject(
 ): string | null {
   const id = channel.trim().toUpperCase();
   if (!id) return null;
-  const hit = (bindings ?? []).find((b) => b.enabled && normalizeSlackChannels(b.slackChannels).includes(id));
-  return hit?.key ?? legacy[id] ?? null;
+  const bs = bindings ?? [];
+  // A binding is authoritative: a disabled one, or one whose channel list no longer holds
+  // the id, must NOT fall through to the legacy map and resurrect the old routing.
+  if (bs.some((b) => normalizeSlackChannels(b.slackChannels).includes(id))) {
+    return bs.find((b) => b.enabled && normalizeSlackChannels(b.slackChannels).includes(id))?.key ?? null;
+  }
+  const key = legacy[id];
+  return key && !bs.some((b) => b.key.toUpperCase() === key) ? key : null;
 }
 
 /** One-shot import: adds each legacy channel to the binding whose key matches its

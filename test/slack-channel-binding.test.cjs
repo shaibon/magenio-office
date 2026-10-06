@@ -32,6 +32,13 @@ test('resolver: binding wins, legacy is fallback, unmapped/disabled/blank = null
   assert.equal(J.resolveSlackProject(bs, ''), null);
 });
 
+test('resolver: disabled binding or removed channel is authoritative over the legacy map (Toby)', () => {
+  assert.equal(J.resolveSlackProject([b('BURD', { enabled: false, slackChannels: ['C03G9FGU2RE'] })], 'C03G9FGU2RE', LEGACY), null);
+  assert.equal(J.resolveSlackProject([b('BURD', { slackChannels: [] })], 'C03G9FGU2RE', LEGACY), null);
+  assert.equal(J.resolveSlackProject([b('BURD')], 'C03G9FGU2RE', LEGACY), null);
+  assert.equal(J.resolveSlackProject([b('BRAVI')], 'C03G9FGU2RE', LEGACY), 'BURD'); // project unbound: fallback
+});
+
 test('parseSlackChannelsJson: project map, ALL and garbage ignored', () => {
   assert.deepEqual(J.parseSlackChannelsJson(JSON.stringify({ channels: { CAAAAAAAA: { project: 'vai' }, CBBBBBBBB: { project: 'ALL' }, CCCCCCCCC: {} } })), { CAAAAAAAA: 'VAI' });
   assert.deepEqual(J.parseSlackChannelsJson('not json'), {});
@@ -87,7 +94,8 @@ test('migration: legacy file folded into bindings once, file untouched, persiste
 test('migration: not re-run after the user removes a channel on purpose', () => {
   profile('latched', { jiraProjects: [b('BURD')], slackChannelsImported: true }, LEGACY);
   assert.equal(readConfig().jiraProjects[0].slackChannels, undefined);
-  assert.equal(JP.slackProjectFor('C03G9FGU2RE'), 'BURD'); // legacy file still answers as fallback
+  assert.equal(JP.slackProjectFor('C03G9FGU2RE'), null); // BURD has a binding: removal is authoritative, legacy does not resurrect it
+  assert.equal(JP.slackProjectFor('CBCT8Q00Z'), 'RISTO');  // no RISTO binding: legacy fallback still answers
 });
 
 test('migration: waits (no latch) while there are no bindings', () => {
