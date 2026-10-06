@@ -1285,6 +1285,29 @@
     "loadMore": "加载更早的邮件",
     "loadingMore": "加载中…",
     "loadedOnly": "计数仅包含已加载的最新 {{count}} 封邮件。",
+    "agent": {
+      "label": "邮件智能体",
+      "title": "邮件智能体（本地模型）",
+      "privacy": "邮件不会离开这台 Mac。模型在本地运行；hive 智能体只会收到简短摘要，不会收到邮件本身。",
+      "enable": "启用本地邮件智能体",
+      "endpoint": "端点（http://127.0.0.1:11434）",
+      "model": "模型（例如 gpt-oss:20b）",
+      "test": "测试连接",
+      "testing": "测试中…",
+      "rulesOnly": "仅规则——无摘要",
+      "suggested": "建议操作",
+      "state": {
+        "off": "已关闭",
+        "untested": "未测试",
+        "ready": "就绪",
+        "unreachable": "无法连接"
+      },
+      "issue": {
+        "notLoopback": "端点必须在本机运行：请使用 http://127.0.0.1:<port> 或 localhost。",
+        "modelInvalid": "模型名称无效（不能含空格）。",
+        "modelRequired": "启用邮件智能体前请先选择模型。"
+      }
+    },
     "readOnly": "只读",
     "pollNow": "立即检查",
     "polling": "检查中…",

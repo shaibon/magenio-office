@@ -4,7 +4,7 @@ import { PixelButton } from '../PixelButton';
 import { Icon } from '../Icon';
 import { jiraProjectsClient } from '@/jiraProjects/jiraProjectsClient';
 import {
-  ageLabel, countLabel, mailCounts, mergePage, nextCursor, pageMayHaveMore, selectMessages, triageReason,
+  agentBadge, ageLabel, countLabel, mailCounts, mergePage, nextCursor, pageMayHaveMore, selectMessages, triageReason,
   MAIL_PAGE_SIZE, type MailSelection
 } from '@shared/mailView';
 
@@ -44,12 +44,14 @@ export function MailArea({ onClose }: { onClose: () => void }) {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [projects, setProjects] = useState<string[]>([]);
   const [polling, setPolling] = useState(false);
+  const [agent, setAgent] = useState<Awaited<ReturnType<typeof window.cth.mailAgentGet>>['status'] | null>(null);
   // True while the server may hold mail older than what is loaded; counts then read "N+".
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const pages = useRef(1);
 
   const load = useCallback(() => {
+    window.cth.mailAgentGet().then((r) => setAgent(r.status)).catch(() => { /* main not ready */ });
     window.cth.mailAccounts().then(setAccounts).catch(() => { /* main not ready */ });
     // A refresh re-reads the newest page and merges it, so older pages already
     // loaded stay; only while nothing older is loaded does it decide `hasMore`.
@@ -123,6 +125,10 @@ export function MailArea({ onClose }: { onClose: () => void }) {
       }}>
         <span style={{ ...head, fontSize: 14 }}>{t('mail.title')}</span>
         <span style={small}>{t('mail.readOnly')}</span>
+        <span style={{ ...small, color: 'var(--cth-ink-900)' }} title={agent?.detail ?? ''}>
+          {t('mail.agent.label')}: <b>{t(agentBadge(agent).key)}</b>
+          {agentBadge(agent).rulesOnly && <> · {t('mail.agent.rulesOnly')}</>}
+        </span>
         <PixelButton onClick={pollNow} disabled={polling || accounts.length === 0}>
           {polling ? t('mail.polling') : t('mail.pollNow')}
         </PixelButton>
@@ -226,6 +232,9 @@ export function MailArea({ onClose }: { onClose: () => void }) {
                       </div>
                       <div style={small}>{t(reason.key, { pct: reason.pct })}</div>
                       {detail.triage.summary && <div style={{ ...small, color: 'var(--cth-ink-900)' }}>{detail.triage.summary}</div>}
+                      {detail.triage.suggestedAction && (
+                        <div style={small}>{t('mail.agent.suggested')}: {detail.triage.suggestedAction}</div>
+                      )}
                     </>
                   ) : <div style={small}>{t(reason.key)}</div>}
                   <label style={{ ...small, display: 'flex', gap: 6, alignItems: 'center' }}>

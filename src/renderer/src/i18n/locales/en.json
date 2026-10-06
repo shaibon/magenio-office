@@ -1285,6 +1285,29 @@
     "loadMore": "Load older mail",
     "loadingMore": "Loading…",
     "loadedOnly": "Counts cover the {{count}} newest messages loaded so far.",
+    "agent": {
+      "label": "Mail agent",
+      "title": "Mail agent (local model)",
+      "privacy": "Emails never leave this Mac. The model runs locally; hive agents receive only a short summary, never the mail itself.",
+      "enable": "Enable the local mail agent",
+      "endpoint": "Endpoint (http://127.0.0.1:11434)",
+      "model": "Model (e.g. gpt-oss:20b)",
+      "test": "Test connection",
+      "testing": "Testing…",
+      "rulesOnly": "rules only — no summaries",
+      "suggested": "Suggested action",
+      "state": {
+        "off": "off",
+        "untested": "not tested",
+        "ready": "ready",
+        "unreachable": "unreachable"
+      },
+      "issue": {
+        "notLoopback": "The endpoint must run on this Mac: use http://127.0.0.1:<port> or localhost.",
+        "modelInvalid": "The model name is not valid (no spaces).",
+        "modelRequired": "Choose a model before enabling the mail agent."
+      }
+    },
     "readOnly": "read-only",
     "pollNow": "Check now",
     "polling": "Checking…",
