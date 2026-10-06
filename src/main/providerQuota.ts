@@ -184,9 +184,19 @@ function deepseekKey(): string | null {
   return k || null;
 }
 
+/** The `deepcode` CLI's key: ~/.deepcode/settings.json env.API_KEY (+ env.BASE_URL, https only). */
+function deepcodeSettings(): { key: string; base: string | null } | null {
+  try {
+    const e = (JSON.parse(readFileSync(join(homedir(), '.deepcode', 'settings.json'), 'utf8')) as { env?: { API_KEY?: unknown; BASE_URL?: unknown } }).env;
+    if (typeof e?.API_KEY !== 'string' || !e.API_KEY.trim()) return null;
+    const base = typeof e.BASE_URL === 'string' && /^https:\/\/[^\s/]+$/.test(e.BASE_URL.replace(/\/+$/, '')) ? e.BASE_URL.replace(/\/+$/, '') : null;
+    return { key: e.API_KEY.trim(), base };
+  } catch { return null; }
+}
+
 export function realDeps(
   userDataDir: string, loginShellEnv: (name: string) => string | null,
-  codex: { bin: string; env: NodeJS.ProcessEnv }, storedDeepseekKey: () => string | null
+  codex: { bin: string; env: NodeJS.ProcessEnv }, 
 ): QuotaDeps {
   const dayFile = join(userDataDir, 'provider-quota-day.json');
   return {
@@ -197,9 +207,11 @@ export function realDeps(
     codexLimits: () => codexLimits(codex.bin, codex.env),
     codexRollouts,
     deepseekBalance: async () => {
-      const key = storedDeepseekKey() ?? deepseekKey() ?? loginShellEnv('DEEPSEEK_API_KEY');
-      if (!key) throw new Error('no-deepseek-key: set it in Settings → AI Engines');
-      return getJson('https://api.deepseek.com/user/balance', { authorization: `Bearer ${key}`, accept: 'application/json' });
+      const env = deepseekKey() ?? loginShellEnv('DEEPSEEK_API_KEY');
+      const dc = env ? null : deepcodeSettings();
+      const key = env ?? dc?.key;
+      if (!key) throw new Error('no-deepseek-key: configure deepcode (~/.deepcode/settings.json) or set DEEPSEEK_API_KEY');
+      return getJson(`${dc?.base ?? 'https://api.deepseek.com'}/user/balance`, { authorization: `Bearer ${key}`, accept: 'application/json' });
     },
     loadDay: () => { try { return JSON.parse(readFileSync(dayFile, 'utf8')); } catch { return null; } },
     saveDay: (v) => { try { writeFileSync(dayFile, JSON.stringify(v)); } catch { /* best effort */ } }
