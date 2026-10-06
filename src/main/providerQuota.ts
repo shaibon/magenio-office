@@ -190,7 +190,7 @@ function deepcodeSettings(): ReturnType<typeof parseDeepcodeSettings> {
 
 export function realDeps(
   userDataDir: string, loginShellEnv: (name: string) => string | null,
-  codex: { bin: string; env: NodeJS.ProcessEnv }, 
+  codex: { bin: string; env: NodeJS.ProcessEnv }, storedDeepseekKey: () => string | null
 ): QuotaDeps {
   const dayFile = join(userDataDir, 'provider-quota-day.json');
   return {
