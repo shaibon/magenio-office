@@ -278,6 +278,11 @@ test('deterministic scrubbing: links, dotted/spaced phones and accented names ne
   let r = out('See https://private.example.test/path?token=abc');
   assert.doesNotMatch(r.classification.summary, /private|example|token|https/);
   assert.match(r.classification.summary, /\[link\]/);
+  for (const raw of ['Go to private.example.test?token=abc123', 'Go to private.example.test#frag=abc123', 'Go to private.example.test:8080?token=abc123', 'Go to private.example.test/a?token=abc123']) {
+    r = out(raw);
+    assert.doesNotMatch(r.classification.summary, /abc123|token|frag|private/, raw);
+    assert.match(r.classification.summary, /Go to \[link\]/, raw);
+  }
   for (const [raw, leak] of [['Call +39.333.1234567', '1234567'], ['Call +39 333 1234567', '1234567'], ['Call (02) 1234-5678', '5678'], ['phone 333.123.4567 now', '4567']]) {
     r = out(raw);
     assert.doesNotMatch(r.classification.summary, new RegExp(leak), raw);

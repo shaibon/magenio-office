@@ -387,7 +387,7 @@ export function scrubIdentifiers(s: string): string {
     .replace(/\b(?:https?|ftp):\/\/[^\s<>"')\]]+/gi, '[link]')
     .replace(/\bwww\.[^\s<>"')\]]+/gi, '[link]')
     // bare hostnames, with or without a path ("private.example.test/path")
-    .replace(/(?<![\p{L}\p{N}@.])(?:[\p{L}\p{N}-]+\.)+[a-z]{2,}(?::\d+)?(?:\/[^\s<>"')\]]*)?(?![\p{L}\p{N}])/giu, '[link]')
+    .replace(/(?<![\p{L}\p{N}@.])(?:[\p{L}\p{N}-]+\.)+[a-z]{2,}(?::\d+)?(?:[/?#][^\s<>"')\]]*)?(?![\p{L}\p{N}])/giu, '[link]')
     // any run of digits with phone punctuation holding 7+ digits (+39.333.1234567, (02) 1234 5678)
     .replace(/\+?\d[\d\s().\-/]{4,}\d/g, (m) => (m.replace(/\D/g, '').length >= 7 ? '[number]' : m));
 }
