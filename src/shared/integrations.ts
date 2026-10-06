@@ -203,11 +203,19 @@ export function buildAuthHeaders(
  * leaves the record's configured baseUrl untouched (the path is appended to it).
  * Official endpoint: GET /rest/api/3/myself.
  *
- * Deliberately Jira-only by id: a non-Jira integration whose base happens to be
- * shaped like `/rest/api/<n>` must still probe its own root.
+ * Bitbucket Cloud's `https://api.bitbucket.org/2.0` base also 404s at its root, so
+ * the host `api.bitbucket.org` probes `user` (the authenticated account). Matched by
+ * host, not id: the record id is user-chosen.
+ *
+ * Deliberately Jira-only by id and Bitbucket-only by host: any other integration,
+ * even one whose base is shaped like `/rest/api/<n>`, must still probe its own root.
  */
 export function defaultProbePath(record: Pick<IntegrationRecord, 'id' | 'baseUrl'>): string {
-  return record.id === 'jira' ? 'myself' : '';
+  if (record.id === 'jira') return 'myself';
+  try {
+    if (new URL(record.baseUrl).hostname.toLowerCase() === 'api.bitbucket.org') return 'user';
+  } catch { /* unparsable baseUrl: root */ }
+  return '';
 }
 
 /**
