@@ -201,10 +201,10 @@ export function realDeps(
     codexLimits: () => codexLimits(codex.bin, codex.env),
     codexRollouts,
     deepseekBalance: async () => {
-      const env = deepseekKey() ?? loginShellEnv('DEEPSEEK_API_KEY');
+      const env = storedDeepseekKey() ?? deepseekKey() ?? loginShellEnv('DEEPSEEK_API_KEY');
       const dc = env ? null : deepcodeSettings();
       const key = env ?? dc?.key;
-      if (!key) throw new Error('no-deepseek-key: configure deepcode (~/.deepcode/settings.json)');
+      if (!key) throw new Error('no-deepseek-key: configure the key in Settings → AI Engines or in deepcode');
       return getJson(`${dc?.base ?? 'https://api.deepseek.com'}/user/balance`, { authorization: `Bearer ${key}`, accept: 'application/json' });
     },
     loadDay: () => { try { return JSON.parse(readFileSync(dayFile, 'utf8')); } catch { return null; } },

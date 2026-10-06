@@ -472,7 +472,8 @@ const BACKEND_KEY_ENV: Record<string, string> = {
   openai: 'OPENAI_API_KEY',
   google: 'GEMINI_API_KEY',
   openrouter: 'OPENROUTER_API_KEY',
-  groq: 'GROQ_API_KEY'
+  groq: 'GROQ_API_KEY',
+  deepseek: 'DEEPSEEK_API_KEY'
 };
 const providerKeyRef = (backend: string): string => `apikey:${backend}`;
 
@@ -3442,7 +3443,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     const modelSlug = modelIdx >= 0 ? (opts.args?.[modelIdx + 1] ?? '') : '';
     const prefix = modelSlug.includes('/') ? modelSlug.split('/')[0].toLowerCase() : '';
     const PREFIX_BACKEND: Record<string, string> = {
-      anthropic: 'anthropic', openai: 'openai', google: 'google', gemini: 'google', groq: 'groq', openrouter: 'openrouter'
+      anthropic: 'anthropic', openai: 'openai', google: 'google', gemini: 'google', groq: 'groq', openrouter: 'openrouter', deepseek: 'deepseek'
     };
     const scoped = PREFIX_BACKEND[prefix];
     const backends = scoped ? [scoped] : Object.keys(BACKEND_KEY_ENV);
@@ -4428,7 +4429,8 @@ function refreshQuota(): Promise<QuotaChip[]> {
   quotaInFlight ??= collectQuota(readConfig().providerQuota, quotaDeps(app.getPath('userData'), (name) => {
     const v = captureFromLoginShell(`printf %s "$${name}"`);
     return v && v.trim() ? v.trim() : null;
-  }, { bin: resolveCliCommand('codex'), env: { ...process.env, PATH: userShellPath() } })).then((chips) => {
+  }, { bin: resolveCliCommand('codex'), env: { ...process.env, PATH: userShellPath() } },
+  () => integrations.getSecret(providerKeyRef('deepseek')) || null)).then((chips) => {
     quotaChips = chips;
     try { liveWebContents()?.send('quota:update', chips); } catch { /* window torn down */ }
     return chips;
