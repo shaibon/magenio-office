@@ -15,6 +15,7 @@ import {
 } from '@shared/triggers';
 import { PixelPanel } from './PixelPanel';
 import { PixelButton } from './PixelButton';
+import { ProviderQuotaSettings } from './ProviderQuotaSettings';
 import { UpdatesSection } from './UpdatesSection';
 import { SettingsHeroCard } from './SettingsHeroCard';
 import { SetupPanel } from './SetupPanel';
@@ -1531,6 +1532,16 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                             </PixelButton>
                           </div>
                         </div>
+                      </div>
+
+                      <div style={{ height: 1, background: 'var(--cth-ink-300)', margin: '12px 0' }} />
+
+                      <div>
+                        <div style={sectionHead}>{t('settings.quota.title')}</div>
+                        <ProviderQuotaSettings
+                          value={{ ...cfgX.providerQuota, ...(pending.providerQuota ?? {}) }}
+                          onChange={(next) => stage({ providerQuota: next })}
+                        />
                       </div>
                     </>
                   )}

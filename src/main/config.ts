@@ -18,6 +18,7 @@ import {
   parseSlackChannelsJson,
   importSlackChannels
 } from '../shared/jiraProjects';
+import type { ProviderQuotaConfig } from '../shared/providerQuota';
 import { MAX_AGENT_TOKEN_CAP } from '../shared/tokenCaps';
 import { expandTilde, normalizeHiveHome } from './fs';
 import type { IntegrationRecord } from '../shared/integrations';
@@ -375,6 +376,8 @@ export interface HarnessConfig {
   /** One-time guard: has hive/jira-map.json been imported into jiraProjects?
    *  Prevents re-importing after the user deletes bindings on purpose. */
   jiraProjectsImported?: boolean;
+  /** Command Center plan-quota chips (enable per provider, thresholds, refresh). */
+  providerQuota?: Partial<ProviderQuotaConfig>;
   /** One-time guard: has hive/slack-channels.json been folded into the bindings' slackChannels? */
   slackChannelsImported?: boolean;
   /** Mirrors opsStandupSeeded/heartbeatSeeded for JIRA_POLL_MISSION. */

@@ -132,6 +132,8 @@ export interface HarnessConfig {
   slackMode?: 'events' | 'socket';
   slackAppToken?: string;
   slackChannelId?: string;
+  /** Command Center plan-quota chips (see shared/providerQuota). */
+  providerQuota?: Partial<import('@shared/providerQuota').ProviderQuotaConfig>;
   slackPort?: number;
   /** Opt-in app/voice-initiated proactive Slack posting (default OFF). Mirrors
    *  src/main/config.ts; the Slack-origin done-reply round-trip is never gated. */

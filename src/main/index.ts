@@ -12,7 +12,9 @@ import { homedir } from 'node:os';
 import { request as httpsRequest } from 'node:https';
 import { PtyManager, type SpawnOptions } from './pty';
 import { reapHiveMcp } from './mcpReap';
-import { resolveCommand as resolveCliCommand, isSafeCommandName } from './shellEnv';
+import { resolveCommand as resolveCliCommand, isSafeCommandName, captureFromLoginShell } from './shellEnv';
+import { collectQuota, realDeps as quotaDeps } from './providerQuota';
+import { normalizeProviderQuota, type QuotaChip } from '../shared/providerQuota';
 import { initAutoUpdater, abortPendingRestart } from './updater';
 import { RealtimeFloorWatcher } from './realtimeFloorWatcher';
 import {
@@ -4415,6 +4417,44 @@ function stopMailTimer(): void {
   if (mailTimer) { clearInterval(mailTimer); mailTimer = null; }
 }
 
+// ─── Provider plan-quota chips (Command Center) ────────────────────────────
+// Refresh lives here; the renderer only ever receives percentages, reset times and
+// balances (see providerQuota.ts). The delay is re-read from config every cycle.
+let quotaChips: QuotaChip[] = [];
+let quotaTimer: ReturnType<typeof setTimeout> | null = null;
+let quotaStopped = false;
+let quotaInFlight: Promise<QuotaChip[]> | null = null;
+function refreshQuota(): Promise<QuotaChip[]> {
+  quotaInFlight ??= collectQuota(readConfig().providerQuota, quotaDeps(app.getPath('userData'), (name) => {
+    const v = captureFromLoginShell(`printf %s "$${name}"`);
+    return v && v.trim() ? v.trim() : null;
+  })).then((chips) => {
+    quotaChips = chips;
+    try { liveWebContents()?.send('quota:update', chips); } catch { /* window torn down */ }
+    return chips;
+  }).finally(() => { quotaInFlight = null; });
+  return quotaInFlight;
+}
+function scheduleQuota(): void {
+  if (quotaStopped) return;
+  quotaTimer = setTimeout(() => {
+    void refreshQuota().finally(scheduleQuota);
+  }, normalizeProviderQuota(readConfig().providerQuota).refreshMinutes * 60_000);
+}
+let quotaStarted = false;
+function startQuotaTimer(): void {
+  if (quotaStarted) return;
+  quotaStarted = true;
+  quotaStopped = false;
+  void refreshQuota().finally(scheduleQuota);
+}
+function stopQuotaTimer(): void {
+  quotaStopped = true;
+  if (quotaTimer) { clearTimeout(quotaTimer); quotaTimer = null; }
+}
+ipcMain.handle('quota:get', () => quotaChips);
+ipcMain.handle('quota:refresh', () => refreshQuota());
+
 // IPC contract (renderer-safe: no secret, no bodies in lists, no outgoing action).
 const NO_STORE = { ok: false, error: 'mail storage is unavailable' } as const;
 ipcMain.handle('mail:accounts', (): MailAccountPublic[] => {
@@ -4565,7 +4605,7 @@ function teardownAndQuit(): void {
   try { clearContextTimers(); } catch (e) { console.error('[quit] clearContextTimers:', e); }
   try { stopWebhookDoneObserver(); } catch (e) { console.error('[quit] stopWebhookDoneObserver:', e); }
   try { stopVaultSyncTimer(); } catch (e) { console.error('[quit] stopVaultSyncTimer:', e); }
-  try { stopMailTimer(); } catch (e) { console.error('[quit] stopMailTimer:', e); }
+  try { stopMailTimer(); stopQuotaTimer(); } catch (e) { console.error('[quit] stopMailTimer:', e); }
   try { stopEphemeralWorkerWatcher(); } catch (e) { console.error('[quit] stopWorkerWatcher:', e); }
   try { integrationBroker.stop(); } catch (e) { console.error('[quit] broker.stop:', e); }
   try { hive.stopRouter(); } catch (e) { console.error('[quit] stopRouter:', e); }
@@ -4628,7 +4668,7 @@ ipcMain.handle('app:resetAll', () => {
   try { clearContextTimers(); } catch (e) { console.error('[reset] clearContextTimers:', e); }
   try { stopWebhookDoneObserver(); } catch (e) { console.error('[reset] stopWebhookDoneObserver:', e); }
   try { stopVaultSyncTimer(); } catch (e) { console.error('[reset] stopVaultSyncTimer:', e); }
-  try { stopMailTimer(); } catch (e) { console.error('[reset] stopMailTimer:', e); }
+  try { stopMailTimer(); stopQuotaTimer(); } catch (e) { console.error('[reset] stopMailTimer:', e); }
   try { stopEphemeralWorkerWatcher(); } catch (e) { console.error('[reset] stopWorkerWatcher:', e); }
   try { integrationBroker.stop(); } catch (e) { console.error('[reset] broker.stop:', e); }
   try { hive.stopRouter(); } catch (e) { console.error('[reset] stopRouter:', e); }
@@ -6236,6 +6276,7 @@ app.whenReady().then(() => {
   // install that has never touched the hive.
   startVaultSyncTimer();
   startMailTimer();
+  startQuotaTimer();
   // Survive sleep/lock. macOS freezes libuv timers during true system sleep, so a
   // locked/idle/slept Mac stops firing schedules and can wedge PTYs. On wake we
   // re-arm the scheduler (catching up missed missions ONCE) + beats + keep-awake,

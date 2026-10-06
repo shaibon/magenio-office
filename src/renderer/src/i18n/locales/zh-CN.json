@@ -416,7 +416,16 @@
     "saved": "已保存",
     "saving": "保存中…",
     "unsavedChanges": "有未保存的更改",
-    "unsavedWarning": "你有未保存的设置。仍要关闭并放弃这些更改吗？"
+    "unsavedWarning": "你有未保存的设置。仍要关闭并放弃这些更改吗？",
+    "quota": {
+      "title": "提供商套餐配额",
+      "desc": "指挥中心中的标签显示各提供商套餐配额的已用比例（DeepSeek：剩余余额）。只读，不会消耗配额。",
+      "yellow": "已用达到 % 时变黄",
+      "red": "已用达到 % 时变红",
+      "balanceYellow": "余额低于此值变黄",
+      "balanceRed": "余额低于此值变红",
+      "refresh": "刷新间隔（分钟）"
+    }
   },
   "commandCenter": {
     "title": "命令中心",
@@ -1691,5 +1700,19 @@
     "viewSource": "查看源码",
     "loading": "正在加载图片…",
     "decodeFailed": "无法解码此图片——文件可能已损坏或扩展名有误"
+  },
+  "quota": {
+    "tip": "套餐配额 — 点击查看详情",
+    "unavailable": "不可用：{{reason}}",
+    "noReset": "重置时间未知",
+    "resets": "重置于 {{when}}",
+    "balanceTotal": "余额 {{amount}}",
+    "balanceSplit": "其中赠送 {{bonus}}，充值 {{topped}}",
+    "spentToday": "今日已用 {{amount}}",
+    "provider": {
+      "claude": "Claude",
+      "codex": "Codex",
+      "deepseek": "DeepSeek"
+    }
   }
 }

@@ -416,7 +416,16 @@
     "saved": "Saved",
     "saving": "Saving…",
     "unsavedChanges": "unsaved changes",
-    "unsavedWarning": "You have unsaved settings. Close anyway and lose them?"
+    "unsavedWarning": "You have unsaved settings. Close anyway and lose them?",
+    "quota": {
+      "title": "Provider plan quota",
+      "desc": "Pills in the Command Center show how much of each provider's plan quota is used (DeepSeek: remaining credit). Read-only; nothing here consumes quota.",
+      "yellow": "Yellow at % used",
+      "red": "Red at % used",
+      "balanceYellow": "Yellow below balance",
+      "balanceRed": "Red below balance",
+      "refresh": "Refresh every (minutes)"
+    }
   },
   "commandCenter": {
     "title": "COMMAND CENTER",
@@ -1691,5 +1700,19 @@
     "viewSource": "view source",
     "loading": "loading image…",
     "decodeFailed": "could not decode this image — the file may be corrupt or misnamed"
+  },
+  "quota": {
+    "tip": "Plan quota — click for details",
+    "unavailable": "Not available: {{reason}}",
+    "noReset": "reset time unknown",
+    "resets": "resets {{when}}",
+    "balanceTotal": "Balance {{amount}}",
+    "balanceSplit": "of which bonus {{bonus}}, topped up {{topped}}",
+    "spentToday": "Spent today {{amount}}",
+    "provider": {
+      "claude": "Claude",
+      "codex": "Codex",
+      "deepseek": "DeepSeek"
+    }
   }
 }

@@ -4,6 +4,7 @@ import { PixelPanel } from './PixelPanel';
 import { PixelBadge } from './PixelBadge';
 import { PixelButton } from './PixelButton';
 import { SpritePortrait } from './SpritePortrait';
+import { QuotaChips } from './QuotaChips';
 import { PtyTerminalView } from './PtyTerminalView';
 import { MessageQueueComposer } from './MessageQueueComposer';
 import { TasksKanban } from './TasksKanban';
@@ -197,7 +198,8 @@ export function CommandCenterPanel({ agent, fullscreen = false, config }: {
         {/* v0.3.4: floor-wide auto-delivery lives HERE (one switch for every
             agent's queue), and the IDE opens from agent level, not the toolbar.
             Short labels — the tooltips carry the full explanation. */}
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          <QuotaChips />
           <PixelButton
             variant={floorDeliveryPaused ? 'primary' : 'secondary'}
             size="sm"
