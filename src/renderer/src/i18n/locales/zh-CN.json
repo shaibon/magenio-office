@@ -1704,6 +1704,8 @@
   "quota": {
     "tip": "套餐配额 — 点击查看详情",
     "unavailable": "不可用：{{reason}}",
+    "weekly": "每周",
+    "updatedAt": "更新于 {{when}}",
     "noReset": "重置时间未知",
     "resets": "重置于 {{when}}",
     "balanceTotal": "余额 {{amount}}",

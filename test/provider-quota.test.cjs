@@ -78,6 +78,7 @@ function deps(over = {}) {
   return {
     now: () => NOW,
     claudeUsage: async () => ({ five_hour: { utilization: 40, resets_at: '2026-10-06T15:00:00Z' } }),
+    codexLimits: async () => { throw new Error('no daemon'); },
     codexRollouts: () => [],
     deepseekBalance: async () => ({ balance_infos: [{ currency: 'CNY', total_balance: '20', granted_balance: '0', topped_up_balance: '20' }] }),
     loadDay: () => day, saveDay: (v) => { day = v; },
@@ -107,4 +108,22 @@ test('collect: codex from newest rollout; no data = n/d; deepseek baseline persi
 test('collect: chips carry no credential material', async () => {
   const chips = await collectQuota({}, deps({ claudeUsage: async () => { throw new Error('no-claude-login'); } }));
   assert.doesNotMatch(JSON.stringify(chips), /bearer|sk-/i);
+});
+
+test('codex app-server: Pro weekly-only (primary = 10080 min, secondary null) reads 11% used', async () => {
+  const result = { rateLimits: { primary: { usedPercent: 99, windowDurationMins: 10080, resetsAt: 1 }, secondary: null },
+    rateLimitsByLimitId: { codex: { primary: { usedPercent: 11, windowDurationMins: 10080, resetsAt: NOW / 1000 + 86400 }, secondary: null } } };
+  const w = Q.parseCodexRateLimits(result, NOW);
+  assert.deepEqual(w.map((x) => [x.id, x.usedPercent, x.windowMinutes, x.resetsAt]), [['primary', 11, 10080, NOW + 86400000]]);
+  assert.equal(Q.parseCodexRateLimits({ rateLimits: { primary: null, secondary: null } }, NOW), null);
+  const stale = JSON.stringify({ timestamp: '2026-10-01T00:00:00Z', payload: { rate_limits: { primary: { used_percent: 1, window_minutes: 10080, resets_at: 1791581539 } } } });
+  const chips = await collectQuota({ claude: false, deepseek: false }, deps({ codexLimits: async () => result, codexRollouts: () => [stale] }));
+  assert.equal(chips[0].windows[0].usedPercent, 11); assert.equal(chips[0].fetchedAt, NOW);
+});
+
+test('codex: app-server down falls back to the rollout and keeps ITS timestamp (so the UI shows "updated")', async () => {
+  const line = JSON.stringify({ timestamp: '2026-10-05T11:00:00Z', payload: { rate_limits: { primary: { used_percent: 1, window_minutes: 10080, resets_at: 1791581539 } } } });
+  const [c] = await collectQuota({ claude: false, deepseek: false }, deps({ codexRollouts: () => [line] }));
+  assert.equal(c.fetchedAt, Date.parse('2026-10-05T11:00:00Z'));
+  assert.ok(NOW - c.fetchedAt > Q.QUOTA_STALE_MS);
 });

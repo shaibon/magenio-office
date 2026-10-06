@@ -7,12 +7,12 @@
  * request and dropped — they are never returned, logged or sent to the renderer.
  * The renderer only gets `QuotaChip`s (percentages, reset times, balances).
  */
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync, openSync, readSync, closeSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {
-  normalizeProviderQuota, parseClaudeUsage, parseCodexRollout, parseDeepseekBalance, spentToday,
+  normalizeProviderQuota, parseClaudeUsage, parseCodexRateLimits, parseCodexRollout, parseDeepseekBalance, spentToday,
   type ProviderQuotaConfig, type QuotaChip, type QuotaProvider
 } from '../shared/providerQuota';
 
@@ -20,6 +20,8 @@ export interface QuotaDeps {
   now: () => number;
   /** Returns the parsed JSON body, or throws Error(reason) — reason must be secret-free. */
   claudeUsage: () => Promise<unknown>;
+  /** Codex app-server `account/rateLimits/read` result, or throws. */
+  codexLimits: () => Promise<unknown>;
   codexRollouts: () => string[];
   deepseekBalance: () => Promise<unknown>;
   /** Persisted per-day DeepSeek baseline. */
@@ -50,14 +52,17 @@ export async function collectQuota(cfgIn: Partial<ProviderQuotaConfig> | undefin
   }
 
   if (cfg.codex) {
+    let live: ReturnType<typeof parseCodexRateLimits> = null;
+    try { live = parseCodexRateLimits(await deps.codexLimits(), now); } catch { /* daemon/login unavailable → rollout fallback */ }
     let best: ReturnType<typeof parseCodexRollout> = null;
-    try {
+    if (!live) try {
       for (const text of deps.codexRollouts()) {
         const r = parseCodexRollout(text, now);
         if (r && (!best || r.at > best.at)) best = r;
       }
     } catch { /* unreadable sessions dir → n/d */ }
-    chips.push(best ? { provider: 'codex', kind: 'percent', ok: true, windows: best.windows, fetchedAt: best.at }
+    if (live) chips.push({ provider: 'codex', kind: 'percent', ok: true, windows: live, fetchedAt: now });
+    else chips.push(best ? { provider: 'codex', kind: 'percent', ok: true, windows: best.windows, fetchedAt: best.at }
       : na('codex', 'percent', 'no-rate-limit-data', now));
   }
 
@@ -115,6 +120,38 @@ async function claudeToken(): Promise<string> {
   }
 }
 
+/** Codex's own interface: `codex app-server` over stdio, `initialize` + `account/rateLimits/read`.
+ *  Reads the account's usage (what /status shows); no model request, no quota used. */
+function codexLimits(bin: string, env: NodeJS.ProcessEnv): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const p = spawn(bin, ['app-server', '--listen', 'stdio://'], { stdio: ['pipe', 'pipe', 'ignore'], env });
+    const end = (err: Error | null, v?: unknown): void => {
+      if (done) return; done = true; clearTimeout(timer); p.kill();
+      err ? reject(err) : resolve(v);
+    };
+    const timer = setTimeout(() => end(new Error('codex-timeout')), 10_000);
+    let buf = '';
+    p.stdout.on('data', (d: Buffer) => {
+      buf += d;
+      let i: number;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i); buf = buf.slice(i + 1);
+        try {
+          const o = JSON.parse(line) as { id?: number; result?: unknown; error?: unknown };
+          if (o.id === 2) o.error ? end(new Error('codex-rpc-error')) : end(null, o.result);
+        } catch { /* not a JSON line */ }
+      }
+    });
+    p.on('error', () => end(new Error('codex-not-found')));
+    p.on('exit', () => end(new Error('codex-exited')));
+    const send = (o: unknown): void => { p.stdin.write(JSON.stringify(o) + '\n'); };
+    send({ id: 1, method: 'initialize', params: { clientInfo: { name: 'munder-quota', version: '1' } } });
+    send({ method: 'initialized' });
+    send({ id: 2, method: 'account/rateLimits/read' });
+  });
+}
+
 /** Newest few Codex rollout files' tails (rate_limits ride on token_count events, so the tail suffices). */
 function codexRollouts(): string[] {
   const root = join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'sessions');
@@ -147,17 +184,21 @@ function deepseekKey(): string | null {
   return k || null;
 }
 
-export function realDeps(userDataDir: string, loginShellEnv: (name: string) => string | null): QuotaDeps {
+export function realDeps(
+  userDataDir: string, loginShellEnv: (name: string) => string | null,
+  codex: { bin: string; env: NodeJS.ProcessEnv }, storedDeepseekKey: () => string | null
+): QuotaDeps {
   const dayFile = join(userDataDir, 'provider-quota-day.json');
   return {
     now: Date.now,
     claudeUsage: async () => getJson('https://api.anthropic.com/api/oauth/usage', {
       authorization: `Bearer ${await claudeToken()}`, 'anthropic-beta': 'oauth-2025-04-20', accept: 'application/json'
     }),
+    codexLimits: () => codexLimits(codex.bin, codex.env),
     codexRollouts,
     deepseekBalance: async () => {
-      const key = deepseekKey() ?? loginShellEnv('DEEPSEEK_API_KEY');
-      if (!key) throw new Error('no-deepseek-key');
+      const key = storedDeepseekKey() ?? deepseekKey() ?? loginShellEnv('DEEPSEEK_API_KEY');
+      if (!key) throw new Error('no-deepseek-key: set it in Settings → AI Engines');
       return getJson('https://api.deepseek.com/user/balance', { authorization: `Bearer ${key}`, accept: 'application/json' });
     },
     loadDay: () => { try { return JSON.parse(readFileSync(dayFile, 'utf8')); } catch { return null; } },

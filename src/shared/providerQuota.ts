@@ -188,6 +188,30 @@ export function parseCodexRollout(text: string, now = Date.now()): { windows: Qu
   return null;
 }
 
+/** Codex app-server `account/rateLimits/read` result (the same data `/status` shows).
+ *  Prefers the metered `codex` bucket; a window is skipped when null (Pro has weekly only).
+ *  `resetsAt` is epoch seconds, `windowDurationMins` the real window — never assume primary = 5h. */
+export function parseCodexRateLimits(result: unknown, now = Date.now()): QuotaWindow[] | null {
+  const r = result as { rateLimits?: unknown; rateLimitsByLimitId?: Record<string, unknown> | null } | null;
+  const snap = (r?.rateLimitsByLimitId?.codex ?? r?.rateLimits) as Record<string, unknown> | null | undefined;
+  if (!snap || typeof snap !== 'object') return null;
+  const out: QuotaWindow[] = [];
+  for (const id of ['primary', 'secondary'] as const) {
+    const w = snap[id] as { usedPercent?: unknown; windowDurationMins?: unknown; resetsAt?: unknown } | null | undefined;
+    const used = pct(w?.usedPercent);
+    if (used === null) continue;
+    out.push(elapsed({
+      id, usedPercent: used,
+      windowMinutes: typeof w?.windowDurationMins === 'number' ? w.windowDurationMins : null,
+      resetsAt: typeof w?.resetsAt === 'number' ? w.resetsAt * 1000 : null
+    }, now));
+  }
+  return out.length ? out : null;
+}
+
+/** A reading older than this is shown with its date instead of as current. */
+export const QUOTA_STALE_MS = 6 * 3600_000;
+
 /** GET https://api.deepseek.com/user/balance →
  *  `{ is_available, balance_infos: [{ currency, total_balance, granted_balance, topped_up_balance }] }`
  *  (amounts are decimal strings). Null when no usable balance row. */

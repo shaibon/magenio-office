@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-  chipLabel, chipLevel, formatMoney, normalizeProviderQuota, windowLabel,
+  chipLabel, chipLevel, formatMoney, normalizeProviderQuota, windowLabel, QUOTA_STALE_MS,
   type ProviderQuotaConfig, type QuotaChip, type QuotaLevel
 } from '@shared/providerQuota';
 
@@ -43,13 +43,14 @@ export function QuotaChips(): JSX.Element | null {
 
   const when = (ms: number | null): string =>
     ms === null ? t('quota.noReset')
-      : t('quota.resets', { when: new Date(ms).toLocaleString(i18n.language, { weekday: 'short', hour: '2-digit', minute: '2-digit' }) });
+      : t('quota.resets', { when: new Date(ms).toLocaleString(i18n.language, { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) });
 
   return (
     <div ref={box} style={{ display: 'flex', gap: 4, alignItems: 'center', position: 'relative' }}>
       {shown.map((c) => {
         const level = chipLevel(c, cfg);
-        const tip = c.ok ? t('quota.tip') : t('quota.unavailable', { reason: c.reason ?? '' });
+        const stale = c.ok && Date.now() - c.fetchedAt > QUOTA_STALE_MS;
+        const tip = stale ? t('quota.updatedAt', { when: new Date(c.fetchedAt).toLocaleString(i18n.language, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) }) : c.ok ? t('quota.tip') : t('quota.unavailable', { reason: c.reason ?? '' });
         return (
           <button
             key={c.provider}
@@ -77,10 +78,13 @@ export function QuotaChips(): JSX.Element | null {
             boxShadow: 'inset 0 0 0 1px var(--cth-ink-700), var(--cth-shadow-hard)'
           }}>
             <div style={{ fontWeight: 600, marginBottom: 4 }}>{t(`quota.provider.${c.provider}`)}</div>
+            {c.ok && Date.now() - c.fetchedAt > QUOTA_STALE_MS && (
+              <div style={{ color: 'var(--cth-ink-500)' }}>{t('quota.updatedAt', { when: new Date(c.fetchedAt).toLocaleString(i18n.language, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) })}</div>
+            )}
             {!c.ok && <div>{t('quota.unavailable', { reason: c.reason ?? '' })}</div>}
             {c.ok && c.kind === 'percent' && (c.windows ?? []).map((w) => (
               <div key={w.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
-                <span>{windowLabel(w)}: {Math.round(w.usedPercent)}%</span>
+                <span>{w.windowMinutes === 10080 ? t('quota.weekly') : windowLabel(w)}: {Math.round(w.usedPercent)}%</span>
                 <span style={{ color: 'var(--cth-ink-500)' }}>{when(w.resetsAt)}</span>
               </div>
             ))}

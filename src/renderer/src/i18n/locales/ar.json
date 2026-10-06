@@ -1704,6 +1704,8 @@
   "quota": {
     "tip": "حصة الخطة — انقر للتفاصيل",
     "unavailable": "غير متاح: {{reason}}",
+    "weekly": "أسبوعي",
+    "updatedAt": "آخر تحديث {{when}}",
     "noReset": "وقت إعادة التعيين غير معروف",
     "resets": "تُعاد في {{when}}",
     "balanceTotal": "الرصيد {{amount}}",

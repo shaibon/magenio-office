@@ -1704,6 +1704,8 @@
   "quota": {
     "tip": "Plan quota — click for details",
     "unavailable": "Not available: {{reason}}",
+    "weekly": "Weekly",
+    "updatedAt": "updated {{when}}",
     "noReset": "reset time unknown",
     "resets": "resets {{when}}",
     "balanceTotal": "Balance {{amount}}",
