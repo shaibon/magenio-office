@@ -27,3 +27,30 @@ test('add is idempotent, remove drops only that id', () => {
   assert.deepEqual(addWriter(['a'], 'b'), ['a', 'b']);
   assert.deepEqual(removeWriter(['a', 'b'], 'a'), ['b']);
 });
+
+test('real registry shape: two Angelas per project are distinct, labelled, unique and sorted first', () => {
+  const { writerLabel, projectAgrees } = loadTs('src/shared/vaultWriters.ts');
+  const role = 'Documentation curator — keeps the README accurate, clear, and grounded strictly in the code';
+  const B = 'git@bitbucket.org:magenio/bravifarmacie.git', D = 'git@bitbucket.org:magenio/burdastyle.git';
+  const mk = (id, name, origin, project, r = role) => ({ id, name, origin, archived: false, project, role: r });
+  const roster = [
+    mk('dwight-1', 'Dwight', B, 'BRAVI', 'Developer — builds features'),
+    mk('angela-mtidlh62', 'Angela', B, 'BRAVI'),
+    mk('angela-muvdk1xn', 'Angela', B, 'BRAVI'),
+    mk('angela-mtiqsow0', 'Angela', D, 'BURD'),
+    mk('angela-muvdjjel', 'Angela', D, 'BURD'),
+    mk('angela-muvdjjel', 'Angela', D, 'BURD') // the same id twice (stale + fresh copy)
+  ];
+  const opts = eligibleWriters(B, [], roster, ['BRAVI']);
+  assert.deepEqual(opts.map((a) => a.id), ['angela-mtidlh62', 'angela-muvdk1xn', 'dwight-1']); // Angelas first
+  assert.equal(writerLabel(opts[1]), 'Angela · Documentation curator · angela-muvdk1xn');
+  assert.equal(new Set(opts.map(writerLabel)).size, opts.length); // all distinguishable
+  assert.deepEqual(eligibleWriters(D, [], roster).map((a) => a.id), ['angela-mtiqsow0', 'angela-muvdjjel']); // deduped by id
+  // origin matches but the roster project disagrees with the mapping's project => excluded / flagged
+  const odd = [mk('angela-x', 'Angela', B, 'VAI')];
+  assert.equal(eligibleWriters(B, [], odd, ['BRAVI']).length, 0);
+  assert.equal(writerChips(B, ['angela-x'], odd, ['BRAVI'])[0].state, 'otherProject');
+  // no known keys, or no roster project => not judged
+  assert.equal(projectAgrees(odd[0], []), true);
+  assert.equal(projectAgrees({ ...odd[0], project: '' }, ['BRAVI']), true);
+});
