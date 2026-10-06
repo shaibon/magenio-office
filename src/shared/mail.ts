@@ -47,7 +47,9 @@ export interface Classification {
   projectHint: string | null;
   confidence: number;
   needsReply: boolean;
+  /** 1-5 short lines, produced by the LOCAL model. */
   summary: string;
+  suggestedAction: string;
 }
 
 /** Below this the model's project hint is ignored and the mail is unassigned. */
@@ -200,7 +202,8 @@ export function classifyPrompt(wrapped: string, knownKeys: string[]): string {
     'Reply with ONE JSON object and nothing else, exactly these keys:',
     `{"category": one of ${MAIL_CATEGORIES.join('|')}, "urgency": one of ${MAIL_URGENCIES.join('|')},`,
     ` "project_hint": one of [${knownKeys.map((k) => `"${k}"`).join(', ')}] or null, "confidence": number 0..1,`,
-    ' "needs_reply": boolean, "summary": string of at most 300 characters}',
+    ' "needs_reply": boolean, "summary": 3 to 5 short lines (separated by \\n) saying what the email is about and what it asks,',
+    ' "suggested_action": one short sentence (at most 200 characters)}',
     '',
     wrapped
   ].join('\n');
@@ -211,20 +214,29 @@ export function parseClassification(text: string | undefined | null): Classifica
   const raw = (text ?? '').trim();
   const a = raw.indexOf('{'), b = raw.lastIndexOf('}');
   if (a < 0 || b <= a) return null;
+  // The reply must BE the object: no prose around it, no extra keys.
+  if (a !== 0 || b !== raw.length - 1) return null;
   let o: unknown;
-  try { o = JSON.parse(raw.slice(a, b + 1)); } catch { return null; }
+  try { o = JSON.parse(raw); } catch { return null; }
   if (!o || typeof o !== 'object' || Array.isArray(o)) return null;
   const r = o as Record<string, unknown>;
+  const KEYS = ['category', 'urgency', 'project_hint', 'confidence', 'needs_reply', 'summary', 'suggested_action'];
+  const ks = Object.keys(r);
+  if (ks.length !== KEYS.length || !KEYS.every((k) => k in r)) return null;
   if (!MAIL_CATEGORIES.includes(r.category as MailCategory)) return null;
   if (!MAIL_URGENCIES.includes(r.urgency as MailUrgency)) return null;
   if (typeof r.confidence !== 'number' || !Number.isFinite(r.confidence) || r.confidence < 0 || r.confidence > 1) return null;
   if (typeof r.needs_reply !== 'boolean' || typeof r.summary !== 'string') return null;
   if (r.project_hint !== null && (typeof r.project_hint !== 'string' || r.project_hint.length > 64)) return null;
+  if (typeof r.suggested_action !== 'string' || !r.suggested_action.trim() || r.suggested_action.length > 400) return null;
+  const lines = r.summary.split('\n').map((l) => l.trim()).filter(Boolean);
+  if (lines.length < 3 || lines.length > 5) return null;
   return {
     category: r.category as MailCategory, urgency: r.urgency as MailUrgency,
     projectHint: (r.project_hint as string | null) || null,
     confidence: r.confidence, needsReply: r.needs_reply,
-    summary: r.summary.replace(HIDDEN_CHARS, '').slice(0, 500)
+    summary: lines.join('\n').replace(HIDDEN_CHARS, '').slice(0, 800),
+    suggestedAction: r.suggested_action.replace(HIDDEN_CHARS, '').replace(/\s+/g, ' ').trim().slice(0, 200)
   };
 }
 
@@ -276,4 +288,132 @@ export function validateMailRuleInput(raw: unknown): { ok: true; value: Omit<Mai
   if (!/^[A-Z][A-Z0-9]{1,9}$/.test(projectKey)) return { ok: false, error: 'projectKey must look like ABC' };
   if (r.id !== undefined && !(typeof r.id === 'number' && Number.isInteger(r.id) && r.id > 0)) return { ok: false, error: 'id invalid' };
   return { ok: true, value: { id: r.id as number | undefined, kind: r.kind as MailRuleKind, pattern, projectKey, enabled: r.enabled !== false } };
+}
+
+/* ───────────────────────────── local mail agent ─────────────────────────────── */
+
+/** The ONLY model that ever sees mail text: one running on this machine. */
+export interface MailAgentSettings { enabled: boolean; baseUrl: string; model: string }
+export const DEFAULT_MAIL_AGENT: MailAgentSettings = { enabled: false, baseUrl: 'http://127.0.0.1:11434', model: '' };
+
+/** Accept only a loopback http(s) origin (default Ollama port 11434). `localhost`
+ *  is rewritten to 127.0.0.1 so a hosts-file or DNS trick cannot point it elsewhere.
+ *  Returns the normalised origin, or null for anything else (remote hosts, other
+ *  schemes, credentials, query strings, any path). */
+export function normalizeLocalEndpoint(raw: unknown): string | null {
+  if (typeof raw !== 'string' || raw.length > 200) return null;
+  let u: URL;
+  try { u = new URL(raw.trim()); } catch { return null; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+  if (u.username || u.password || u.search || u.hash || (u.pathname !== '/' && u.pathname !== '')) return null;
+  const host = u.hostname.toLowerCase();
+  const loop = host === 'localhost' ? '127.0.0.1' : host === '127.0.0.1' || host === '[::1]' ? host : null;
+  if (!loop) return null;
+  return `${u.protocol}//${loop}${u.port ? `:${u.port}` : ''}`;
+}
+
+export function validateMailAgentSettings(raw: unknown): { ok: true; value: MailAgentSettings } | { ok: false; error: string } {
+  if (!raw || typeof raw !== 'object') return { ok: false, error: 'settings must be an object' };
+  const r = raw as Record<string, unknown>;
+  const baseUrl = normalizeLocalEndpoint(r.baseUrl ?? DEFAULT_MAIL_AGENT.baseUrl);
+  if (!baseUrl) return { ok: false, error: 'the mail agent must run on this Mac: use http://127.0.0.1:<port> (or localhost)' };
+  const model = typeof r.model === 'string' ? r.model.trim() : '';
+  if (model.length > 100 || /[\s\0]/.test(model)) return { ok: false, error: 'model name is invalid' };
+  const enabled = r.enabled === true;
+  if (enabled && !model) return { ok: false, error: 'choose a model before enabling the mail agent' };
+  return { ok: true, value: { enabled, baseUrl, model } };
+}
+
+export type MailAgentState = 'off' | 'untested' | 'ready' | 'unreachable';
+/** What the Mail area shows. `rulesOnly` is the fail-closed mode: routing by the
+ *  Boss's rules, no summaries, never a cloud fallback. */
+export interface MailAgentStatus { state: MailAgentState; detail: string; rulesOnly: boolean; checkedAt: number | null }
+
+/* ───────────────────────────── hive hand-off ──────────────────────────────── */
+
+const EMAIL_RE_G = /[^\s<>()"',;:]+@[^\s<>()"',;:]+/g;
+/** Addresses in model output are masked: only a sender DOMAIN may cross to the hive. */
+export const redactAddresses = (s: string): string => s.replace(EMAIL_RE_G, '[address]');
+
+/** The ONLY thing about a mail that reaches a hive agent: its id, the project, the
+ *  sender's domain, and the local model's own category/urgency/summary/action. No
+ *  body, no subject, no addresses, no names. */
+export function handoffMessage(h: {
+  mailId: number; projectKey: string; fromDomain: string; classification: Classification; summaryWithheld?: boolean;
+}): { subject: string; body: string } {
+  const c = h.classification;
+  const domain = h.fromDomain.replace(/[^a-z0-9.-]/gi, '').slice(0, 100) || 'unknown';
+  return {
+    subject: `Mail triage ${h.projectKey} #${h.mailId}: ${c.category}, ${c.urgency}`,
+    body: [
+      `Mail #${h.mailId} was routed to ${h.projectKey} (sender domain: ${domain}).`,
+      `Category: ${c.category} | Urgency: ${c.urgency} | Needs reply: ${c.needsReply ? 'yes' : 'no'}`,
+      ...(h.summaryWithheld
+        ? ['Summary withheld: the local model quoted the mail, so nothing but the metadata above leaves this machine.']
+        : ['Summary (generated locally):', redactAddresses(c.summary), `Suggested action: ${redactAddresses(c.suggestedAction)}`]),
+      'The original mail stays on this machine; open the Mail area for it.'
+    ].join('\n')
+  };
+}
+
+/* ───────────────── keeping the mail's own words out of the hand-off ───────────────── */
+
+const words = (t: string): string[] => t.toLowerCase().replace(/[^\p{L}\p{N}@.+-]+/gu, ' ').split(/\s+/).filter(Boolean);
+
+/** Does `text` repeat the mail's own words? A model summary may paraphrase, but it
+ *  must not quote: a run of 4+ words from the body, the whole subject (2+ words), or
+ *  any long token that looks like a secret/number is a quote. */
+export function quotesMail(text: string, mail: { subject: string; body: string }): boolean {
+  const t = words(text);
+  const joined = ` ${t.join(' ')} `;
+  const subj = words(mail.subject);
+  if (subj.length >= 2 && joined.includes(` ${subj.join(' ')} `)) return true;
+  const body = words(mail.body);
+  const grams = new Set<string>();
+  for (let i = 0; i + 4 <= body.length; i++) grams.add(body.slice(i, i + 4).join(' '));
+  for (let i = 0; i + 4 <= t.length; i++) if (grams.has(t.slice(i, i + 4).join(' '))) return true;
+  // Long digit runs and long mixed tokens (phone numbers, tokens, ids) never cross.
+  return /\d[\d\s-]{6,}\d/.test(text) || /\b(?=[A-Za-z0-9_-]*\d)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{16,}\b/.test(text);
+}
+
+const fold = (s: string): string => s.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+const escapeRe = (t: string): string => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const LB = '(?<![\\p{L}\\p{N}])', LA = '(?![\\p{L}\\p{N}])';   // Unicode word edges ("\b" breaks at é)
+
+/** Deterministic scrubbing that needs no model: links, phone-like numbers and
+ *  addresses never cross, whatever the summary says. */
+export function scrubIdentifiers(s: string): string {
+  return redactAddresses(s)
+    .replace(/\b(?:https?|ftp):\/\/[^\s<>"')\]]+/gi, '[link]')
+    .replace(/\bwww\.[^\s<>"')\]]+/gi, '[link]')
+    // bare hostnames, with or without a path ("private.example.test/path")
+    .replace(/(?<![\p{L}\p{N}@.])(?:[\p{L}\p{N}-]+\.)+[a-z]{2,}(?::\d+)?(?:[/?#][^\s<>"')\]]*)?(?![\p{L}\p{N}])/giu, '[link]')
+    // any run of digits with phone punctuation holding 7+ digits (+39.333.1234567, (02) 1234 5678)
+    .replace(/\+?\d[\d\s().\-/]{4,}\d/g, (m) => (m.replace(/\D/g, '').length >= 7 ? '[number]' : m));
+}
+
+/** The classification as it may cross to the hive. Names of the sender and every
+ *  recipient are masked, links/numbers/addresses scrubbed; if what is left still
+ *  quotes the mail, or still contains a known name in any accent/case spelling,
+ *  summary and action are dropped altogether and only the metadata goes. */
+export function classificationForHandoff(
+  c: Classification,
+  mail: { subject: string; body: string; fromName: string; fromAddress: string; to: string[] }
+): { classification: Classification; summaryWithheld: boolean } {
+  const names = new Set<string>();
+  for (const src of [mail.fromName, mail.fromAddress.split('@')[0], ...mail.to.map((a) => a.split('@')[0])]) {
+    for (const w of src.split(/[^\p{L}\p{N}]+/u)) if (w.length >= 3) names.add(w);
+  }
+  const mask = (text: string): string => {
+    let out = scrubIdentifiers(text);
+    for (const n of names) out = out.replace(new RegExp(`${LB}${escapeRe(n)}${LA}`, 'giu'), '[name]');
+    return out;
+  };
+  const summary = mask(c.summary), suggestedAction = mask(c.suggestedAction);
+  const left = fold(`${summary}\n${suggestedAction}`);
+  const nameLeft = [...names].some((n) => new RegExp(`${LB}${escapeRe(fold(n))}${LA}`, 'iu').test(left));
+  if (nameLeft || quotesMail(`${summary}\n${suggestedAction}`, mail)) {
+    return { classification: { ...c, summary: '', suggestedAction: '' }, summaryWithheld: true };
+  }
+  return { classification: { ...c, summary, suggestedAction }, summaryWithheld: false };
 }

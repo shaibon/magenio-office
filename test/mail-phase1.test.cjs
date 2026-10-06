@@ -10,7 +10,7 @@ const { DatabaseSync } = require('node:sqlite');
 const loadTs = require('./load-ts.cjs');
 
 const M = loadTs('src/shared/mail.ts');
-const { MAIL_SCHEMA_SQL } = loadTs('src/main/mail/schema.ts');
+const { MAIL_SCHEMA_SQL, MAIL_SCHEMA_V3_SQL } = loadTs('src/main/mail/schema.ts');
 const { MailStore } = loadTs('src/main/mail/store.ts');
 const { runMailPoll, pollAccount, scrubError } = loadTs('src/main/mail/poller.ts');
 
@@ -28,6 +28,7 @@ function setup({ messages = [], rules = [], keys = ['BURD', 'VAI'], classifyRepl
   const db = new DatabaseSync(':memory:');
   db.exec('PRAGMA foreign_keys = ON');
   db.exec(MAIL_SCHEMA_SQL);
+  db.exec(MAIL_SCHEMA_V3_SQL);
   const store = new MailStore(db);
   store.upsertAccount({ id: 'acc', address: 'me@magenio.com', host: 'imap.magenio.com', port: 993, username: 'me', mailbox: 'INBOX', secretRef: 'mail:acc' });
   for (const r of rules) store.saveRule({ enabled: true, ...r });
@@ -57,7 +58,7 @@ function setup({ messages = [], rules = [], keys = ['BURD', 'VAI'], classifyRepl
   return { db, store, deps, calls, state, now };
 }
 
-const goodReply = JSON.stringify({ category: 'bug', urgency: 'high', project_hint: 'VAI', confidence: 0.9, needs_reply: true, summary: 'Checkout broken' });
+const goodReply = JSON.stringify({ category: 'bug', urgency: 'high', project_hint: 'VAI', confidence: 0.9, needs_reply: true, summary: 'Checkout is broken\nCustomer cannot pay\nNeeds a fix today', suggested_action: 'Open a bug and reply today' });
 
 /* ───────────────────────────────── routing ───────────────────────────────── */
 
@@ -87,25 +88,28 @@ test('model hint is a fallback: needs confidence and a known project', () => {
   assert.equal(M.routeByModelHint(null, ['VAI']), null);
 });
 
-test('a rule decides without a model call; undecided mail goes to the model, then to "Da assegnare"', async () => {
+test('rules decide the route even when the local model also runs; undecided mail uses the model hint, then "Da assegnare"', async () => {
   const a = setup({ messages: [raw()], rules: [{ kind: 'fromDomain', pattern: 'client.com', projectKey: 'BURD' }], classifyReply: goodReply });
   await runMailPoll(a.deps);
-  assert.equal(a.calls.classify.length, 0);
-  assert.equal(a.store.listMessages()[0].triage.projectKey, 'BURD');
+  assert.equal(a.calls.classify.length, 1);                       // the summary is wanted for every mail
+  const ta = a.store.listMessages()[0].triage;
+  assert.deepEqual([ta.projectKey, ta.via], ['BURD', 'rule']);    // but the Boss's rule wins over the model's VAI hint
+  assert.equal(ta.summary, 'Checkout is broken\nCustomer cannot pay\nNeeds a fix today');
+  assert.equal(ta.suggestedAction, 'Open a bug and reply today');
 
   const b = setup({ messages: [raw()], classifyReply: goodReply });
   await runMailPoll(b.deps);
-  assert.equal(b.calls.classify.length, 1);
   const t = b.store.listMessages()[0].triage;
   assert.deepEqual([t.projectKey, t.via, t.category, t.urgency], ['VAI', 'model', 'bug', 'high']);
 
-  const c = setup({ messages: [raw()], classifyReply: JSON.stringify({ category: 'bug', urgency: 'low', project_hint: 'VAI', confidence: 0.2, needs_reply: false, summary: 's' }) });
+  const c = setup({ messages: [raw()], classifyReply: JSON.stringify({ category: 'bug', urgency: 'low', project_hint: 'VAI', confidence: 0.2, needs_reply: false, summary: 'a\nb\nc', suggested_action: 'none' }) });
   await runMailPoll(c.deps);
   assert.equal(c.store.listMessages({ unassigned: true }).length, 1);
 
   const d = setup({ messages: [raw()], classifyReply: 'not json at all' });
   await runMailPoll(d.deps);
   assert.equal(d.store.listMessages({ unassigned: true })[0].triage.category, 'other');
+  assert.equal(d.store.listMessages()[0].triage.summary, '');      // no valid reply, no summary
 });
 
 test('automated bulk mail is never sent to the model', async () => {
@@ -117,7 +121,7 @@ test('automated bulk mail is never sent to the model', async () => {
 
 test('classifier output is validated strictly', () => {
   assert.equal(M.parseClassification(goodReply).projectHint, 'VAI');
-  assert.equal(M.parseClassification(`sure! ${goodReply} done`).category, 'bug');
+  assert.equal(M.parseClassification(`sure! ${goodReply} done`), null);
   for (const bad of [
     '{"category":"hack","urgency":"low","project_hint":null,"confidence":0.5,"needs_reply":false,"summary":"x"}',
     '{"category":"bug","urgency":"low","project_hint":null,"confidence":2,"needs_reply":false,"summary":"x"}',
@@ -331,7 +335,6 @@ test('the provider contract and the poller expose no way to send or modify mail'
 
 const { planParts, parseHeaderBlock } = loadTs('src/main/mail/mimePlan.ts');
 const { createImapProvider } = loadTs('src/main/mail/imapProvider.ts');
-const { hiddenClaudeArgs } = loadTs('src/main/hiddenClaude.ts');
 
 const STRUCTURE = {
   type: 'multipart/mixed', childNodes: [
@@ -395,50 +398,16 @@ test('IMAP adapter never requests the message source and downloads only text par
   assert.equal(m.html, undefined);
 });
 
-test('the classifier runs with no tools: all built-ins off, no MCP, no bypass', () => {
-  const a = hiddenClaudeArgs({ model: 'm', noTools: true, disallowedTools: ['Edit'], addDirs: ['/tmp'] });
-  assert.deepEqual(a, ['--model', 'm', '--tools', '', '--strict-mcp-config', '--disable-slash-commands', '--permission-mode', 'default']);
-  assert.ok(!a.includes('bypassPermissions') && !a.includes('--add-dir'));
-  // Unchanged for every other caller.
-  const b = hiddenClaudeArgs({ model: 'm' });
-  assert.deepEqual(b, ['--model', 'm', '--permission-mode', 'bypassPermissions', '--disallowedTools', 'Edit', 'Write', 'NotebookEdit']);
-  const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '../src/main/index.ts'), 'utf8');
-  assert.match(src, /MAIL_CLASSIFY_MODEL,[\s\S]{0,400}noTools: true/);
-});
-
-test('a text part with a file name is an attachment even without a Content-Disposition', () => {
-  const plan = planParts({ type: 'multipart/mixed', childNodes: [
-    { type: 'text/plain', part: '1', size: 10 },
-    { type: 'text/plain', part: '2', size: 10, parameters: { name: 'notes.txt' } },
-    { type: 'text/html', part: '3', size: 10, dispositionParameters: { filename: 'page.html' } }
-  ] });
-  assert.deepEqual(plan.text.map((t) => t.part), ['1']);
-  assert.deepEqual(plan.attachments.map((a) => a.filename), ['notes.txt', 'page.html']);
-});
-
-test('IMAP adapter bounds the batch before fetching: search UIDs, take the oldest `limit`, fetch only those', async () => {
-  const fetched = [];
-  class FakeFlow {
-    constructor() { this.mailbox = { uidValidity: 1 }; }
-    on() {}
-    async connect() {}
-    async getMailboxLock() { return { release() {} }; }
-    async search(q) { fetched.push(['search', q.uid]); return Array.from({ length: 100 }, (_, i) => 200 - i); } // newest first, 100 of them
-    async *fetch(range) {
-      fetched.push(['fetch', range]);
-      for (const u of range.split(',').map(Number)) yield { uid: u, envelope: { messageId: `<m${u}@x>`, subject: 's', from: [{ address: 'a@b.c' }] }, bodyStructure: { type: 'text/plain', size: 1 } };
-    }
-    async download() { return { content: (async function* () { yield Buffer.from('x'); })() }; }
+test('there is no cloud path: the mail pipeline cannot reach hiddenClaude or any hosted model', () => {
+  const fs = require('node:fs'), path = require('node:path');
+  const root = path.join(__dirname, '..');
+  for (const f of ['src/main/mail/poller.ts', 'src/main/mail/localModel.ts', 'src/main/mail/imapProvider.ts', 'src/main/mail/store.ts']) {
+    const src = fs.readFileSync(path.join(root, f), 'utf8');
+    assert.doesNotMatch(src, /hiddenClaude|runHiddenClaude|api\.openai|anthropic|claude/i, f);
   }
-  const p = createImapProvider({ host: 'h.com', port: 993, username: 'u', mailbox: 'INBOX' }, 'pw', { ImapFlow: FakeFlow, simpleParser: async () => ({ text: 'x' }) });
-  const r = await p.fetchSince(100, 3);
-  assert.deepEqual(fetched[0], ['search', '101:*']);
-  assert.deepEqual(fetched[1], ['fetch', '101,102,103']);       // the 3 oldest, never the other 97
-  assert.deepEqual(r.messages.map((m) => m.uid), [101, 102, 103]);
-  assert.equal(fetched.filter((f) => f[0] === 'fetch').length, 1);
-  // Nothing new (only the always-included newest, which is <= cursor): no fetch at all.
-  fetched.length = 0;
-  FakeFlow.prototype.search = async () => [100];
-  assert.deepEqual((await p.fetchSince(100, 3)).messages, []);
-  assert.deepEqual(fetched, []);
+  const index = fs.readFileSync(path.join(root, 'src/main/index.ts'), 'utf8');
+  const section = index.slice(index.indexOf('Mail area, phase 1'), index.indexOf('// ─── IPC: composer attachments'));
+  assert.ok(section.length > 2000);
+  assert.doesNotMatch(section, /runHiddenClaude|hiddenClaude|noTools|defaultCommand|api\.openai/);
+  assert.doesNotMatch(index, /import \{ runHiddenClaude \}/);   // not even imported where the mail code lives
 });

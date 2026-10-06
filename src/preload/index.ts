@@ -2,7 +2,7 @@ import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'ele
 import type { AgentProvider } from '../shared/agentProvider';
 import type { HireManifest } from '../shared/hire';
 import type { TempRow } from '../shared/tempHistory';
-import type { MailAccountInput, MailRule } from '../shared/mail';
+import type { MailAccountInput, MailAgentSettings, MailAgentStatus, MailRule } from '../shared/mail';
 import type { MailAccountPublic, MailMessageDetail, MailMessageFilter, MailMessageSummary } from '../main/mail/store';
 import type { IdeSession } from '../shared/ideSession';
 export type { HireManifest } from '../shared/hire';
@@ -1030,6 +1030,9 @@ const api = {
   mailRuleDelete: (id: number): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('mail:ruleDelete', id),
   mailAssign: (id: number, projectKey: string | null): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('mail:assign', id, projectKey),
   mailPollNow: (): Promise<{ ok: boolean; results: { accountId: string; ingested: number; skipped: number; error?: string }[] }> => ipcRenderer.invoke('mail:pollNow'),
+  mailAgentGet: (): Promise<{ settings: MailAgentSettings; status: MailAgentStatus }> => ipcRenderer.invoke('mail:agentGet'),
+  mailAgentSet: (s: Partial<MailAgentSettings>): Promise<{ ok: boolean; error?: string; settings: MailAgentSettings; status: MailAgentStatus }> => ipcRenderer.invoke('mail:agentSet', s),
+  mailAgentTest: (): Promise<MailAgentStatus> => ipcRenderer.invoke('mail:agentTest'),
   mailSettings: (): Promise<{ pollMinutes: number; retentionDays: number }> => ipcRenderer.invoke('mail:settings'),
   // ─── Detachable IDE window ───────────────────────────────────────────────
   ideState: (): Promise<{ detached: boolean }> => ipcRenderer.invoke('ide:state'),

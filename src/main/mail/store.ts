@@ -26,7 +26,7 @@ export interface MailMessageSummary {
   receivedAt: number; hasAttachments: boolean; state: string;
   triage: {
     category: string; urgency: string; projectKey: string | null; via: string; confidence: number | null;
-    needsReply: boolean; summary: string;
+    needsReply: boolean; summary: string; suggestedAction: string;
   } | null;
 }
 export interface MailMessageDetail extends MailMessageSummary {
@@ -58,13 +58,13 @@ const summaryFrom = (r: Row): MailMessageSummary => ({
   triage: r.t_category == null ? null : {
     category: String(r.t_category), urgency: String(r.t_urgency),
     projectKey: r.t_project == null ? null : String(r.t_project), via: String(r.t_via),
-    confidence: r.t_conf == null ? null : n(r.t_conf), needsReply: n(r.t_reply) === 1, summary: String(r.t_summary)
+    confidence: r.t_conf == null ? null : n(r.t_conf), needsReply: n(r.t_reply) === 1, summary: String(r.t_summary), suggestedAction: String(r.t_action ?? '')
   }
 });
 
 const SELECT_MESSAGE = `
   SELECT m.*, t.category AS t_category, t.urgency AS t_urgency, t.project_key AS t_project, t.via AS t_via,
-         t.confidence AS t_conf, t.needs_reply AS t_reply, t.summary AS t_summary
+         t.confidence AS t_conf, t.needs_reply AS t_reply, t.summary AS t_summary, t.suggested_action AS t_action
   FROM mail_message m LEFT JOIN mail_triage t ON t.message_row_id = m.id`;
 
 export class MailStore {
@@ -124,10 +124,10 @@ export class MailStore {
   }): void {
     const c = t.classification;
     this.db.prepare(
-      `INSERT OR REPLACE INTO mail_triage (message_row_id, category, urgency, project_key, via, rule_id, confidence, needs_reply, summary, model, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT OR REPLACE INTO mail_triage (message_row_id, category, urgency, project_key, via, rule_id, confidence, needs_reply, summary, suggested_action, model, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(rowId, t.category, t.urgency, t.route?.projectKey ?? null, t.route?.via ?? 'none', t.route?.ruleId ?? null,
-      c?.confidence ?? null, c?.needsReply ? 1 : 0, c?.summary ?? '', t.model, t.at);
+      c?.confidence ?? null, c?.needsReply ? 1 : 0, c?.summary ?? '', c?.suggestedAction ?? '', t.model, t.at);
     this.db.prepare('UPDATE mail_message SET state = ? WHERE id = ?').run(t.route ? 'routed' : 'classified', rowId);
   }
   /** Manual assignment from the UI; null returns the message to "Da assegnare". */

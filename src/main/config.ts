@@ -432,6 +432,8 @@ export interface HarnessConfig {
    *  days a message BODY is kept before only its metadata remains (default 30, 0 = keep). */
   mailPollMinutes?: number;
   mailRetentionDays?: number;
+  /** The mail agent: a model on THIS Mac (loopback endpoint) or none. See shared/mail.ts. */
+  mailAgent?: { enabled: boolean; baseUrl: string; model: string };
   /** Fire native desktop notifications on agent lifecycle events (idle finish / waiting for input). */
   notifications?: boolean;
   /** Opt-in "strong keep-alive": while ≥1 agent PTY is live, escalate the power

@@ -156,6 +156,7 @@ export interface HarnessConfig {
   knowledgeGraph?: KnowledgeGraphConfig;
   mailPollMinutes?: number;
   mailRetentionDays?: number;
+  mailAgent?: { enabled: boolean; baseUrl: string; model: string };
   /** TV-show office themes feature flag (Settings picker + switch flow). Default OFF. */
   tvShowOffices?: boolean;
   /** Active office map/cast theme (honored only when tvShowOffices is on). */

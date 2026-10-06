@@ -18,7 +18,7 @@
 import Database from 'better-sqlite3';
 import { app } from 'electron';
 import { join } from 'node:path';
-import { MAIL_SCHEMA_SQL } from './mail/schema';
+import { MAIL_SCHEMA_SQL, MAIL_SCHEMA_V3_SQL } from './mail/schema';
 
 /** A captured user prompt, as returned to the renderer (camelCase columns). */
 export interface CommandHistoryRow {
@@ -67,7 +67,9 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
     `);
   },
   // → user_version 2: mail area, phase 1 (read-only ingest + triage).
-  (db) => { db.exec(MAIL_SCHEMA_SQL); }
+  (db) => { db.exec(MAIL_SCHEMA_SQL); },
+  // → user_version 3: the mail agent's suggested action.
+  (db) => { db.exec(MAIL_SCHEMA_V3_SQL); }
 ];
 
 export class PersistStore {
