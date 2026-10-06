@@ -1538,8 +1538,8 @@ let lastSlackUrl: string | undefined;
  *  only — the human-facing kanban card TITLE stays the user's raw text (the
  *  renderer keeps them split). Trailing space is intentional so the user's message
  *  reads naturally after it. */
-function buildAutonomousRequestProtocol(channel: string, threadTs: string, helperPath: string): string {
-  return `[AUTONOMOUS REQUEST PROTOCOL — this request arrived via Slack; no interactive human is watching] Handle it under this protocol:
+function buildAutonomousRequestProtocol(channel: string, threadTs: string, helperPath: string, project?: string | null): string {
+  return `[AUTONOMOUS REQUEST PROTOCOL — this request arrived via Slack${project ? `; project: ${project}` : ''}; no interactive human is watching] Handle it under this protocol:
 1. ROUTE FAST — triage and hand this to the single most-relevant agent right away. CHECK THE LIVE ROSTER FIRST (active agents in registry.json + their state in fleet.json) and prefer an EXISTING agent that fits — especially when the request names one ("ask Pam…", "have Jim…"): route to that agent and only spawn a new one if none is a sensible fit. Decompose only if it genuinely needs several. Don't sit on it.
 2. DELEGATE WITH THE REPLY HANDLE — tell that agent to do the work autonomously AND to post its result back to THIS Slack thread itself when done, using exactly: "${hive.nodeCommand()}" "${helperPath}" --channel ${channel} --thread ${threadTs} --text "<substantive result>" (that first path is the harness's bundled Node, already resolved for this machine — pass it verbatim; bare "node" is not on the hook/agent PATH on many machines.)
 3. AUTONOMOUS EXECUTION — no interactive questions. PAUSE/ask ONLY for high-severity actions: pushing to main or any remote; buying or spawning infrastructure or paid services; deleting an existing repo, file, or folder it did not create. Stay READ-ONLY at critical infrastructure and git-push-type changes unless explicitly approved.
@@ -1867,7 +1867,7 @@ async function startSlackServer(): Promise<{ ok: boolean; url?: string; error?: 
     // Server-side so it applies to every session.
     const ipcMsg: { text: string; channel: string; ts: string; thread_ts: string; autonomyPreamble: string; files?: typeof localFiles } = {
       text: m.text, channel: m.channel, ts: m.ts, thread_ts: m.thread_ts,
-      autonomyPreamble: buildAutonomousRequestProtocol(m.channel, m.thread_ts, slackReplyScriptPath())
+      autonomyPreamble: buildAutonomousRequestProtocol(m.channel, m.thread_ts, slackReplyScriptPath(), jiraProjects.slackProjectFor(m.channel))
     };
     if (localFiles.length > 0) ipcMsg.files = localFiles;
     try { liveWebContents()?.send('slack:incomingMessage', ipcMsg); }
@@ -5611,7 +5611,7 @@ async function processSpawnRequest(filePath: string): Promise<void> {
   // dispatch per its protocol.
   try {
     const prefix = slack
-      ? buildAutonomousRequestProtocol(slack.channel, slack.thread_ts, slackReplyScriptPath())
+      ? buildAutonomousRequestProtocol(slack.channel, slack.thread_ts, slackReplyScriptPath(), jiraProjects.slackProjectFor(slack.channel))
       : '[AUTONOMOUS WORKER TASK — no interactive human is watching. Work autonomously; do not ask interactive questions.] The task starts now: ';
     const suffix = `\n\n[CAPABILITIES] Before you start, consult your capability catalog — run the \`/capabilities\` skill (or read \`$AGENT_DIR/.claude/skills/capabilities/SKILL.md\`). It lists your temporal date-range skills (\`/today\`, \`/last30Days\`, \`/lastQuarter\`, …) and the integrations available to you (reached via the loopback broker) and how to call each. For any time-scoped work, resolve the dates with those skills instead of computing them by hand.\n\n[WORKER COMPLETION] When finished, signal done by sending ONE outbox message to god with "act":"done" and a short result summary — that releases this ephemeral worker (terminal closed; your branch is handed to god). Do NOT push to any remote; god is the sole integrator.`;
     hive.send({ to: workerId, conversation: `worker-${reqId}`, act: 'request', subject: meta.name, body: `${prefix}${objective}${suffix}` }, 'god');

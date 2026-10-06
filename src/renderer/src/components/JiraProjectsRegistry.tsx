@@ -319,6 +319,12 @@ export function JiraProjectsRegistry() {
             <span style={hint}>{tr('jiraProjects.magentoConfigHint')}</span>
           </div>
 
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={fieldLabel}>{tr('jiraProjects.slackChannels')}</span>
+            <input value={draft.slackChannels} onChange={(e) => patch({ slackChannels: e.target.value })} placeholder="C03G9FGU2RE, CBCT8Q00Z" style={{ ...inputStyle, fontFamily: 'var(--cth-font-mono)' }} />
+            <span style={hint}>{tr('jiraProjects.slackChannelsHint')}</span>
+          </div>
+
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             <span style={fieldLabel}>{tr('jiraProjects.trelloTitle')}</span>
 

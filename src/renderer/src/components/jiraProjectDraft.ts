@@ -10,7 +10,7 @@
  * and nowhere else), which makes it exactly the place normalization belongs
  * and exactly the place worth unit-testing.
  */
-import type { JiraProjectBinding } from '@shared/jiraProjects';
+import { normalizeSlackChannels, type JiraProjectBinding } from '@shared/jiraProjects';
 import { normalizeIntakeLists, type TrelloIntakeBinding } from '@shared/trelloIntake';
 
 export interface Draft {
@@ -20,6 +20,8 @@ export interface Draft {
   baseBranch: string;
   /** Absolute path to the project's magento-mcp config JSON; '' = none. */
   magentoMcpConfig: string;
+  /** Slack channel ids as typed (comma/space/newline separated); '' = none. */
+  slackChannels: string;
   agents: string[]; // agent ids, empty = any agent
   enabled: boolean;
   /** Trello source, or undefined when this project has none. The raw URL is
@@ -33,6 +35,7 @@ export function draftFromBinding(b: JiraProjectBinding): Draft {
   return {
     isNew: false, key: b.key, repo: b.repo, baseBranch: b.baseBranch,
     magentoMcpConfig: b.magentoMcpConfig ?? '',
+    slackChannels: (b.slackChannels ?? []).join(', '),
     agents: b.agents ?? [], enabled: b.enabled,
     trello: b.trello,
     trelloUrl: b.trello ? `https://trello.com/b/${b.trello.boardShortLink}` : ''
@@ -40,7 +43,7 @@ export function draftFromBinding(b: JiraProjectBinding): Draft {
 }
 
 export function emptyDraft(): Draft {
-  return { isNew: true, key: '', repo: '', baseBranch: '', magentoMcpConfig: '', agents: [], enabled: true, trelloUrl: '' };
+  return { isNew: true, key: '', repo: '', baseBranch: '', magentoMcpConfig: '', slackChannels: '', agents: [], enabled: true, trelloUrl: '' };
 }
 
 /**
@@ -59,12 +62,14 @@ export function emptyDraft(): Draft {
  * non-UI callers.)
  */
 export function bindingFromDraft(d: Draft): JiraProjectBinding {
+  const slackChannels = normalizeSlackChannels((d.slackChannels ?? '').split(/[\s,;]+/));
   return {
     key: d.key.trim().toUpperCase(),
     repo: d.repo.trim(),
     baseBranch: d.baseBranch.trim(),
     agents: d.agents.length > 0 ? d.agents : undefined,
     enabled: d.enabled,
+    ...(slackChannels.length ? { slackChannels } : {}),
     ...(d.magentoMcpConfig?.trim() ? { magentoMcpConfig: d.magentoMcpConfig.trim() } : {}),
     ...(d.trello
       ? {

@@ -11,10 +11,17 @@ import { isAbsolute } from 'node:path';
 import {
   type JiraProjectBinding,
   validateJiraKeyFormat,
-  hasDuplicateKey
+  hasDuplicateKey,
+  validateSlackChannels,
+  normalizeSlackChannels,
+  parseSlackChannelsJson,
+  resolveSlackProject
 } from '../shared/jiraProjects';
 import { validateTrelloIntake } from '../shared/trelloIntake';
 import { readConfig, writeConfig } from './config';
+import { expandTilde } from './fs';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 export interface JiraValidationDeps {
   isRepo: (cwd: string) => Promise<boolean>;
@@ -86,6 +93,9 @@ export async function validateJiraProjectBinding(
     if (trelloError) return { ok: false, error: trelloError };
   }
 
+  const slackError = validateSlackChannels(binding.slackChannels, otherBindings);
+  if (slackError) return { ok: false, error: slackError };
+
   const magento = binding.magentoMcpConfig?.trim();
   if (magento) {
     if (!isAbsolute(magento)) return { ok: false, error: `Magento MCP config must be an absolute path: ${magento}` };
@@ -141,7 +151,10 @@ export async function upsertBinding(
   const others = current.filter((b) => b.key.toUpperCase() !== binding.key.toUpperCase());
   const result = await validateJiraProjectBinding(binding, others, deps);
   if (!result.ok) return result;
-  const next = [...others, binding];
+  const slackChannels = normalizeSlackChannels(binding.slackChannels);
+  const { slackChannels: _drop, ...rest } = binding;
+  const stored: JiraProjectBinding = slackChannels.length ? { ...rest, slackChannels } : rest;
+  const next = [...others, stored];
   writeConfig({ jiraProjects: next });
   return { ok: true, bindings: next };
 }
@@ -152,4 +165,16 @@ export function removeBinding(key: string): JiraProjectBinding[] {
   const next = listBindings().filter((b) => b.key.toUpperCase() !== k);
   writeConfig({ jiraProjects: next });
   return next;
+}
+
+/** The project a Slack channel belongs to (binding first; legacy
+ *  <harnessHome>/hive/slack-channels.json only until the migration latch is set); null = unmapped. */
+export function slackProjectFor(channel: string): string | null {
+  const cfg = readConfig();
+  let legacy: Record<string, string> = {};
+  try {
+    // Once the one-shot import has run, the bindings are the only source of truth.
+    if (cfg.harnessHome && !cfg.slackChannelsImported) legacy = parseSlackChannelsJson(readFileSync(join(expandTilde(cfg.harnessHome), 'hive', 'slack-channels.json'), 'utf8'));
+  } catch { /* no legacy file */ }
+  return resolveSlackProject(cfg.jiraProjects, channel, legacy);
 }

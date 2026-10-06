@@ -1523,6 +1523,8 @@
     "baseBranch": "Base branch",
     "magentoConfig": "Magento MCP config (optional)",
     "magentoConfigHint": "Absolute path to this project's magento-mcp JSON. Only this project's agents get the production Magento server; empty = not mounted. Never readable by agents.",
+    "slackChannels": "Slack channels",
+    "slackChannelsHint": "Slack channel ids (optional, comma-separated, e.g. C03G9FGU2RE). Messages from these channels are tagged with this project when handed to god. A channel belongs to one project; unmapped channels behave as before.",
     "agents": "Agents",
     "agentsHint": "Leave empty for any agent.",
     "enabled": "Enabled",
