@@ -14,7 +14,9 @@ import {
   type JiraProjectBinding,
   type JiraPollSettings,
   DEFAULT_JIRA_POLL_SETTINGS,
-  parseJiraMapJson
+  parseJiraMapJson,
+  parseSlackChannelsJson,
+  importSlackChannels
 } from '../shared/jiraProjects';
 import { MAX_AGENT_TOKEN_CAP } from '../shared/tokenCaps';
 import { expandTilde, normalizeHiveHome } from './fs';
@@ -373,6 +375,8 @@ export interface HarnessConfig {
   /** One-time guard: has hive/jira-map.json been imported into jiraProjects?
    *  Prevents re-importing after the user deletes bindings on purpose. */
   jiraProjectsImported?: boolean;
+  /** One-time guard: has hive/slack-channels.json been folded into the bindings' slackChannels? */
+  slackChannelsImported?: boolean;
   /** Mirrors opsStandupSeeded/heartbeatSeeded for JIRA_POLL_MISSION. */
   jiraPollSeeded?: boolean;
   /** Mirrors jiraPollSeeded for TRELLO_INTAKE_MISSION. */
@@ -792,6 +796,26 @@ function migrateJiraProjectsV1(cfg: HarnessConfig): HarnessConfig {
   }
 }
 
+let slackChannelsMigrationRan = false;
+
+/** One-shot import of hive/slack-channels.json into the bindings' `slackChannels`.
+ *  The file is never touched (it stays as the resolver's fallback). Waits (no latch)
+ *  until there are bindings to attach channels to. */
+function migrateSlackChannelsV1(cfg: HarnessConfig): HarnessConfig {
+  if (cfg.slackChannelsImported || slackChannelsMigrationRan) return cfg;
+  if (!cfg.harnessHome || !cfg.jiraProjects?.length) return cfg;
+  slackChannelsMigrationRan = true;
+  try {
+    const p = join(expandTilde(cfg.harnessHome), 'hive', 'slack-channels.json');
+    const legacy = existsSync(p) ? parseSlackChannelsJson(readFileSync(p, 'utf8')) : {};
+    const next: HarnessConfig = { ...cfg, jiraProjects: importSlackChannels(cfg.jiraProjects, legacy), slackChannelsImported: true };
+    persistConfig(next);
+    return next;
+  } catch {
+    return cfg; // retried next launch
+  }
+}
+
 export function readConfig(): HarnessConfig {
   const p = configPath();
   // No file yet = a first run with nothing to migrate; the defaults ARE the
@@ -801,7 +825,7 @@ export function readConfig(): HarnessConfig {
   try {
     const raw = readFileSync(p, 'utf8');
     const parsed = JSON.parse(raw);
-    return migrateJiraProjectsV1(normalizeStoredHomes(migrateTriggersV1(withTriggerDefaults({ ...DEFAULTS, ...parsed }))));
+    return migrateSlackChannelsV1(migrateJiraProjectsV1(normalizeStoredHomes(migrateTriggersV1(withTriggerDefaults({ ...DEFAULTS, ...parsed })))));
   } catch {
     return withTriggerDefaults({ ...DEFAULTS });
   }
@@ -948,6 +972,7 @@ export function resetConfig(): HarnessConfig {
   // in this process. The migration itself is a no-op on defaults either way.
   triggersMigrationRan = false;
   jiraProjectsMigrationRan = false;
+  slackChannelsMigrationRan = false;
   return withTriggerDefaults({ ...DEFAULTS });
 }
 

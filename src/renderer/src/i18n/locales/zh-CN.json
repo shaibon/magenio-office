@@ -1523,6 +1523,8 @@
     "baseBranch": "基础分支",
     "magentoConfig": "Magento MCP 配置（可选）",
     "magentoConfigHint": "此项目的 magento-mcp JSON 的绝对路径。只有该项目的代理能使用生产 Magento 服务器；留空 = 不挂载。代理无法读取该文件。",
+    "slackChannels": "Slack 频道",
+    "slackChannelsHint": "Slack 频道 ID（可选，逗号分隔，例如 C03G9FGU2RE）。来自这些频道的消息在交给 god 时会标注此项目。一个频道只属于一个项目；未映射的频道行为不变。",
     "agents": "代理",
     "agentsHint": "留空表示任意代理。",
     "enabled": "已启用",

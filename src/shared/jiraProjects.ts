@@ -29,6 +29,11 @@ export interface JiraProjectBinding {
    *  credentials). Absent = the Magento production MCP is NOT mounted for this
    *  project's agents (fail closed). */
   magentoMcpConfig?: string;
+  /** Slack channel ids (e.g. "C03G9FGU2RE") whose messages belong to this project.
+   *  The Slack trigger resolves channel -> project from here and tells god which
+   *  project a request is about. Absent/empty = no channel; a channel maps to at
+   *  most one project. */
+  slackChannels?: string[];
   /** Exclude a project from the poll without deleting it. */
   enabled: boolean;
 }
@@ -122,4 +127,79 @@ export function parseJiraMapJson(raw: string): { bindings: JiraProjectBinding[];
   }
 
   return { bindings, poll };
+}
+
+/** Slack conversation id shape (public/private channel, group, DM): C/G/D + 8-14 uppercase alphanumerics. */
+export const SLACK_CHANNEL_RE = /^[CGD][A-Z0-9]{8,14}$/;
+
+/** Trims, uppercases, drops blanks and duplicates, keeps order. */
+export function normalizeSlackChannels(list: readonly string[] | undefined): string[] {
+  const out: string[] = [];
+  for (const c of list ?? []) {
+    const id = String(c).trim().toUpperCase();
+    if (id && !out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
+/** Error message, or null. `others` must exclude the binding being validated. */
+export function validateSlackChannels(
+  list: readonly string[] | undefined,
+  others: readonly JiraProjectBinding[]
+): string | null {
+  for (const id of normalizeSlackChannels(list)) {
+    if (!SLACK_CHANNEL_RE.test(id)) return `"${id}" is not a Slack channel id (e.g. "C03G9FGU2RE").`;
+    const owner = others.find((b) => normalizeSlackChannels(b.slackChannels).includes(id));
+    if (owner) return `Slack channel ${id} is already bound to ${owner.key}.`;
+  }
+  return null;
+}
+
+/** Legacy hive/slack-channels.json -> channel id => project key. Never throws. */
+export function parseSlackChannelsJson(raw: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  try {
+    const ch = (JSON.parse(raw) as { channels?: unknown })?.channels;
+    if (!ch || typeof ch !== 'object') return out;
+    for (const [id, v] of Object.entries(ch as Record<string, unknown>)) {
+      const project = (v as { project?: unknown } | null)?.project;
+      if (typeof project === 'string' && project.trim() && project.toUpperCase() !== 'ALL') {
+        out[id.trim().toUpperCase()] = project.trim().toUpperCase();
+      }
+    }
+  } catch { /* malformed -> empty */ }
+  return out;
+}
+
+/** The project a Slack channel belongs to: an enabled binding's `slackChannels`
+ *  first, then the legacy map as a fallback; null = unmapped (behaves as before). */
+export function resolveSlackProject(
+  bindings: readonly JiraProjectBinding[] | undefined,
+  channel: string,
+  legacy: Readonly<Record<string, string>> = {}
+): string | null {
+  const id = channel.trim().toUpperCase();
+  if (!id) return null;
+  const hit = (bindings ?? []).find((b) => b.enabled && normalizeSlackChannels(b.slackChannels).includes(id));
+  return hit?.key ?? legacy[id] ?? null;
+}
+
+/** One-shot import: adds each legacy channel to the binding whose key matches its
+ *  project (skipping ids already bound anywhere). Returns the same array when nothing changes. */
+export function importSlackChannels(
+  bindings: readonly JiraProjectBinding[],
+  legacy: Readonly<Record<string, string>>
+): JiraProjectBinding[] {
+  const bound = new Set(bindings.flatMap((b) => normalizeSlackChannels(b.slackChannels)));
+  let changed = false;
+  const next = bindings.map((b) => {
+    const add = Object.entries(legacy)
+      .filter(([id, key]) => key === b.key.toUpperCase() && !bound.has(id) && SLACK_CHANNEL_RE.test(id))
+      .map(([id]) => id);
+    if (!add.length) return b;
+    changed = true;
+    add.forEach((id) => bound.add(id));
+    return { ...b, slackChannels: [...normalizeSlackChannels(b.slackChannels), ...add] };
+  });
+  return changed ? next : (bindings as JiraProjectBinding[]);
 }
