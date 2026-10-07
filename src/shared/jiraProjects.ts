@@ -11,6 +11,11 @@
 
 import type { TrelloIntakeBinding } from './trelloIntake';
 
+export interface GlitchtipBinding {
+  enabled: boolean;
+  projects: string[];
+}
+
 export interface JiraProjectBinding {
   /** Jira project key, e.g. "BURD". Immutable once created (identity for CRUD). */
   key: string;
@@ -34,6 +39,9 @@ export interface JiraProjectBinding {
    *  project a request is about. Absent/empty = no channel; a channel maps to at
    *  most one project. */
   slackChannels?: string[];
+  /** GlitchTip projects (slugs, e.g. "bravifarmacie-prod") whose errors belong to
+   *  this project. Absent = none. A slug belongs to at most one project. */
+  glitchtip?: GlitchtipBinding;
   /** Exclude a project from the poll without deleting it. */
   enabled: boolean;
 }
@@ -208,4 +216,31 @@ export function importSlackChannels(
     return { ...b, slackChannels: [...normalizeSlackChannels(b.slackChannels), ...add] };
   });
   return changed ? next : (bindings as JiraProjectBinding[]);
+}
+
+/** GlitchTip project slug: lowercase letters/digits, `.`, `_`, `-`. */
+export const GLITCHTIP_SLUG_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+
+/** Trims, lowercases, drops blanks and duplicates. Returns undefined when no slug remains
+ *  (a binding with nothing to match is stored as "no GlitchTip"). */
+export function normalizeGlitchtip(g: Partial<GlitchtipBinding> | undefined): GlitchtipBinding | undefined {
+  const projects: string[] = [];
+  for (const p of Array.isArray(g?.projects) ? g.projects : []) {
+    const slug = String(p).trim().toLowerCase();
+    if (slug && !projects.includes(slug)) projects.push(slug);
+  }
+  return projects.length ? { enabled: g?.enabled !== false, projects } : undefined;
+}
+
+/** Error message, or null. `others` must exclude the binding being validated. */
+export function validateGlitchtip(
+  g: Partial<GlitchtipBinding> | undefined,
+  others: readonly JiraProjectBinding[]
+): string | null {
+  for (const slug of normalizeGlitchtip(g)?.projects ?? []) {
+    if (!GLITCHTIP_SLUG_RE.test(slug)) return `"${slug}" is not a GlitchTip project slug (e.g. "bravifarmacie-prod").`;
+    const owner = others.find((b) => normalizeGlitchtip(b.glitchtip)?.projects.includes(slug));
+    if (owner) return `GlitchTip project ${slug} is already bound to ${owner.key}.`;
+  }
+  return null;
 }

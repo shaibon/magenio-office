@@ -13,6 +13,8 @@ import {
   validateJiraKeyFormat,
   hasDuplicateKey,
   validateSlackChannels,
+  normalizeGlitchtip,
+  validateGlitchtip,
   normalizeSlackChannels,
   parseSlackChannelsJson,
   resolveSlackProject
@@ -96,6 +98,9 @@ export async function validateJiraProjectBinding(
   const slackError = validateSlackChannels(binding.slackChannels, otherBindings);
   if (slackError) return { ok: false, error: slackError };
 
+  const glitchError = validateGlitchtip(binding.glitchtip, otherBindings);
+  if (glitchError) return { ok: false, error: glitchError };
+
   const magento = binding.magentoMcpConfig?.trim();
   if (magento) {
     if (!isAbsolute(magento)) return { ok: false, error: `Magento MCP config must be an absolute path: ${magento}` };
@@ -152,8 +157,9 @@ export async function upsertBinding(
   const result = await validateJiraProjectBinding(binding, others, deps);
   if (!result.ok) return result;
   const slackChannels = normalizeSlackChannels(binding.slackChannels);
-  const { slackChannels: _drop, ...rest } = binding;
-  const stored: JiraProjectBinding = slackChannels.length ? { ...rest, slackChannels } : rest;
+  const glitchtip = normalizeGlitchtip(binding.glitchtip);
+  const { slackChannels: _drop, glitchtip: _dropG, ...rest } = binding;
+  const stored: JiraProjectBinding = { ...rest, ...(slackChannels.length ? { slackChannels } : {}), ...(glitchtip ? { glitchtip } : {}) };
   const next = [...others, stored];
   writeConfig({ jiraProjects: next });
   return { ok: true, bindings: next };
