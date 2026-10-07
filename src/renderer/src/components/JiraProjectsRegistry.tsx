@@ -325,6 +325,16 @@ export function JiraProjectsRegistry() {
             <span style={hint}>{tr('jiraProjects.slackChannelsHint')}</span>
           </div>
 
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={fieldLabel}>{tr('jiraProjects.glitchtip')}</span>
+            <input value={draft.glitchtip} onChange={(e) => patch({ glitchtip: e.target.value })} placeholder="bravifarmacie-prod" style={{ ...inputStyle, fontFamily: 'var(--cth-font-mono)' }} />
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+              <input type="checkbox" checked={draft.glitchtipEnabled} onChange={(e) => patch({ glitchtipEnabled: e.target.checked })} />
+              {tr('jiraProjects.glitchtipEnabled')}
+            </label>
+            <span style={hint}>{tr('jiraProjects.glitchtipHint')}</span>
+          </div>
+
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             <span style={fieldLabel}>{tr('jiraProjects.trelloTitle')}</span>
 
