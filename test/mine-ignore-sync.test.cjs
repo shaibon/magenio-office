@@ -1,29 +1,54 @@
 'use strict';
 
 /**
- * The list of files kept out of an agent's mempalace/git index exists TWICE:
- * `src/main/hive.ts` writes it when an agent spawns, `src/main/memory.ts` writes
- * it on every mine cycle — and only the latter reaches agents that are not
- * currently running. Both carry a "MUST STAY IN SYNC" comment, which is exactly
- * the kind of invariant that drifts silently: adding a line to one file alone
- * has no visible symptom until a repo bloats again (PR #128: 7.5GB of .git from
- * versioned Codex transcripts). Pin it.
+ * `mempalace mine` honours .gitignore negation, so each agent's .gitignore leads
+ * with `/*` + `!memory.md` and a mine scans one file instead of the whole dir
+ * (qa/ and work/ held mined code copies: 8.7GB palace, 2.7GB / ~7 min per mine).
+ * hive.ts (agent birth) and memory.ts (every mine cycle) share ONE
+ * ensureMineIgnore; this pins the merge so existing files get the whitelist at
+ * the top, once, without losing their other lines.
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
+const loadTs = require('./load-ts.cjs');
 
-const read = (rel) => {
-  const src = fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
-  const m = src.match(/const MINE_IGNORE_LINES = (\[[^\]]*\]);/);
-  assert.ok(m, `MINE_IGNORE_LINES not found in ${rel}`);
-  return JSON.parse(m[1].replace(/'/g, '"'));
-};
+const { mergeMineIgnore, ensureMineIgnore, MINE_IGNORE_LINES } = loadTs('src/main/memory.ts');
+const LEAD = '/*\n!memory.md\n';
 
-test('MINE_IGNORE_LINES is identical in hive.ts and memory.ts', () => {
-  const fromHive = read('src/main/hive.ts');
-  const fromMemory = read('src/main/memory.ts');
-  assert.deepEqual(fromMemory, fromHive);
-  assert.ok(fromHive.includes('.codex/'), 'Codex homes must stay out of the index');
+test('empty file gets whitelist then ignore lines', () => {
+  const out = mergeMineIgnore('');
+  assert.ok(out.startsWith(LEAD));
+  for (const l of MINE_IGNORE_LINES) assert.ok(out.split('\n').includes(l));
+  assert.ok(MINE_IGNORE_LINES.includes('.codex/'), 'Codex homes must stay out of the index');
+});
+
+test('legacy file: whitelist prepended, custom lines kept', () => {
+  const out = mergeMineIgnore('settings.json\nfoo/\n');
+  assert.ok(out.startsWith(LEAD + 'settings.json\nfoo/\n'));
+});
+
+test('idempotent, and unchanged text is returned as-is', () => {
+  const once = mergeMineIgnore('foo/');
+  assert.equal(mergeMineIgnore(once), once);
+  assert.equal(once.split('\n').filter((l) => l === '/*').length, 1);
+});
+
+test('misplaced or duplicated whitelist is moved to the top, once', () => {
+  const out = mergeMineIgnore('foo/\n!memory.md\n/*\nbar/\n/*\n');
+  assert.ok(out.startsWith(LEAD + 'foo/\nbar/\n'));
+  assert.equal(out.split('\n').filter((l) => l === '!memory.md').length, 1);
+});
+
+test('ensureMineIgnore writes the file and skips rewriting when current', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-ign-'));
+  ensureMineIgnore(dir);
+  const f = path.join(dir, '.gitignore');
+  const a = fs.readFileSync(f, 'utf8');
+  assert.ok(a.startsWith(LEAD));
+  const m = fs.statSync(f).mtimeMs;
+  ensureMineIgnore(dir);
+  assert.equal(fs.statSync(f).mtimeMs, m);
 });

@@ -19,30 +19,43 @@ import { spawn, spawnSync } from 'node:child_process';
 import { ensureKilled } from './procKill';
 import { quarantineDirsToReap, quarantineStampMs, nextMineDelayMs } from './palaceReap';
 
-/** Non-memory files `mempalace mine` must not ingest: the Claude Code hooks
- *  config (a large JSON blob that swamps the wake-up digest), the cursor, raw
- *  inbox/outbox message JSON, and a Codex worker's private CODEX_HOME. `mempalace
- *  mine` honors .gitignore, so we drop one in each agent dir rather than touch the
- *  mine command.
+/** What `mempalace mine` may ingest: memory.md only. mempalace honours .gitignore
+ *  negation, so `/*` + `!memory.md` at the TOP of each agent's .gitignore makes a
+ *  mine scan one file instead of the agent's whole dir (qa/ and work/ held mined
+ *  code copies that took the palace to 8.7GB and a mine to 2.7GB / ~7 min). The
+ *  per-file lines below stay for git: they keep settings.json, the cursor, raw
+ *  message JSON and a Codex worker's private CODEX_HOME (`.codex/`, which once
+ *  took the hive's .git to 7.5GB) out of the hive repo's history.
  *
- *  MUST STAY IN SYNC with MINE_IGNORE_LINES in hive.ts — that copy is written when
- *  an agent spawns, this one on every mine cycle, and only this one reaches agents
- *  that are not currently running. See hive.ts for why `.codex/` matters beyond
- *  mempalace: it is also what stopped the hive's git repo from versioning every
- *  Codex transcript and sqlite log into a 7.5GB history. */
-const MINE_IGNORE_LINES = ['settings.json', 'cursor.json', 'inbox/', 'outbox/', '.codex/'];
+ *  hive.ts imports ensureMineIgnore from here, so there is a single copy. */
+export const MINE_WHITELIST = ['/*', '!memory.md'];
+export const MINE_IGNORE_LINES = ['settings.json', 'cursor.json', 'inbox/', 'outbox/', '.codex/'];
 
-/** Idempotently ensure `<agentDir>/.gitignore` excludes the non-memory files.
- *  Writes only the missing lines (append-only) so it's safe to call every cycle. */
-function ensureMineIgnore(agentDir: string): void {
+/** Pure merge: the whitelist leads (order matters — the negation must follow `/*`),
+ *  any stray copies of it are dropped, every other existing line is kept as is,
+ *  and missing ignore lines are appended. Returns `existing` unchanged when
+ *  nothing needs to change. */
+export function mergeMineIgnore(existing: string): string {
+  const lines = existing.split('\n');
+  if (lines[lines.length - 1] === '') lines.pop();
+  const trimmed = lines.map((l) => l.trim());
+  const leads = MINE_WHITELIST.every((w, i) => trimmed[i] === w);
+  const rest = leads ? lines.slice(MINE_WHITELIST.length) : lines.filter((l) => !MINE_WHITELIST.includes(l.trim()));
+  const have = new Set(rest.map((l) => l.trim()));
+  const missing = MINE_IGNORE_LINES.filter((l) => !have.has(l));
+  if (leads && missing.length === 0 && !rest.some((l) => MINE_WHITELIST.includes(l.trim()))) return existing;
+  return [...MINE_WHITELIST, ...rest.filter((l) => !MINE_WHITELIST.includes(l.trim())), ...missing].join('\n') + '\n';
+}
+
+/** Idempotently ensure `<agentDir>/.gitignore` carries the whitelist and ignore
+ *  lines. Safe to call every cycle: it only writes when the content changes. */
+export function ensureMineIgnore(agentDir: string): void {
   const path = join(agentDir, '.gitignore');
   let existing = '';
   try { if (existsSync(path)) existing = readFileSync(path, 'utf8'); } catch { return; }
-  const have = new Set(existing.split('\n').map((l) => l.trim()));
-  const missing = MINE_IGNORE_LINES.filter((l) => !have.has(l));
-  if (missing.length === 0) return; // already covered — don't rewrite every cycle
-  const prefix = existing && !existing.endsWith('\n') ? existing + '\n' : existing;
-  try { writeFileSync(path, prefix + missing.join('\n') + '\n', 'utf8'); } catch { /* best-effort */ }
+  const next = mergeMineIgnore(existing);
+  if (next === existing) return;
+  try { writeFileSync(path, next, 'utf8'); } catch { /* best-effort */ }
 }
 
 export type EmbeddingModel = 'minilm' | 'embeddinggemma';

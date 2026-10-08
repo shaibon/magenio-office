@@ -46,6 +46,7 @@ import { expandTilde, isInsideGitRepo } from './fs';
 import { resolveGodName } from '../shared/godIdentity';
 import type { VaultMount } from '../shared/vaultMount';
 import { hookTrustToml, listCodexHooks, type ListedHook } from './codexHookTrust';
+import { ensureMineIgnore } from './memory';
 import { resolveCommand, userShellPath } from './shellEnv';
 import { checkMcpPresence, nodePresenceDeps } from './mcpProvision';
 import { probeStdioServer, type McpServerSpec } from './mcpProbe';
@@ -219,38 +220,9 @@ function shortRand(): string {
   return randomBytes(3).toString('hex');
 }
 
-/** Non-memory files `mempalace mine` must not ingest (Claude Code hooks config,
- *  cursor, raw inbox/outbox JSON). `mempalace mine` honors .gitignore, so we drop
- *  one in each agent dir; written on birth here and refreshed by the mine loop.
- *
- *  `.codex/` is here for a second reason as well, and it is the load-bearing one:
- *  a Codex worker's CODEX_HOME lives INSIDE its agent dir (see installCodexHooks —
- *  Codex can only be given hooks through a config.toml in its own home, so it
- *  cannot share the user's ~/.codex). Codex then fills that folder with full
- *  session transcripts, an 80MB+ logs sqlite and a plugin cache, and the hive's
- *  git repo was faithfully versioning every revision of all of it. Twenty Codex
- *  agents took the hive's .git to 7.5GB, at which point git's own auto-gc tried to
- *  repack it and took 22GB of RAM doing so — the machine swapped, the app stopped
- *  responding. None of it was ever wanted in history: it is Codex's private
- *  scratch state, and it stays on disk (so resume still works) either way. */
 /** Proxy-bridge sidecar bind attempts per spawn, and the pause before each retry. */
 const PROXY_BIND_ATTEMPTS = 3;
 const PROXY_BIND_BACKOFF_MS = [250, 750];
-
-const MINE_IGNORE_LINES = ['settings.json', 'cursor.json', 'inbox/', 'outbox/', '.codex/'];
-
-/** Idempotently ensure `<agentDir>/.gitignore` excludes the non-memory files.
- *  Append-only: writes only the missing lines, leaving any existing entries. */
-function ensureMineIgnore(agentDir: string): void {
-  const path = join(agentDir, '.gitignore');
-  let existing = '';
-  try { if (existsSync(path)) existing = readFileSync(path, 'utf8'); } catch { return; }
-  const have = new Set(existing.split('\n').map((l) => l.trim()));
-  const missing = MINE_IGNORE_LINES.filter((l) => !have.has(l));
-  if (missing.length === 0) return;
-  const prefix = existing && !existing.endsWith('\n') ? existing + '\n' : existing;
-  try { writeFileSync(path, prefix + missing.join('\n') + '\n', 'utf8'); } catch { /* best-effort */ }
-}
 
 /** Best-effort: resolve the real git "common dir" for `repoDir` — the directory
  *  holding `info/exclude`, `refs/`, `objects/`, shared across every worktree of
