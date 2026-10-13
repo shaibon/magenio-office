@@ -1186,6 +1186,14 @@
     "copyPath": "Copy path"
   },
   "fullscreenTerminal": {
+    "projectOpen": "Collapse {{name}}",
+    "projectClosed": "Expand {{name}}",
+    "agentCount": "{{count}} agents",
+    "reorderLocked": "Project order locked — click to allow drag reordering",
+    "reorderUnlocked": "Drag handles on — click to lock the order",
+    "moveUp": "Move {{name}} up",
+    "moveDown": "Move {{name}} down",
+    "dragProject": "Drag to reorder {{name}}",
     "showAgentList": "Show the agent list",
     "hideAgentList": "Hide the agent list — full-width terminal",
     "lightTheme": "Switch to the light theme",

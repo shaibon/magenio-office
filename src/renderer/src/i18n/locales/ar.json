@@ -1186,6 +1186,14 @@
     "copyPath": "نسخ المسار"
   },
   "fullscreenTerminal": {
+    "projectOpen": "طي {{name}}",
+    "projectClosed": "توسيع {{name}}",
+    "agentCount": "{{count}} وكلاء",
+    "reorderLocked": "ترتيب المشاريع مقفل — انقر للسماح بالسحب",
+    "reorderUnlocked": "مقابض السحب مفعّلة — انقر لقفل الترتيب",
+    "moveUp": "نقل {{name}} للأعلى",
+    "moveDown": "نقل {{name}} للأسفل",
+    "dragProject": "اسحب لإعادة ترتيب {{name}}",
     "showAgentList": "أظهر قائمة الوكلاء",
     "hideAgentList": "أخفِ قائمة الوكلاء — طرفية بعرض كامل",
     "lightTheme": "التبديل إلى السِمة الفاتحة",

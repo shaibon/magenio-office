@@ -1186,6 +1186,14 @@
     "copyPath": "复制路径"
   },
   "fullscreenTerminal": {
+    "projectOpen": "折叠 {{name}}",
+    "projectClosed": "展开 {{name}}",
+    "agentCount": "{{count}} 个智能体",
+    "reorderLocked": "项目顺序已锁定 — 点击以允许拖动排序",
+    "reorderUnlocked": "拖动手柄已开启 — 点击以锁定顺序",
+    "moveUp": "上移 {{name}}",
+    "moveDown": "下移 {{name}}",
+    "dragProject": "拖动以重新排序 {{name}}",
     "showAgentList": "显示智能体列表",
     "hideAgentList": "隐藏智能体列表——全宽终端",
     "lightTheme": "切换到浅色主题",

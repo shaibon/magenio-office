@@ -23,6 +23,7 @@ import { useHasTerminalDraft, disposeTerminal, reflowTerminal, notifyThemeChange
 import { useAppTheme, toggleAppTheme } from '@/design/theme';
 import type { HarnessConfig } from '@/store/config';
 import { useRtl } from '@/i18n/useDirection';
+import { applyOrder, moveKey, parseKeys } from './rosterOrder';
 
 /** Roster rail width. A fixed 232px is right on a 14" laptop but reads as a
  *  sliver on a 27" display, where names truncate for no reason — so it tracks
@@ -30,6 +31,12 @@ import { useRtl } from '@/i18n/useDirection';
 const SIDEBAR_WIDTH = 'clamp(232px, 14vw, 340px)';
 /** Remembers the roster collapse across fullscreen sessions and app restarts. */
 const ROSTER_COLLAPSED_KEY = 'cth.fullscreen.rosterCollapsed';
+/** Per-project accordion state and project order — same localStorage convention
+ *  as the roster collapse above (the app keeps renderer prefs there). */
+const ROSTER_CLOSED_KEY = 'cth.fullscreen.closedProjects';
+const ROSTER_ORDER_KEY = 'cth.fullscreen.projectOrder';
+const readKeys = (k: string): string[] => { try { return parseKeys(localStorage.getItem(k)); } catch { return []; } };
+const writeKeys = (k: string, v: string[]): void => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode */ } };
 
 /** Roster type scale, derived from the shared terminal zoom so Cmd +/- resizes
  *  the whole roster along with the terminal — one knob for the whole view
@@ -133,6 +140,25 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
       return next;
     });
   };
+  // Project accordion + order. Order is locked by default (drag only after the
+  // padlock is opened) so a stray mouse-down can't reshuffle the roster.
+  const [closedProjects, setClosedProjects] = useState<string[]>(() => readKeys(ROSTER_CLOSED_KEY));
+  const [savedOrder, setSavedOrder] = useState<string[]>(() => readKeys(ROSTER_ORDER_KEY));
+  const [orderUnlocked, setOrderUnlocked] = useState(false);
+  const [groupDrag, setGroupDrag] = useState<string | null>(null);
+  const [groupOver, setGroupOver] = useState<string | null>(null);
+  const toggleProject = (key: string): void => setClosedProjects((prev) => {
+    const next = prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key];
+    writeKeys(ROSTER_CLOSED_KEY, next);
+    return next;
+  });
+  const moveProject = (from: string, to: string): void => {
+    const order = groups.map(([k]) => k);
+    const next = moveKey(order, from, to);
+    if (next === order) return;
+    setSavedOrder(next);
+    writeKeys(ROSTER_ORDER_KEY, next);
+  };
   const drag: RowDrag = {
     dragId,
     overId,
@@ -167,9 +193,11 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
       if (bucket) bucket.members.push(a);
       else byRepo.set(key, { label: repoLabelOf(a), members: [a] });
     }
-    return { gods: godList, groups: [...byRepo.entries()] };
+    const entries = [...byRepo.entries()];
+    const order = applyOrder(entries.map(([k]) => k), savedOrder);
+    return { gods: godList, groups: order.map(k => entries.find(([ek]) => ek === k)!) };
     // repoVersion: rebucket once the async main-repo lookups land.
-  }, [agents, repoVersion]);
+  }, [agents, repoVersion, savedOrder]);
 
   // Focus mode: adding (or removing) an agent changes the layout around the
   // focused terminal, but nothing re-fits it, so the grid stays wrong until the
@@ -355,12 +383,12 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
           background: 'var(--cth-cream-200)',
           borderRight: '1px solid var(--cth-ink-300)'
         }}>
-          <div style={{ padding: 8, borderBottom: '1px solid var(--cth-ink-300)' }}>
+          <div style={{ padding: 8, borderBottom: '1px solid var(--cth-ink-300)', display: 'flex', gap: 6 }}>
             <button
               onClick={() => setAddAgentOpen(true)}
               title={t('fullscreenTerminal.addAgent')}
               style={{
-                width: '100%', height: 32,
+                flex: 1, minWidth: 0, height: 32,
                 background: 'var(--cth-cream-100)',
                 border: 'none',
                 boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)',
@@ -372,6 +400,21 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
               }}
             >
               <Icon name="plus" /> {t('agentStrip.addAgent')}
+            </button>
+            <button
+              onClick={() => setOrderUnlocked(v => !v)}
+              aria-pressed={orderUnlocked}
+              aria-label={t(orderUnlocked ? 'fullscreenTerminal.reorderUnlocked' : 'fullscreenTerminal.reorderLocked')}
+              title={t(orderUnlocked ? 'fullscreenTerminal.reorderUnlocked' : 'fullscreenTerminal.reorderLocked')}
+              style={{
+                width: 32, height: 32, flexShrink: 0, padding: 0,
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                border: 'none', cursor: 'pointer', color: 'var(--cth-ink-900)',
+                background: orderUnlocked ? 'var(--cth-lemon)' : 'var(--cth-cream-100)',
+                boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)'
+              }}
+            >
+              <LockGlyph open={orderUnlocked} />
             </button>
           </div>
 
@@ -390,32 +433,81 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
                 scale={scale}
               />
             ))}
-            {groups.map(([repoKey, { label, members }]) => (
+            {groups.map(([repoKey, { label, members }]) => {
+              const open = !closedProjects.includes(repoKey);
+              const gi = groups.findIndex(([k]) => k === repoKey);
+              return (
               // Repos are the roster's real structure, so they get real
               // separation — a hairline plus air above, not just a label.
-              <div key={repoKey} style={{ marginTop: 16, paddingTop: 10, borderTop: '1px solid var(--cth-ink-300)' }}>
+              <div
+                key={repoKey}
+                onDragOver={(e) => { if (groupDrag) { e.preventDefault(); setGroupOver(repoKey); } }}
+                onDrop={(e) => { if (groupDrag) { e.preventDefault(); moveProject(groupDrag, repoKey); } setGroupDrag(null); setGroupOver(null); }}
+                style={{
+                  marginTop: 10, paddingTop: 4, borderTop: '1px solid var(--cth-ink-300)',
+                  opacity: groupDrag === repoKey ? 0.4 : 1,
+                  boxShadow: groupOver === repoKey && groupDrag && groupDrag !== repoKey ? 'inset 0 2px 0 var(--cth-ink-900)' : undefined
+                }}
+              >
                 <div
                   title={repoKey}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 6,
-                    padding: '0 10px 6px',
-                    fontFamily: 'var(--cth-font-display)',
-                    fontSize: scale.group, lineHeight: 1.5,
-                    color: 'var(--cth-ink-500)'
-                  }}
+                  style={{ display: 'flex', alignItems: 'center', background: 'var(--cth-cream-100)' }}
                 >
-                  {/* Native 16px, never a fraction of it: this is pixel art on
-                      a 16-unit grid, so squeezing it to match a 7px label
-                      merged the outline into mush. Dimmed instead of shrunk. */}
-                  <span style={{ flexShrink: 0, display: 'inline-flex', opacity: 0.7 }}>
-                    <Icon name="folder" size={scale.group >= 13 ? 2 : 1} />
-                  </span>
-                  <span style={{
-                    minWidth: 0,
-                    whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'
-                  }}>{label.toUpperCase()}</span>
+                  <button
+                    onClick={() => toggleProject(repoKey)}
+                    aria-expanded={open}
+                    aria-label={t(open ? 'fullscreenTerminal.projectOpen' : 'fullscreenTerminal.projectClosed', { name: label })}
+                    style={{
+                      flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 6,
+                      padding: '6px 10px', border: 'none', background: 'transparent', cursor: 'pointer',
+                      textAlign: 'start',
+                      fontFamily: 'var(--cth-font-display)',
+                      fontSize: scale.group, lineHeight: 1.5,
+                      color: 'var(--cth-ink-900)'
+                    }}
+                  >
+                    <span aria-hidden style={{ flexShrink: 0, width: 10, display: 'inline-block', transform: open ? 'rotate(90deg)' : undefined, color: 'var(--cth-ink-700)' }}>▸</span>
+                    {/* Native 16px, never a fraction of it: this is pixel art on
+                        a 16-unit grid, so squeezing it to match a 7px label
+                        merged the outline into mush. Dimmed instead of shrunk. */}
+                    <span style={{ flexShrink: 0, display: 'inline-flex', opacity: 0.8 }}>
+                      <Icon name="folder" size={scale.group >= 13 ? 2 : 1} />
+                    </span>
+                    <span style={{ minWidth: 0, flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label.toUpperCase()}</span>
+                    <span
+                      title={t('fullscreenTerminal.agentCount', { count: members.length })}
+                      style={{
+                        flexShrink: 0, minWidth: 18, padding: '0 5px', textAlign: 'center',
+                        fontFamily: 'var(--cth-font-ui)', fontSize: 11, lineHeight: '16px',
+                        color: 'var(--cth-ink-900)', background: 'var(--cth-cream-200)',
+                        boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)'
+                      }}
+                    >{members.length}</span>
+                  </button>
+                  {orderUnlocked && (
+                    <button
+                      // draggable must sit on the button itself — Chromium won't start a drag from an ancestor of a form control.
+                      draggable
+                      onDragStart={(e) => { setGroupDrag(repoKey); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', repoKey); }}
+                      onDragEnd={() => { setGroupDrag(null); setGroupOver(null); }}
+                      aria-label={t('fullscreenTerminal.dragProject', { name: label })}
+                      title={t('fullscreenTerminal.dragProject', { name: label })}
+                      onKeyDown={(e) => {
+                        const to = e.key === 'ArrowUp' ? groups[gi - 1] : e.key === 'ArrowDown' ? groups[gi + 1] : undefined;
+                        if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+                          e.preventDefault();
+                          if (to) moveProject(repoKey, to[0]);
+                        }
+                      }}
+                      style={{
+                        flexShrink: 0, width: 24, height: 24, marginInlineEnd: 6, padding: 0,
+                        border: 'none', background: 'transparent', cursor: 'grab',
+                        color: 'var(--cth-ink-700)', fontSize: 14, lineHeight: 1
+                      }}
+                    >⠿</button>
+                  )}
                 </div>
-                {members.map(a => (
+                {open && members.map(a => (
                   <SidebarRow
                     key={a.id}
                     agent={a}
@@ -428,7 +520,8 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
                   />
                 ))}
               </div>
-            ))}
+              );
+            })}
           </div>
 
           {/* Last session's team, same as the floor strip — pinned to the bottom
@@ -569,6 +662,15 @@ export function FullscreenTerminal({ config }: FullscreenTerminalProps) {
 /** Model ids are long and mostly boilerplate ("claude-opus-4-8[1m]",
  *  "anthropic/claude-sonnet-4-5"). The roster has ~120px, so show the part that
  *  distinguishes one agent from another and keep the full id in the tooltip. */
+function LockGlyph({ open }: { open: boolean }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
+      <rect x="3" y="7" width="10" height="7" />
+      <path d={open ? 'M5 7V4.5a3 3 0 0 1 6 0' : 'M5 7V5a3 3 0 0 1 6 0v2'} />
+    </svg>
+  );
+}
+
 function shortModel(model?: string): string | null {
   if (!model || !model.trim()) return null;
   const tail = model.split('/').pop() ?? model;
