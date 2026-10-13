@@ -18,6 +18,7 @@
  *
  * Everything here runs in the Electron main process.
  */
+import { codexSandboxArgs, type CodexSandboxConfig } from '../shared/codexSandbox';
 import {
   existsSync, mkdirSync, readFileSync, writeFileSync, renameSync,
   readdirSync, statSync, lstatSync, realpathSync, rmSync, appendFileSync,
@@ -796,6 +797,8 @@ export class HiveManager {
       /** Consent state for the default-MCP bundle (W3). Threaded from the live
        *  HarnessConfig by the caller; undefined → catalog defaults apply. */
       mcpDefaults?: { [id: string]: { enabled: boolean } };
+      /** Codex shell permissions (config.codexSandbox); undefined → default sandbox. */
+      codexSandbox?: CodexSandboxConfig;
       /** Magento production MCP scoping, resolved by the caller (async project
        *  lookup lives in main/index.ts): the agent's OWN project config path
        *  (undefined → server not mounted) and every path agents must not read. */
@@ -993,6 +996,8 @@ export class HiveManager {
               // (research deliverables, the board for god) are added as extra
               // writable roots. Harmless outside auto mode.
               for (const d of this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs)) preArgs.push('--add-dir', d);
+              // User opt-ins from Settings (network, extra dirs); empty by default.
+              preArgs.push(...codexSandboxArgs(opts.codexSandbox));
             }
             else if (desc.shim === 'pi') {
               // Pi (earendil-works) has a rich pi.on(event) lifecycle. We drop a

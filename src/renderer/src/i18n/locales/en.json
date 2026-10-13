@@ -275,6 +275,18 @@
       "unlimited": "unlimited",
       "blankUnlimited": "blank = unlimited"
     },
+    "codexSandbox": {
+          "title": "Codex shell permissions",
+          "network": "Network access for Codex shells",
+          "networkDesc": "Lets codex commands reach the network and 127.0.0.1 (DNS, git, ddev, Slack replies). Off by default.",
+          "on": "On",
+          "off": "Off",
+          "dirs": "Extra writable folders",
+          "dirsDesc": "One absolute path per line. Added to each codex agent's writable roots.",
+          "danger": "Full access (no sandbox)",
+          "dangerDesc": "WARNING: codex shells run with NO OS sandbox and can read and write anywhere you can. Only enable on a machine you trust.",
+          "appliesNext": "Applies to codex agents spawned from now on."
+    },
     "autonomy": {
       "autonomy": "Autonomy",
       "autoOn": "Autonomous — agents act without asking",

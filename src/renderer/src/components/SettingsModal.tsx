@@ -319,6 +319,21 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
     setOrchSpawnOn(next);
     stage({ orchestratorMaySpawn: next } as Partial<HarnessConfig>);
   };
+  // Codex shell permissions (opt-in; absent = sandbox with network off).
+  const csInit = cfgX.codexSandbox ?? {};
+  const [codexSb, setCodexSb] = useState<{ networkAccess: boolean; dangerFullAccess: boolean; dirs: string }>({
+    networkAccess: csInit.networkAccess === true,
+    dangerFullAccess: csInit.dangerFullAccess === true,
+    dirs: (csInit.extraWritableDirs ?? []).join('\n')
+  });
+  const saveCodexSb = (next: typeof codexSb): void => {
+    setCodexSb(next);
+    stage({ codexSandbox: {
+      networkAccess: next.networkAccess,
+      dangerFullAccess: next.dangerFullAccess,
+      extraWritableDirs: next.dirs.split('\n').map(d => d.trim()).filter(Boolean)
+    } } as Partial<HarnessConfig>);
+  };
   const [defaultModelSel, setDefaultModelSel] = useState<string>(cfgX.defaultModel ?? 'claude-fable-5');
   const saveDefaultModel = (id: string): void => {
     setDefaultModelSel(id);
@@ -1443,6 +1458,41 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                             {autoModeOn ? t('settings.autonomy.autonomous') : t('settings.autonomy.askFirst')}
                           </PixelButton>
                         </div>
+                      </div>
+
+                      <div style={{ height: 1, background: 'var(--cth-ink-300)', margin: '12px 0' }} />
+
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                        <div style={sectionHead}>{t('settings.codexSandbox.title')}</div>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                            <span style={{ fontSize: 13, lineHeight: '20px', color: 'var(--cth-ink-900)' }}>{t('settings.codexSandbox.network')}</span>
+                            <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-500)' }}>{t('settings.codexSandbox.networkDesc')}</span>
+                          </div>
+                          <PixelButton variant={codexSb.networkAccess ? 'primary' : 'secondary'} size="sm" aria-pressed={codexSb.networkAccess}
+                            onClick={() => saveCodexSb({ ...codexSb, networkAccess: !codexSb.networkAccess })}>
+                            {codexSb.networkAccess ? t('settings.codexSandbox.on') : t('settings.codexSandbox.off')}
+                          </PixelButton>
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                          <span style={{ fontSize: 13, lineHeight: '20px', color: 'var(--cth-ink-900)' }}>{t('settings.codexSandbox.dirs')}</span>
+                          <textarea rows={3} value={codexSb.dirs} spellCheck={false}
+                            onChange={(e) => saveCodexSb({ ...codexSb, dirs: e.target.value })}
+                            placeholder="/Users/me/www/shared-assets"
+                            style={{ ...slackInputStyle, width: '100%', fontFamily: 'monospace', resize: 'vertical' }} />
+                          <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-500)' }}>{t('settings.codexSandbox.dirsDesc')}</span>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                            <span style={{ fontSize: 13, lineHeight: '20px', color: 'var(--cth-ink-900)' }}>{t('settings.codexSandbox.danger')}</span>
+                            <span role={codexSb.dangerFullAccess ? 'alert' : undefined} style={{ fontSize: 12, lineHeight: '16px', color: codexSb.dangerFullAccess ? 'var(--cth-coral, #c0392b)' : 'var(--cth-ink-500)' }}>{t('settings.codexSandbox.dangerDesc')}</span>
+                          </div>
+                          <PixelButton variant={codexSb.dangerFullAccess ? 'primary' : 'secondary'} size="sm" aria-pressed={codexSb.dangerFullAccess}
+                            onClick={() => saveCodexSb({ ...codexSb, dangerFullAccess: !codexSb.dangerFullAccess })}>
+                            {codexSb.dangerFullAccess ? t('settings.codexSandbox.on') : t('settings.codexSandbox.off')}
+                          </PixelButton>
+                        </div>
+                        <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-500)' }}>{t('settings.codexSandbox.appliesNext')}</span>
                       </div>
 
                       <div style={{ height: 1, background: 'var(--cth-ink-300)', margin: '12px 0' }} />

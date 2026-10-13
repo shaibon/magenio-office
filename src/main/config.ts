@@ -361,6 +361,8 @@ export interface HarnessConfig {
   mcpDefaults?: {
     [id: string]: { enabled: boolean; agents?: string[]; roles?: string[]; command?: string; args?: string[] };
   };
+  /** Codex agent shell permissions (network / extra writable dirs / full access). Opt-in; absent = sandbox as before. See shared/codexSandbox.ts. */
+  codexSandbox?: { networkAccess?: boolean; extraWritableDirs?: string[]; dangerFullAccess?: boolean };
   /** Enable semantic memory (MemPalace CLI). No-op if mempalace isn't installed. */
   semanticMemory: boolean;
   /** Embedding model for the palace: lightweight 'minilm' or multilingual 'embeddinggemma'. */

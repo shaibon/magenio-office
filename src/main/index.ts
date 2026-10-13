@@ -1,4 +1,5 @@
 import { magentoConfigForProject, magentoStageConfigForProject, magentoDeniedReadPaths } from './magentoMcp';
+import { withCodexSandboxMode, withCodexSandboxCommand } from '../shared/codexSandbox';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
 import { execFileSync, spawn } from 'node:child_process';
 import {
@@ -3250,6 +3251,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
           theme: readConfig().terminalTheme ?? 'light',
           // W3 — default-MCP consent state + the bundled skills source dir.
           mcpDefaults: readConfig().mcpDefaults,
+          codexSandbox: readConfig().codexSandbox,
           magento: {
             config: magentoConfigForProject(project, readConfig().jiraProjects),
             stageConfig: magentoStageConfigForProject(project, readConfig().jiraProjects),
@@ -3265,6 +3267,11 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
         }
       );
       opts.args = [...(opts.args ?? []), ...inj.args];
+      if (provider === 'codex') {
+        const cs = readConfig().codexSandbox;
+        opts.args = withCodexSandboxMode(opts.args, cs);
+        opts.command = withCodexSandboxCommand(opts.command, cs);
+      }
       seedPrompt = inj.seedPrompt;
       // A degraded spawn (proxy bridge never bound) is told to the user the same
       // way breaker escalations are: a native toast, gated on the notifications

@@ -275,6 +275,18 @@
       "unlimited": "无限制",
       "blankUnlimited": "留空 = 无限制"
     },
+    "codexSandbox": {
+          "title": "Codex shell 权限",
+          "network": "允许 Codex shell 访问网络",
+          "networkDesc": "允许 codex 命令访问网络和 127.0.0.1（DNS、git、ddev、Slack 回复）。默认关闭。",
+          "on": "开",
+          "off": "关",
+          "dirs": "额外可写文件夹",
+          "dirsDesc": "每行一个绝对路径，会加入每个 codex 智能体的可写根目录。",
+          "danger": "完全访问（无沙盒）",
+          "dangerDesc": "警告：codex shell 将不受任何系统沙盒限制，可读写你有权访问的任何位置。仅在可信的机器上启用。",
+          "appliesNext": "仅对此后启动的 codex 智能体生效。"
+    },
     "autonomy": {
       "autonomy": "自主权",
       "autoOn": "自主模式——智能体无需询问即可行动",
