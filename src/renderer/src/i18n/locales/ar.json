@@ -1541,6 +1541,8 @@
     "baseBranch": "الفرع الأساسي",
     "magentoConfig": "إعداد Magento MCP (اختياري)",
     "magentoConfigHint": "المسار المطلق لملف JSON الخاص بـ magento-mcp لهذا المشروع. وكلاء هذا المشروع فقط يحصلون على خادم Magento للإنتاج؛ فارغ = غير مفعّل. لا يمكن للوكلاء قراءته.",
+    "magentoStageConfig": "إعداد Magento MCP للمرحلة التجريبية (اختياري)",
+    "magentoStageConfigHint": "المسار المطلق لملف JSON الخاص بـ magento-mcp لبيئة stage لهذا المشروع. يضيف خادمًا ثانيًا munder-magento-stage بجانب خادم الإنتاج؛ فارغ = لا شيء. لا يمكن للوكلاء قراءته.",
     "slackChannels": "قنوات Slack",
     "slackChannelsHint": "معرّفات قنوات Slack (اختياري، مفصولة بفواصل، مثل C03G9FGU2RE). تُوسَم رسائل هذه القنوات بهذا المشروع عند تسليمها إلى god. القناة تنتمي إلى مشروع واحد؛ القنوات غير المربوطة تعمل كما كانت.",
     "glitchtip": "مشاريع GlitchTip",

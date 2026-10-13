@@ -799,7 +799,7 @@ export class HiveManager {
       /** Magento production MCP scoping, resolved by the caller (async project
        *  lookup lives in main/index.ts): the agent's OWN project config path
        *  (undefined → server not mounted) and every path agents must not read. */
-      magento?: { config?: string; denyRead: string[] };
+      magento?: { config?: string; stageConfig?: string; denyRead: string[] };
       /** Read-only vault scope for this agent's project; undefined → not mounted. */
       vault?: VaultMount;
       /** App-resources `skills/` source dir (W3). The bundled read-only skills are
@@ -1117,7 +1117,7 @@ export class HiveManager {
       // just handed to Claude through the flag it actually honors. Omitted
       // entirely when no server is enabled, so a plain worker spawns with no
       // --mcp-config at all.
-      const mcpServers = this.buildDefaultMcpServers(meta.cwd, opts.mcpDefaults, meta.id, meta, opts.magento?.config, opts.vault);
+      const mcpServers = this.buildDefaultMcpServers(meta.cwd, opts.mcpDefaults, meta.id, meta, opts.magento?.config, opts.vault, opts.magento?.stageConfig);
       if (Object.keys(mcpServers).length) {
         const mcpConfigPath = join(dir, 'mcp.json');
         this.writeJson(mcpConfigPath, { mcpServers });
@@ -1431,7 +1431,7 @@ export class HiveManager {
     theme?: 'light' | 'dark',
     writableDirs: string[] = [],
     roleMeta?: Pick<AgentMeta, 'role' | 'capabilities' | 'isGod' | 'provider'>,
-    magento?: { config?: string; denyRead: string[] },
+    magento?: { config?: string; stageConfig?: string; denyRead: string[] },
     vault?: VaultMount
   ): unknown {
     // Bundled node, NOT bare `node` — see nodeLauncherPath(). Claude runs each of
@@ -1441,7 +1441,7 @@ export class HiveManager {
       ...(matcher ? { matcher } : {}),
       hooks: [{ type: 'command', command: cmd }]
     });
-    const mcpServers = this.buildDefaultMcpServers(cwd, cfg, agentId, roleMeta, magento?.config, vault);
+    const mcpServers = this.buildDefaultMcpServers(cwd, cfg, agentId, roleMeta, magento?.config, vault, magento?.stageConfig);
     // Credential isolation for the Magento MCP: no agent may read any project's
     // magento config or the SSH keys it names (the MCP process itself runs outside
     // the Bash sandbox). Bash children via sandbox.filesystem.denyRead, the Read
@@ -1545,7 +1545,8 @@ export class HiveManager {
     agentId: string,
     roleMeta?: Pick<AgentMeta, 'role' | 'capabilities' | 'isGod' | 'provider'>,
     magentoConfig?: string,
-    vault?: VaultMount
+    vault?: VaultMount,
+    magentoStageConfig?: string
   ): Record<string, { command: string; args: string[]; env?: Record<string, string> }> {
     const out: Record<string, { command: string; args: string[]; env?: Record<string, string> }> = {};
     const presenceDeps = nodePresenceDeps();
@@ -1654,13 +1655,7 @@ export class HiveManager {
           // Magento config the server rejects used to get a mount that died at
           // startup, i.e. no Magento tools and no explanation anywhere. Fail
           // closed (omit the corpse) and SAY WHY, in the hive log and on the floor.
-          const probe = this.probeMcpServerForMount({ command, args, env: e.spec.env });
-          if (!probe.ok) {
-            const detail = `${probe.reason} on ${magentoConfig}: ${probe.detail}`;
-            console.error(`[hive] MCP '${e.id}' not wired for ${agentId}: its config was refused — ${detail}`);
-            this.noteMcpMountFailure(agentId, `munder-${e.id}`, detail);
-            continue;
-          }
+          if (!this.magentoProbeOk(agentId, e.id, `munder-${e.id}`, { command, args, env: e.spec.env }, magentoConfig!)) continue;
         }
       }
 
@@ -1669,8 +1664,27 @@ export class HiveManager {
         args,
         ...(requiredEnv.length ? { env: Object.fromEntries(requiredEnv.map(([k, v]) => [k, v || `\${${k}}`])) } : {})
       };
+      // Optional second server for the project's STAGE store: same command and
+      // launcher as production, its own `--config`. Probed on its own, so a bad
+      // stage file never takes the production server down with it.
+      if (e.id === 'magento' && magentoStageConfig) {
+        const stage = { command, args: [args[0], '--config', magentoStageConfig], env: e.spec.env };
+        if (this.magentoProbeOk(agentId, e.id, 'munder-magento-stage', stage, magentoStageConfig)) {
+          out['munder-magento-stage'] = { command, args: stage.args, ...(out['munder-magento'].env ? { env: out['munder-magento'].env } : {}) };
+        }
+      }
     }
     return out;
+  }
+
+  /** Probe one magento mount; on refusal log and record why, and return false. */
+  private magentoProbeOk(agentId: string, id: string, server: string, spec: McpServerSpec, config: string): boolean {
+    const probe = this.probeMcpServerForMount(spec);
+    if (probe.ok) return true;
+    const detail = `${probe.reason} on ${config}: ${probe.detail}`;
+    console.error(`[hive] MCP '${id}' not wired for ${agentId} (${server}): its config was refused — ${detail}`);
+    this.noteMcpMountFailure(agentId, server, detail);
+    return false;
   }
 
   /**
@@ -2641,9 +2655,9 @@ export class HiveManager {
    */
   private codexMcpTables(
     meta: Pick<AgentMeta, 'id' | 'cwd' | 'role' | 'capabilities' | 'isGod' | 'provider'>,
-    opts: { mcpDefaults?: McpDefaultsMap; magento?: { config?: string }; vault?: VaultMount }
+    opts: { mcpDefaults?: McpDefaultsMap; magento?: { config?: string; stageConfig?: string }; vault?: VaultMount }
   ): string {
-    const servers = this.buildDefaultMcpServers(meta.cwd, opts.mcpDefaults, meta.id, meta, opts.magento?.config, opts.vault);
+    const servers = this.buildDefaultMcpServers(meta.cwd, opts.mcpDefaults, meta.id, meta, opts.magento?.config, opts.vault, opts.magento?.stageConfig);
     return codexMcpToml(codexMcpServers(servers, { isGod: !!meta.isGod }));
   }
 

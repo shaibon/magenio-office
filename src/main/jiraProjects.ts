@@ -101,10 +101,11 @@ export async function validateJiraProjectBinding(
   const glitchError = validateGlitchtip(binding.glitchtip, otherBindings);
   if (glitchError) return { ok: false, error: glitchError };
 
-  const magento = binding.magentoMcpConfig?.trim();
-  if (magento) {
-    if (!isAbsolute(magento)) return { ok: false, error: `Magento MCP config must be an absolute path: ${magento}` };
-    if (!existsSync(magento)) return { ok: false, error: `Magento MCP config file does not exist: ${magento}` };
+  for (const [label, value] of [['Magento MCP config', binding.magentoMcpConfig], ['Magento MCP stage config', binding.magentoMcpStageConfig]] as const) {
+    const path = value?.trim();
+    if (!path) continue;
+    if (!isAbsolute(path)) return { ok: false, error: `${label} must be an absolute path: ${path}` };
+    if (!existsSync(path)) return { ok: false, error: `${label} file does not exist: ${path}` };
   }
 
   if (deps.testJiraKey) {

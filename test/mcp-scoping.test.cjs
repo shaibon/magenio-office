@@ -45,8 +45,8 @@ const cwd = '/tmp/agent-cwd';
 // `buildDefaultMcpServers` is private in TypeScript only — at run time it is a
 // plain method, and calling it directly is far more precise than reconstructing
 // a whole spawn just to read one block of the settings file.
-function build(cfg, agentId, roleMeta, magentoConfig) {
-  return hive['buildDefaultMcpServers'](cwd, cfg, agentId, roleMeta, magentoConfig);
+function build(cfg, agentId, roleMeta, magentoConfig, vault, stage) {
+  return hive['buildDefaultMcpServers'](cwd, cfg, agentId, roleMeta, magentoConfig, vault, stage);
 }
 
 /** A fully installed, credentialed Trello server on disk, so the preflight passes. */
@@ -207,7 +207,7 @@ test('hookSettings adds no permissions block at all when Trello is not enabled',
 
 // ─── t-063: Magento production MCP — per-project scoping + credential isolation ──
 
-const { magentoConfigForProject, magentoDeniedReadPaths, MAGENTO_CONFIG_DIR } = loadTs('src/main/magentoMcp.ts');
+const { magentoConfigForProject, magentoStageConfigForProject, magentoDeniedReadPaths, MAGENTO_CONFIG_DIR } = loadTs('src/main/magentoMcp.ts');
 
 function installedMagento() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'md-mcp-magento-'));
@@ -233,6 +233,20 @@ test('magento: an agent gets --config of ITS project only', () => {
   assert.ok(!JSON.stringify(burd).includes('bravi'), "another project's config must never appear");
 });
 
+test('magento: stage config adds munder-magento-stage with the same launcher; absent = not mounted', () => {
+  const { command, args } = installedMagento();
+  const cfg = { magento: { enabled: true, command, args } };
+  const both = build(cfg, 'a1', undefined, '/cfg/burd.json', undefined, '/cfg/burd-stage.json');
+  assert.deepEqual(both['munder-magento'].args, [args[0], '--config', '/cfg/burd.json']);
+  assert.deepEqual(both['munder-magento-stage'].args, [args[0], '--config', '/cfg/burd-stage.json']);
+  assert.equal(both['munder-magento-stage'].command, both['munder-magento'].command);
+  assert.equal(build(cfg, 'a1', undefined, '/cfg/burd.json')['munder-magento-stage'], undefined);
+  assert.equal(build(cfg, 'a1', undefined, undefined, undefined, '/cfg/burd-stage.json')['munder-magento-stage'], undefined, 'stage never mounts without production');
+  const bs = [{ ...BINDINGS[0], magentoMcpStageConfig: ' /cfg/burd-stage.json ' }];
+  assert.equal(magentoStageConfigForProject('BURD', bs), '/cfg/burd-stage.json');
+  assert.equal(magentoStageConfigForProject('BRAVI', bs), undefined);
+});
+
 test('magento: no project, no config, or disabled binding → server not mounted', () => {
   const { command, args } = installedMagento();
   const cfg = { magento: { enabled: true, command, args } };
@@ -255,7 +269,9 @@ test('magento: deny list covers config dir, every config and referenced ssh keys
   const c1 = path.join(dir, 'burd.json');
   fs.writeFileSync(c1, JSON.stringify({ ssh: { privateKey: '~/.ssh/burd' } }));
   const bindings = [{ ...BINDINGS[0], magentoMcpConfig: c1 }, BINDINGS[1]];
+  bindings[0].magentoMcpStageConfig = '/cfg/burd-stage.json';
   const deny = magentoDeniedReadPaths(bindings);
+  assert.ok(deny.includes('/cfg/burd-stage.json'), 'stage config is denied too');
   assert.ok(deny.includes(MAGENTO_CONFIG_DIR));
   assert.ok(deny.includes(c1) && deny.includes('/cfg/bravi.json'), 'unreadable config is still denied');
   assert.ok(deny.includes(path.join(os.homedir(), '.ssh', 'burd')), '~ is expanded');

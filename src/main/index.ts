@@ -1,4 +1,4 @@
-import { magentoConfigForProject, magentoDeniedReadPaths } from './magentoMcp';
+import { magentoConfigForProject, magentoStageConfigForProject, magentoDeniedReadPaths } from './magentoMcp';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
 import { execFileSync, spawn } from 'node:child_process';
 import {
@@ -3252,6 +3252,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
           mcpDefaults: readConfig().mcpDefaults,
           magento: {
             config: magentoConfigForProject(project, readConfig().jiraProjects),
+            stageConfig: magentoStageConfigForProject(project, readConfig().jiraProjects),
             denyRead: magentoDeniedReadPaths(readConfig().jiraProjects)
           },
           vault: (await vaultMountForCwd(opts.cwd, opts.hive?.id)) ?? undefined,

@@ -320,6 +320,12 @@ export function JiraProjectsRegistry() {
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={fieldLabel}>{tr('jiraProjects.magentoStageConfig')}</span>
+            <input value={draft.magentoMcpStageConfig} onChange={(e) => patch({ magentoMcpStageConfig: e.target.value })} placeholder="/Users/you/.config/magenio/acme-stage.json" style={inputStyle} />
+            <span style={hint}>{tr('jiraProjects.magentoStageConfigHint')}</span>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <span style={fieldLabel}>{tr('jiraProjects.slackChannels')}</span>
             <input value={draft.slackChannels} onChange={(e) => patch({ slackChannels: e.target.value })} placeholder="C03G9FGU2RE, CBCT8Q00Z" style={{ ...inputStyle, fontFamily: 'var(--cth-font-mono)' }} />
             <span style={hint}>{tr('jiraProjects.slackChannelsHint')}</span>

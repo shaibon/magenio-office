@@ -206,3 +206,14 @@ test('magentoMcpConfig must be an absolute path to an existing file', async () =
   const gone = await validateJiraProjectBinding({ ...base, magentoMcpConfig: path.join(repo, 'x.json') }, [], deps);
   assert.match(gone.error, /does not exist/);
 });
+
+test('magentoMcpStageConfig is validated like magentoMcpConfig', async () => {
+  const repo = initRepo();
+  const deps = { isRepo, getBranches, agentExists: () => true };
+  const base = { key: 'MAGS', repo, baseBranch: 'develop', enabled: true };
+  const file = path.join(repo, 'm-stage.json');
+  fs.writeFileSync(file, '{}');
+  assert.equal((await validateJiraProjectBinding({ ...base, magentoMcpStageConfig: file }, [], deps)).ok, true);
+  assert.match((await validateJiraProjectBinding({ ...base, magentoMcpStageConfig: 'm.json' }, [], deps)).error, /stage config must be an absolute/);
+  assert.match((await validateJiraProjectBinding({ ...base, magentoMcpStageConfig: path.join(repo, 'x.json') }, [], deps)).error, /does not exist/);
+});
