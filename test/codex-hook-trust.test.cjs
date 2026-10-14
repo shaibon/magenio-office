@@ -114,3 +114,16 @@ test('the hook shim records a one-line failure instead of failing silently', () 
   assert.equal(run({ AGENT_ID: 'a2' }).status, 0);
   assert.match(fs.readFileSync(path.join(__dirname, '..', 'src/main/hive.ts'), 'utf8'), /fail\('HIVE_SOCK is not set'\)/);
 });
+
+test('t-191: the agent folder is pre-trusted in its own config.toml, once, without clobbering a seeded entry', () => {
+  const { projectTrustToml } = loadTs('src/main/codexHookTrust.ts');
+  assert.equal(projectTrustToml('', ['/a b/wt', '/a b/wt', '']), '\n[projects."/a b/wt"]\ntrust_level = "trusted"\n');
+  assert.equal(projectTrustToml('[projects."/w"]\ntrust_level = "untrusted"\n', ['/w']), '', 'never a duplicate table');
+  const { hive, dir } = setup(() => () => []);
+  const cwd = fs.mkdtempSync(path.join(base, 'wt-'));
+  const home = hive['installCodexHooks'](dir, 'a1', '', cwd);
+  const cfg = fs.readFileSync(path.join(home, 'config.toml'), 'utf8');
+  assert.match(cfg, new RegExp(`\\[projects\\.${JSON.stringify(fs.realpathSync(cwd)).replace(/[/.]/g, '\\$&')}\\]\\ntrust_level = "trusted"`));
+  assert.equal((cfg.match(/^\[projects\./gm) || []).length, new Set([cwd, fs.realpathSync(cwd)]).size);
+  assert.doesNotMatch(hive['installCodexHooks'](dir, 'a1', '') && fs.readFileSync(path.join(home, 'config.toml'), 'utf8'), /\[projects\./, 'no cwd → no project table');
+});

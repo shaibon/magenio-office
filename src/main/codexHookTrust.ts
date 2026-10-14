@@ -72,3 +72,22 @@ export function listCodexHooks(codexBin: string, home: string, cwd: string, node
   });
   return parseHooksList(out);
 }
+
+/** `[projects."<dir>"] trust_level = "trusted"` for each dir not already declared in
+ *  `config`, so the codex TUI does not ask the Boss to trust an agent's folder on
+ *  every spawn. Lives in the per-agent config.toml, so it holds for the TUI and the
+ *  managed daemon alike, and only ever names the agent's own folders. A user-seeded
+ *  config that already has the table is left alone (a duplicate table is a TOML
+ *  error that would break the whole file). */
+export function projectTrustToml(config: string, dirs: string[]): string {
+  const seen = new Set<string>();
+  let out = '';
+  for (const d of dirs) {
+    if (!d || seen.has(d)) continue;
+    seen.add(d);
+    const header = `[projects.${JSON.stringify(d)}]`;
+    if (config.includes(header)) continue;
+    out += `\n${header}\ntrust_level = "trusted"\n`;
+  }
+  return out;
+}

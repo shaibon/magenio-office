@@ -46,7 +46,7 @@ import { mergeTaskLedger } from '../shared/taskLedger';
 import { expandTilde, isInsideGitRepo } from './fs';
 import { resolveGodName } from '../shared/godIdentity';
 import type { VaultMount } from '../shared/vaultMount';
-import { hookTrustToml, listCodexHooks, type ListedHook } from './codexHookTrust';
+import { hookTrustToml, projectTrustToml, listCodexHooks, type ListedHook } from './codexHookTrust';
 import { ensureMineIgnore } from './memory';
 import { resolveCommand, userShellPath } from './shellEnv';
 import { checkMcpPresence, nodePresenceDeps } from './mcpProvision';
@@ -982,7 +982,7 @@ export class HiveManager {
             if (desc.shim === 'agy') this.installAgyHooks();
             else if (desc.shim === 'deepcode') this.installDeepcodeSettings(meta, opts.autoMode ?? true, opts.model);
             else if (desc.shim === 'codex') {
-              env.CODEX_HOME = this.installCodexHooks(dir, meta.id, this.codexMcpTables(meta, opts));
+              env.CODEX_HOME = this.installCodexHooks(dir, meta.id, this.codexMcpTables(meta, opts), meta.cwd);
               // Codex refuses to run hooks from a config dir without persisted
               // "hook trust" (normally an interactive gate). Our hooks.json is
               // hive-authored inside an isolated CODEX_HOME, so we bypass that gate
@@ -2690,7 +2690,7 @@ export class HiveManager {
    *  bundle reaches a codex agent through this file and nowhere else. Empty when
    *  nothing is enabled, in which case the file is byte-identical to before.
    *  Returns the CODEX_HOME path for the caller to put in the worker's env. */
-  private installCodexHooks(dir: string, agentId: string, mcpTables = ''): string {
+  private installCodexHooks(dir: string, agentId: string, mcpTables = '', cwd?: string): string {
     const home = join(dir, '.codex');
     try {
       mkdirSync(home, { recursive: true });
@@ -2766,6 +2766,12 @@ export class HiveManager {
       // `[[hooks.*]]` table, and appended to (never replacing) the user's seeded
       // config, whose own `[mcp_servers.*]` entries stay intact and visible.
       config += mcpTables;
+      // Project trust for the agent's own folder (t-191): no folder-trust prompt at spawn.
+      if (cwd) {
+        const dirs = [cwd];
+        try { dirs.push(realpathSync(cwd)); } catch { /* folder not created yet */ }
+        config += projectTrustToml(config, dirs);
+      }
       writeFileSync(join(home, 'config.toml'), config, 'utf8');
       // Hooks Codex does not trust are skipped in silence — and the session runs in
       // a daemon that never saw our bypass flag. Record trust for OUR hooks in the
