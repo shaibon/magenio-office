@@ -232,9 +232,9 @@ test('a real codex agent config carries the pre-approval end to end', () => {
 
 test('the codex spawn branch installs the generated tables, and the Claude path is untouched', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'hive.ts'), 'utf8');
-  assert.match(src, /installCodexHooks\(dir, meta\.id, this\.codexMcpTables\(meta, opts\)\)/,
+  assert.match(src, /installCodexHooks\(dir, meta\.id, this\.codexMcpTables\(meta, opts\)(, meta\.cwd)?\)/,
     'the codex spawn passes the default-MCP tables into its CODEX_HOME config');
-  assert.match(src, /private installCodexHooks\(dir: string, agentId: string, mcpTables = ''\)/);
+  assert.match(src, /private installCodexHooks\(dir: string, agentId: string, mcpTables = ''(, cwd\?: string)?\)/);
   assert.match(src, /config \+= mcpTables;/, 'the installer appends them (never replaces the user seed)');
   assert.match(src, /--mcp-config/, 'the Claude path still ships its own mcp.json route');
 });
