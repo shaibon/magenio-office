@@ -258,11 +258,12 @@ export function isSlackChannelId(v: string): boolean {
   return /^[CG][A-Z0-9]{8,}$/.test(v);
 }
 
-/** The alert channel configured for `projectKey`, or null. Disabled bindings
- *  and malformed ids resolve to null (fail closed). */
+/** The alert channel for `projectKey`: `slackAlertChannel` when set (override),
+ *  else the project's first `slackChannels` entry. Disabled bindings and malformed
+ *  ids resolve to null (fail closed). An invalid override does NOT fall back. */
 export function alertChannelFor(bindings: JiraProjectBinding[] | undefined, projectKey: string): string | null {
   const key = projectKey.trim().toUpperCase();
   const b = (bindings ?? []).find((x) => x.key.toUpperCase() === key && x.enabled !== false);
-  const ch = b?.slackAlertChannel?.trim();
+  const ch = b?.slackAlertChannel?.trim() || b?.slackChannels?.[0]?.trim();
   return ch && isSlackChannelId(ch) ? ch : null;
 }

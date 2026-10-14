@@ -38,12 +38,17 @@ const bindings = [
   { key: 'BURD', repo: '/r', baseBranch: 'develop', enabled: true, slackAlertChannel: 'C0ALERTS123' },
   { key: 'OFF', repo: '/r', baseBranch: 'develop', enabled: false, slackAlertChannel: 'C0DISABLED1' },
   { key: 'BAD', repo: '/r', baseBranch: 'develop', enabled: true, slackAlertChannel: 'not a channel' },
-  { key: 'NONE', repo: '/r', baseBranch: 'develop', enabled: true }
+  { key: 'NONE', repo: '/r', baseBranch: 'develop', enabled: true },
+  { key: 'RISTO', repo: '/r', baseBranch: 'develop', enabled: true, slackChannels: ['CBCT8Q00Z', 'C0SECOND99'] },
+  { key: 'OVER', repo: '/r', baseBranch: 'develop', enabled: true, slackChannels: ['CBCT8Q00Z'], slackAlertChannel: 'C0ALERTS123' },
+  { key: 'OFFCH', repo: '/r', baseBranch: 'develop', enabled: false, slackChannels: ['CBCT8Q00Z'] }
 ];
 
 test('alertChannelFor resolves only enabled, well-formed bindings', () => {
   assert.equal(alertChannelFor(bindings, 'burd'), 'C0ALERTS123');
-  for (const k of ['OFF', 'BAD', 'NONE', 'MISSING']) assert.equal(alertChannelFor(bindings, k), null, k);
+  assert.equal(alertChannelFor(bindings, 'RISTO'), 'CBCT8Q00Z', 'fallback to slackChannels[0]');
+  assert.equal(alertChannelFor(bindings, 'OVER'), 'C0ALERTS123', 'slackAlertChannel overrides');
+  for (const k of ['OFF', 'OFFCH', 'BAD', 'NONE', 'MISSING']) assert.equal(alertChannelFor(bindings, k), null, k);
   assert.equal(alertChannelFor(undefined, 'BURD'), null);
   assert.equal(isSlackChannelId('C03G9FGU2RE'), true);
   assert.equal(isSlackChannelId('general'), false);
