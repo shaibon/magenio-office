@@ -61,6 +61,9 @@ export interface RestoreTeamState {
 export type RespawnOutcome =
   | { kind: 'restored'; agent: Agent }
   | { kind: 'already-live' }
+  /** The agent's working directory no longer exists (purged worktree). It can
+   *  never spawn, so callers drop the stale roster entry instead of retrying it. */
+  | { kind: 'gone'; error: string }
   | { kind: 'failed'; error: string };
 
 /** Respawn ONE saved agent with its ORIGINAL agent id, cwd, model and command.
@@ -151,6 +154,9 @@ export async function respawnAgent(
         }
       };
     }
+    if ((res.error ?? '').startsWith('cwd-missing')) {
+      return { kind: 'gone', error: `${a.name}: working folder is gone — entry removed` };
+    }
     if ((res.error ?? '').includes('already exists')) {
       // A live PTY with this id is already running (e.g. respawned at boot or
       // by another path) — the agent isn't actually missing, so the caller can
@@ -190,6 +196,11 @@ export async function restoreArchivedAgent(
     useStore.getState().removeArchivedAgent(a.id);
     return { ok: true, alreadyLive: true };
   }
+  if (outcome.kind === 'gone') {
+    // Clicking restore on a ghost deletes it — the only way out of the list.
+    useStore.getState().removeArchivedAgent(a.id);
+    return { ok: false, error: outcome.error };
+  }
   return { ok: false, error: outcome.error };
 }
 
@@ -215,6 +226,10 @@ export async function restoreRestorableAgent(
     // entry rather than reporting a phantom failure (same as batch restore).
     useStore.getState().removeRestorableAgent(a.id);
     return { ok: true, alreadyLive: true };
+  }
+  if (outcome.kind === 'gone') {
+    useStore.getState().removeRestorableAgent(a.id);
+    return { ok: false, error: outcome.error };
   }
   return { ok: false, error: outcome.error };
 }
@@ -250,6 +265,7 @@ export function useRestoreTeam(config?: HarnessConfig | null): RestoreTeamState 
     // couldn't spawn anything looked like a dead button.
     let restored = 0;
     let alreadyLive = 0;
+    let gone = 0;
     const failures: string[] = [];
     try {
       // Restore every agent CONCURRENTLY. Each spawn is keyed by its own ptyId and
@@ -274,6 +290,10 @@ export function useRestoreTeam(config?: HarnessConfig | null): RestoreTeamState 
         if (outcome.kind === 'already-live') {
           alreadyLive++;
           useStore.getState().removeRestorableAgent(a.id);
+        } else if (outcome.kind === 'gone') {
+          // Not a failure to retry: drop the ghost so it never respawns again.
+          useStore.getState().removeRestorableAgent(a.id);
+          gone++;
         } else {
           failures.push(outcome.error);
         }
@@ -292,6 +312,7 @@ export function useRestoreTeam(config?: HarnessConfig | null): RestoreTeamState 
       const parts: string[] = [];
       if (restored) parts.push(`restored ${restored}`);
       if (alreadyLive) parts.push(`${alreadyLive} already live`);
+      if (gone) parts.push(`${gone} dropped (folder gone)`);
       if (frozen.length) parts.push(`${frozen.length} frozen (skipped)`);
       if (failures.length) parts.push(`${failures.length} failed — ${failures.join('; ')}`);
       note = parts.length ? parts.join(' · ') : 'nothing to restore';

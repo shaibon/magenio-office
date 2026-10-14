@@ -3073,6 +3073,11 @@ ipcMain.handle('pty:spawn', async (evt, opts: AgentSpawnOptions) => {
   return spawnAgentCore(opts, owner);
 });
 
+/** True when `p` is an existing directory (spawn pre-check; never throws). */
+function cwdIsDir(p: string): boolean {
+  try { return statSync(p).isDirectory(); } catch { return false; }
+}
+
 /** Core agent-spawn logic — provider inference, the missing-CLI installer
  *  short-circuit, git-worktree isolation, hive provisioning, model/resume flags,
  *  and the final PTY spawn. Extracted VERBATIM from the `pty:spawn` IPC handler so
@@ -3090,6 +3095,15 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // returned to the caller so the renderer records the same absolute path.
   opts.cwd = expandTilde(opts.cwd);
   if (opts.hive) opts.hive = { ...opts.hive, cwd: expandTilde(opts.hive.cwd) };
+  // A spawn into a directory that does not exist can only fail — but ensureAgent
+  // used to run first, so every attempt (notably the boot auto-restore of a stale
+  // roster entry, t-189) re-created the agent's registry row with archived:false
+  // and its hive folder, resurrecting an agent that had been purged. Refuse before
+  // touching the hive, and park any surviving registry row as archived.
+  if (opts.hive && !cwdIsDir(opts.cwd)) {
+    hive.setArchived(opts.hive.id, true);
+    return { ok: false, error: `cwd-missing: ${opts.cwd}` };
+  }
   // Which CLI is this? Explicit wins; else inferred from the binary
   // (claude/codex/grok/agy). Non-Claude providers skip every Claude-only spawn step
   // below. Persist the resolved provider onto opts (+ hive meta) so the registry
