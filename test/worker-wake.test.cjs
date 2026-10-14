@@ -194,3 +194,21 @@ test('the nudge text matches the renderer guardrail exactly', () => {
   assert.equal(WORKER_WAKE_NUDGE.length > 100, true);
   assert.match(WORKER_WAKE_NUDGE, /read your inbox/i);
 });
+
+test('t-190: mail left unread past PERSIST_MS is re-announced to a quiet worker, then rate-limited', () => {
+  const { WORKER_WAKE_PERSIST_MS } = loadTs('src/main/workerWake.ts');
+  const w = new WorkerWakeWatchdog();
+  w.noteSpawn('pty-alice', 0);
+  const t0 = 1_000_000;
+  const f = (now) => fact({ lastOutputAt: now - WORKER_WAKE_IDLE_MS - 1, oldestMailAt: t0 });
+  assert.deepEqual(w.decide([f(t0 + 20_000)], t0 + 20_000), ['alice'], 'first announcement');
+  // A turn hook after the mail used to mask the stall; announced edge trigger holds it.
+  w.noteHook('alice', 'Stop', undefined, t0 + 30_000);
+  assert.deepEqual(w.decide([f(t0 + 100_000)], t0 + 100_000), [], 'young mail: still announced-held');
+  const late = t0 + 20_000 + WORKER_WAKE_PERSIST_MS + 1000;
+  assert.deepEqual(w.decide([f(late)], late), ['alice'], 'old unread mail: re-announced');
+  assert.deepEqual(w.decide([f(late + 60_000)], late + 60_000), [], 'persist cooldown applies');
+  // a busy (non-quiet) worker is never interrupted by the persistence rule
+  const busy = late + WORKER_WAKE_PERSIST_MS + 5000;
+  assert.deepEqual(w.decide([fact({ lastOutputAt: busy - 1000, oldestMailAt: t0 })], busy), []);
+});

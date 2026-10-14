@@ -65,6 +65,14 @@ export const WORKER_WAKE_HITL_REARM_MS = 5 * 60_000;
  *  Codex/Gemini/grok worker would otherwise read as stalled forever and be
  *  nudged every cooldown while working — the repeated nudging #368 removed. */
 export const WORKER_WAKE_STALL_MS = 90_000;
+/** Mail still unread this long after it landed is re-announced to a QUIET worker
+ *  even if it was announced before and even if the worker showed turn activity
+ *  since (t-190). Both of those are weak proof for hook-bridged engines: a Stop
+ *  that drainForStop() blocked, or an unrelated turn, counts as "activity" and the
+ *  announced-ids edge trigger then holds the worker silent forever while the mail
+ *  sits in inbox/. The quiet-PTY rule still applies, so a worker that is really
+ *  working is never interrupted; only one parked on unread mail is. */
+export const WORKER_WAKE_PERSIST_MS = 180_000;
 /** Minimum age of pending mail before a held worker is reported in the log. */
 export const WORKER_WAKE_REPORT_MS = 60_000;
 
@@ -200,6 +208,8 @@ export class WorkerWakeWatchdog {
   private hookSeenAt = new Map<string, number>();
   /** agentId → timestamp of its last hook event that proves a turn. */
   private lastTurnHookAt = new Map<string, number>();
+  /** agentId → name of its most recent turn-proving hook event. */
+  private lastTurnEvent = new Map<string, string>();
   /** agentId → when its hold was last reported, so the beat logs a held worker
    *  once per cooldown instead of every 15 s. */
   private lastHoldReportAt = new Map<string, number>();
@@ -215,7 +225,7 @@ export class WorkerWakeWatchdog {
   noteHook(agentId: string | undefined, event: string | undefined, message: string | undefined, at = Date.now()): void {
     if (!agentId) return;
     this.hookSeenAt.set(agentId, at);
-    if (isTurnHook(event) && at > (this.lastTurnHookAt.get(agentId) ?? 0)) this.lastTurnHookAt.set(agentId, at);
+    if (isTurnHook(event) && at > (this.lastTurnHookAt.get(agentId) ?? 0)) { this.lastTurnHookAt.set(agentId, at); this.lastTurnEvent.set(agentId, event as string); }
     if (classifyHook(event, message) === 'needsHuman') this.lastHumanNeedsAt.set(agentId, at);
   }
 
@@ -242,6 +252,7 @@ export class WorkerWakeWatchdog {
     this.lastHumanNeedsAt.delete(agentId);
     this.hookSeenAt.delete(agentId);
     this.lastTurnHookAt.delete(agentId);
+    this.lastTurnEvent.delete(agentId);
     this.lastHoldReportAt.delete(agentId);
     if (ptyId) this.spawnedAt.delete(ptyId);
   }
@@ -269,9 +280,14 @@ export class WorkerWakeWatchdog {
     // Edge trigger (#358): mail already announced is not announced again — unless
     // the worker is stalled, i.e. it demonstrably never acted on the announcement.
     const announced = this.announcedInboxIds.get(f.agentId);
-    if (announced && !stalled && !Array.from(inboxIds).some((id) => !announced.has(id))) return 'announced';
+    // Persistence needs HOOK proof the worker is parked: its last turn event is a
+    // Stop. A quiet PTY alone is not enough for a codex worker inside a long
+    // silent tool call (that is what #368 stopped nudging).
+    const persistent = (f.oldestMailAt ?? 0) > 0 && now - (f.oldestMailAt as number) >= WORKER_WAKE_PERSIST_MS
+      && this.lastTurnEvent.get(f.agentId) === 'Stop';
+    if (announced && !stalled && !persistent && !Array.from(inboxIds).some((id) => !announced.has(id))) return 'announced';
     const lastNudge = this.lastNudgeAt.get(f.agentId) ?? 0;
-    if (lastNudge > 0 && now - lastNudge < WORKER_WAKE_COOLDOWN_MS) return 'cooldown';
+    if (lastNudge > 0 && now - lastNudge < (persistent && !stalled ? WORKER_WAKE_PERSIST_MS : WORKER_WAKE_COOLDOWN_MS)) return 'cooldown';
     return null;
   }
 
