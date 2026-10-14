@@ -37,6 +37,7 @@ import {
 } from '@/terminal/arabicSetting';
 import { notifyArabicTerminalChangeAll } from '@/components/terminalPool';
 import { isComposingKey } from '@shared/imeGuard';
+import { isSlackChannelId } from '@shared/jiraProjects';
 import { LANGUAGES, setLanguage } from '@/i18n';
 
 export interface SettingsModalProps {
@@ -435,6 +436,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
   const [slackMode, setSlackMode] = useState<'events' | 'socket'>(config.slackMode === 'socket' ? 'socket' : 'events');
   const [slackAppToken, setSlackAppToken] = useState(config.slackAppToken ?? '');
   const [slackChannel, setSlackChannel] = useState(config.slackChannelId ?? '');
+  const [slackAlertFallback, setSlackAlertFallback] = useState(config.slackAlertFallbackChannel ?? '');
   const [slackPort, setSlackPort] = useState(String(config.slackPort ?? 3847));
   // App/voice-initiated proactive posting (the "queued" ack). Default OFF —
   // the Slack-origin done-reply round-trip is unaffected by this toggle.
@@ -741,6 +743,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
       setSlackAppToken(cc.slackAppToken ?? '');
       setSlackChannel(cc.slackChannelId ?? '');
       setSlackPort(String(cc.slackPort ?? 3847));
+      setSlackAlertFallback(cc.slackAlertFallbackChannel ?? '');
       setSlackProactivePosting(cc.slackProactivePosting ?? false);
       const kgOn = (cc as { knowledgeGraph?: { enabled?: boolean } }).knowledgeGraph?.enabled === true;
       setKgEnabled(kgOn);
@@ -790,7 +793,8 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
     channelId: slackChannel,
     port: Number(slackPort) || 3847,
     enabled,
-    proactivePosting: slackProactivePosting
+    proactivePosting: slackProactivePosting,
+    alertFallbackChannel: slackAlertFallback
   });
 
   const saveSlack = async () => {
@@ -2020,6 +2024,18 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                               </label>
                               )}
                             </div>
+
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                              <span style={slackLabelStyle}>{t('settings.connections.alertFallback')}</span>
+                              <input
+                                value={slackAlertFallback}
+                                onChange={(e) => setSlackAlertFallback(e.target.value)}
+                                placeholder="C0ALERTS123"
+                                aria-invalid={!!slackAlertFallback.trim() && !isSlackChannelId(slackAlertFallback.trim())}
+                                style={{ ...slackInputStyle, fontFamily: 'var(--cth-font-mono)' }}
+                              />
+                              <span style={{ fontSize: 11, color: !!slackAlertFallback.trim() && !isSlackChannelId(slackAlertFallback.trim()) ? 'var(--cth-coral, #c0392b)' : 'var(--cth-ink-500)' }}>{t('settings.connections.alertFallbackHint')}</span>
+                            </label>
 
                             {/* App/voice-INITIATED proactive posting — OFF by
                                 default ("stop posting into Slack by default").

@@ -258,12 +258,24 @@ export function isSlackChannelId(v: string): boolean {
   return /^[CG][A-Z0-9]{8,}$/.test(v);
 }
 
-/** The alert channel for `projectKey`: `slackAlertChannel` when set (override),
- *  else the project's first `slackChannels` entry. Disabled bindings and malformed
- *  ids resolve to null (fail closed). An invalid override does NOT fall back. */
-export function alertChannelFor(bindings: JiraProjectBinding[] | undefined, projectKey: string): string | null {
-  const key = projectKey.trim().toUpperCase();
+/** The Slack channel an alarm may be opened in, or null (fail closed).
+ *  With a project: its `slackAlertChannel` (override) → its first `slackChannels`
+ *  entry → the global `fallback`. Only a binding that HAS no channel falls through
+ *  to the fallback; an unknown key, a disabled binding, or a malformed id (override
+ *  or channel) is null and never falls back. Without a project: the fallback. */
+export function alertChannelFor(
+  bindings: JiraProjectBinding[] | undefined,
+  projectKey: string | undefined,
+  fallback?: string
+): string | null {
+  const valid = (v?: string): string | null => {
+    const t = v?.trim();
+    return t && isSlackChannelId(t) ? t : null;
+  };
+  const key = projectKey?.trim().toUpperCase();
+  if (!key) return valid(fallback);
   const b = (bindings ?? []).find((x) => x.key.toUpperCase() === key && x.enabled !== false);
-  const ch = b?.slackAlertChannel?.trim() || b?.slackChannels?.[0]?.trim();
-  return ch && isSlackChannelId(ch) ? ch : null;
+  if (!b) return null;
+  const own = b.slackAlertChannel?.trim() || b.slackChannels?.[0]?.trim();
+  return own ? valid(own) : valid(fallback);
 }

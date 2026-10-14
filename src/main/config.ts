@@ -496,6 +496,8 @@ export interface HarnessConfig {
   slackSigningSecret?: string;
   /** Bot token (xoxb-…) — only needed if the bot ever replies; optional for now. */
   slackBotToken?: string;
+  /** Global Slack alarm channel (id) used by `md-slack-reply --alert` when a project has no channel of its own, or no --project is given. */
+  slackAlertFallbackChannel?: string;
   /** Inbound transport: 'events' = Events API behind a tunnel (default), 'socket' = Socket Mode
    *  (outbound WebSocket, no tunnel). */
   slackMode?: 'events' | 'socket';

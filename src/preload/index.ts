@@ -318,6 +318,8 @@ export interface HarnessConfig {
   slackEnabled?: boolean;
   slackSigningSecret?: string;
   slackBotToken?: string;
+  /** Global Slack alarm channel (id) used by `md-slack-reply --alert` when a project has no channel of its own, or no --project is given. */
+  slackAlertFallbackChannel?: string;
   slackMode?: 'events' | 'socket';
   slackAppToken?: string;
   slackChannelId?: string;
@@ -1291,7 +1293,7 @@ const api = {
   /** Persist Slack settings (and stop the server if disabled / secret cleared). */
   slackSetConfig: (patch: {
     signingSecret?: string; botToken?: string; channelId?: string; port?: number; enabled?: boolean;
-    proactivePosting?: boolean; mode?: 'events' | 'socket'; appToken?: string;
+    proactivePosting?: boolean; mode?: 'events' | 'socket'; appToken?: string; alertFallbackChannel?: string;
   }): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke('slack:setConfig', patch),
 

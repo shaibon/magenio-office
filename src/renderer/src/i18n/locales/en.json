@@ -360,6 +360,8 @@
       "modeSocket": "Socket Mode (no tunnel)",
       "appToken": "App-level token",
       "channelId": "Channel id (optional)",
+      "alertFallback": "Fallback alert channel",
+      "alertFallbackHint": "Channel id (C… / G…) used by md-slack-reply --alert when a project has no channel of its own, or no --project is given. Invalid ids are discarded on save.",
       "channelPlaceholder": "C0123... or blank for any",
       "port": "Port",
       "proactivePosting": "Proactive posting (app-initiated) — off by default",

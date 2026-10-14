@@ -394,8 +394,8 @@ export interface SlackReplyServerOptions {
    *  done-summary poller can skip it (the poller is a fallback, not a duplicator). */
   onReplied?: (thread_ts: string) => void;
   /** Alert channel configured for a project key (binding `slackAlertChannel`), or
-   *  null. Absent = the /alert endpoint is disabled. */
-  alertChannelFor?: (project: string) => string | null;
+   *  null; with no project, the global fallback. Absent = the /alert endpoint is disabled. */
+  alertChannelFor?: (project: string | undefined) => string | null;
   /** True when the presented broker token may write (god / MD_BROKER holders). */
   isBrokerWriter?: (token: string | undefined) => boolean;
 }
@@ -414,7 +414,7 @@ export class SlackReplyServer {
   private readonly token: string;
   private readonly getBotToken: () => string | undefined;
   private readonly onReplied?: (thread_ts: string) => void;
-  private readonly alertChannelFor?: (project: string) => string | null;
+  private readonly alertChannelFor?: (project: string | undefined) => string | null;
   private readonly isBrokerWriter?: (token: string | undefined) => boolean;
 
   constructor(opts: SlackReplyServerOptions) {
@@ -482,9 +482,9 @@ export class SlackReplyServer {
       const botToken = this.getBotToken();
       if (!botToken) { res.writeHead(503); res.end(JSON.stringify({ ok: false, error: 'no bot token' })); return; }
       if (route === '/alert') {
-        const configured = parsed.project && this.alertChannelFor ? this.alertChannelFor(parsed.project) : null;
-        if (!parsed.project || !parsed.text) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'project, text required' })); return; }
-        if (!configured) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'project has no alert channel configured' })); return; }
+        const configured = this.alertChannelFor ? this.alertChannelFor(parsed.project?.trim() || undefined) : null;
+        if (!parsed.text) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'text required' })); return; }
+        if (!configured) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'no alert channel configured for this project (or no global fallback)' })); return; }
         // channel is optional; when given it must be exactly the configured one.
         const channel = parsed.channel?.trim() || configured;
         postSlackAlert({ botToken, channel, configuredChannel: configured, text: parsed.text })

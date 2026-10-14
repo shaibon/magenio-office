@@ -1,5 +1,5 @@
 import { magentoConfigForProject, magentoStageConfigForProject, magentoDeniedReadPaths } from './magentoMcp';
-import { alertChannelFor } from '../shared/jiraProjects';
+import { alertChannelFor, isSlackChannelId } from '../shared/jiraProjects';
 import { withCodexSandboxMode, withCodexSandboxCommand } from '../shared/codexSandbox';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
 import { execFileSync, spawn } from 'node:child_process';
@@ -1941,7 +1941,7 @@ async function startSlackReplyServer(): Promise<void> {
     // An agent posted a DIRECT substantive reply into this thread → record it so the
     // done-summary poller skips it (the poller is a fallback, not a duplicator).
     onReplied: (thread_ts) => { directlyRepliedThreads.add(thread_ts); },
-    alertChannelFor: (project) => alertChannelFor(readConfig().jiraProjects, project),
+    alertChannelFor: (project) => alertChannelFor(readConfig().jiraProjects, project, readConfig().slackAlertFallbackChannel),
     isBrokerWriter: (tok) => integrationBroker.hasWritableCapability(tok)
   });
   const r = await slackReplyServer.start();
@@ -5022,7 +5022,7 @@ ipcMain.handle('slack:reply', (_evt, arg: unknown) => {
 ipcMain.handle('slack:setConfig', (_evt, patch: unknown) => {
   const p = (patch ?? {}) as {
     signingSecret?: unknown; botToken?: unknown; channelId?: unknown; port?: unknown; enabled?: unknown;
-    proactivePosting?: unknown; mode?: unknown; appToken?: unknown;
+    proactivePosting?: unknown; mode?: unknown; appToken?: unknown; alertFallbackChannel?: unknown;
   };
   const next: Partial<HarnessConfig> = {};
   const prevMode = readConfig().slackMode === 'socket' ? 'socket' : 'events';
@@ -5035,6 +5035,11 @@ ipcMain.handle('slack:setConfig', (_evt, patch: unknown) => {
   if (typeof p.port === 'number' && Number.isFinite(p.port)) next.slackPort = p.port;
   if (typeof p.enabled === 'boolean') next.slackEnabled = p.enabled;
   if (typeof p.proactivePosting === 'boolean') next.slackProactivePosting = p.proactivePosting;
+  // Only a well-formed channel id is stored; anything else clears it (fail closed).
+  if (typeof p.alertFallbackChannel === 'string') {
+    const ch = p.alertFallbackChannel.trim();
+    next.slackAlertFallbackChannel = ch && isSlackChannelId(ch) ? ch : undefined;
+  }
   writeConfig(next);
   // Reconcile the running server: disabling (or clearing the secret) stops it. We
   // deliberately do NOT auto-(re)start here — the user presses Start in Settings

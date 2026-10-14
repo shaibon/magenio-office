@@ -15,7 +15,8 @@
  *   (optional) --config /abs/path/to/slack-reply.json
  *
  * ALERT mode (god only — needs MD_BROKER_TOKEN with write access):
- *   node md-slack-reply.cjs --alert --project BURD --text "..." [--channel C123]
+ *   node md-slack-reply.cjs --alert [--project BURD] --text "..." [--channel C123]
+ *   Without --project the global fallback alert channel is used (alarms not tied to a project).
  *   Opens a NEW root message, and only in the project's configured
  *   `slackAlertChannel`; --channel, if given, must equal it. Prints the message
  *   ts so the thread can be continued with --thread <ts>.
@@ -56,8 +57,8 @@ const text = args.text;
 
 const alert = args.alert === true || args.alert === 'true';
 if (alert) {
-  if (!args.project || args.project === true || !text || text === true) {
-    fail('alert mode requires: --alert --project <KEY> --text "<message>" [--channel <id>]');
+  if (!text || text === true) {
+    fail('alert mode requires: --alert --text "<message>" [--project <KEY>] [--channel <id>]');
   }
 } else if (!channel || !thread || !text || text === true) {
   fail('required: --channel <id> --thread <ts> --text "<message>"');
@@ -79,7 +80,7 @@ if (!cfg || typeof cfg.port !== 'number' || typeof cfg.token !== 'string') {
 }
 
 const body = alert
-  ? JSON.stringify({ project: args.project, channel: typeof channel === 'string' ? channel : undefined, text })
+  ? JSON.stringify({ project: typeof args.project === 'string' ? args.project : undefined, channel: typeof channel === 'string' ? channel : undefined, text })
   : JSON.stringify({ channel, thread_ts: thread, text });
 const req = http.request(
   {

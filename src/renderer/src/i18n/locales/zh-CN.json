@@ -360,6 +360,8 @@
       "modeSocket": "Socket Mode（无需隧道）",
       "appToken": "应用级令牌",
       "channelId": "频道 ID（可选）",
+      "alertFallback": "备用告警频道",
+      "alertFallbackHint": "当项目没有自己的频道或未指定 --project 时，md-slack-reply --alert 使用的频道 ID（C… / G…）。无效 ID 保存时会被丢弃。",
       "channelPlaceholder": "C0123... 或留空表示任意",
       "port": "端口",
       "proactivePosting": "主动发布（应用发起）——默认关闭",
