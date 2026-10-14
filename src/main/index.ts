@@ -1,4 +1,5 @@
 import { magentoConfigForProject, magentoStageConfigForProject, magentoDeniedReadPaths } from './magentoMcp';
+import { shouldRetryWithoutResume } from '../shared/resumeFailure';
 import { alertChannelFor, isSlackChannelId } from '../shared/jiraProjects';
 import { withCodexSandboxMode, withCodexSandboxCommand } from '../shared/codexSandbox';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
@@ -278,6 +279,9 @@ const ptyToAgent = new Map<string, string>();
  *  in this PTY; when it exits cleanly the exit handler re-runs the SAME spawn (with
  *  install disabled) so the freshly-installed CLI launches in the SAME pty/window —
  *  no user click. Cleared the moment it's consumed, so it can never loop installs. */
+/** Agents spawned WITH a resume id: if the CLI dies in the first seconds because it
+ *  does not know that session, relaunch once without it (t-195). */
+const pendingResumeRetry = new Map<string, { opts: AgentSpawnOptions; owner: Electron.WebContents | null; at: number }>();
 const pendingInstallRelaunch = new Map<string, { opts: AgentSpawnOptions; owner: Electron.WebContents | null; bin: string; rung: string }>();
 const hive = new HiveManager(
   () => readConfig().harnessHome,
@@ -709,6 +713,17 @@ ptyManager.setExitHandler((id, exitCode, info) => {
     }
   } catch (e) { console.error('[pty] recordAgentExit failed:', e); }
 
+  const resumeTry = pendingResumeRetry.get(id);
+  pendingResumeRetry.delete(id);
+  if (resumeTry && shouldRetryWithoutResume(exitCode, info?.tail, Date.now() - resumeTry.at)) {
+    const agentId = resumeTry.opts.hive?.id;
+    if (agentId) hive.clearSession(agentId);
+    hive.appendLog({ kind: 'resume-retry', agentId: agentId ?? id, detail: 'CLI rejected the saved session; relaunching without --resume' });
+    const wc = (resumeTry.owner && !resumeTry.owner.isDestroyed()) ? resumeTry.owner : liveWebContents();
+    try { wc?.send(`pty:relaunch:${id}`); } catch { /* window gone */ }
+    void spawnAgentCore(resumeTry.opts, resumeTry.owner);
+    return; // not a death: the agent keeps its slot and gets a fresh session
+  }
   const pending = pendingInstallRelaunch.get(id);
   if (pending) {
     pendingInstallRelaunch.delete(id);
@@ -3028,7 +3043,7 @@ function findCodexHomeForSession(sessionId: string, siblingsRoot: string): strin
 
 /** Spawn options shared by the `pty:spawn` IPC handler and the god-triggered
  *  ephemeral-worker watcher. */
-type AgentSpawnOptions = SpawnOptions & { hive?: AgentMeta; isolate?: boolean; resume?: boolean; requireResume?: boolean; resumeSessionId?: string; provider?: AgentProvider; noAutoInstall?: boolean; model?: string };
+type AgentSpawnOptions = SpawnOptions & { hive?: AgentMeta; isolate?: boolean; resume?: boolean; requireResume?: boolean; resumeSessionId?: string; provider?: AgentProvider; noAutoInstall?: boolean; noResumeRetry?: boolean; model?: string };
 
 /** Resolve the shared `project` label stamped into registry.json/fleet.json at
  *  spawn time so same-named agents are distinguishable OUTSIDE the renderer
@@ -3098,6 +3113,8 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // returned to the caller so the renderer records the same absolute path.
   opts.cwd = expandTilde(opts.cwd);
   if (opts.hive) opts.hive = { ...opts.hive, cwd: expandTilde(opts.hive.cwd) };
+  // Untouched copy for a one-shot relaunch without --resume (args/env are mutated below).
+  const pristine: AgentSpawnOptions = { ...opts, args: [...(opts.args ?? [])], env: { ...(opts.env ?? {}) } };
   // A spawn into a directory that does not exist can only fail — but ensureAgent
   // used to run first, so every attempt (notably the boot auto-restore of a stale
   // roster entry, t-189) re-created the agent's registry row with archived:false
@@ -3386,7 +3403,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     // actually present (already or after the copy); otherwise fall back to a fresh
     // session rather than launching a `--resume` against a missing id.
     const explicitSid = typeof opts.resumeSessionId === 'string' ? opts.resumeSessionId.trim() : '';
-    const sid = explicitSid || (opts.resume === true ? hive.lastSession(opts.hive.id) : undefined);
+    const sid = explicitSid || (opts.resume === true ? hive.lastSession(opts.hive.id, provider) : undefined);
     if (sid && !args.includes('--resume')) {
       if (seedSessionTranscript(opts.cwd, sid)) {
         args.push('--resume', sid);
@@ -3419,7 +3436,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     // resumeSessionId was read ONLY in the Claude branch, so a Codex agent
     // silently ignored it and started a brand-new empty session.
     const typedSid = typeof opts.resumeSessionId === 'string' ? opts.resumeSessionId.trim() : '';
-    const sid = typedSid || (opts.resume === true ? hive.lastSession(opts.hive.id) : undefined);
+    const sid = typedSid || (opts.resume === true ? hive.lastSession(opts.hive.id, provider) : undefined);
     if (sid && rf) {
       const args = opts.args ?? [];
       if (!args.includes(rf)) { args.push(rf, sid); opts.args = args; didResume = true; }
@@ -3540,6 +3557,9 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     if (!remote) opts.args = withCodexNoDaemonArgs(opts.args ?? [], codexSupportsNoDaemon(resolveCliCommand(opts.command)));
   }
   const res = ptyManager.spawn(opts, owner);
+  if (res.ok && didResume && !pristine.noResumeRetry) {
+    pendingResumeRetry.set(opts.id, { opts: { ...pristine, resume: false, resumeSessionId: undefined, noResumeRetry: true }, owner, at: Date.now() });
+  }
   if (res.ok) analytics.track('agent_spawned', { provider });
   else analytics.track('agent_spawn_failed', { provider, reason: spawnFailReason(res.error) });
   syncKeepAwake(); // arm the power-save blocker while ≥1 agent PTY is alive (#18)

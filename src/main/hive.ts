@@ -190,6 +190,9 @@ export interface RegistryAgent extends AgentMeta {
    *  resume after a crash/restart) AND the cost accounting/dedup key on every
    *  AgentUsageSample / cost-ledger row. */
   sessionId?: string;
+  /** Provider that produced `sessionId`. A session id is only a valid `--resume` key for
+   *  that provider; a provider switch (claude/codex → deepcode) must not reuse it. */
+  sessionProvider?: string;
   /** Whether `cwd` is actually usable for a (re)spawn — i.e. an ABSOLUTE path
    *  that exists as a directory. Computed + persisted at spawn so the roster
    *  reliably exposes each worker's environment validity. A non-absolute fragment
@@ -898,7 +901,13 @@ export class HiveManager {
       cwdValid: cwd.valid,
       // A (re)spawn always means a live terminal — clear any prior archived flag.
       archived: false,
-      lastSeen: Date.now()
+      lastSeen: Date.now(),
+      // The provider changed since the session was recorded (or, for a legacy entry,
+      // since the last spawn): its session id means nothing to the new CLI and made
+      // deepcode die on --resume. Drop it so the agent starts a fresh thread.
+      ...(prev?.provider && meta.provider && prev.provider !== meta.provider
+        ? { sessionId: undefined, sessionProvider: undefined }
+        : {})
     };
     if (meta.isGod) reg.godId = meta.id;
     this.atomicWriteJson(join(root, 'registry.json'), reg);
@@ -1344,6 +1353,7 @@ export class HiveManager {
       const agent = reg.agents[agentId];
       if (!agent || agent.sessionId === sessionId) return; // unknown agent or unchanged → no write
       agent.sessionId = sessionId;
+      agent.sessionProvider = agent.provider;
       agent.lastSeen = Date.now();
       this.atomicWriteJson(join(root, 'registry.json'), reg);
       this.appendLog({ kind: 'session', agentId, sessionId });
@@ -1353,8 +1363,25 @@ export class HiveManager {
 
   /** The last known session_id for an agent, or undefined. Used to build a
    *  `claude --resume <id>` spawn so a restarted agent resumes its thread. */
-  lastSession(agentId: string): string | undefined {
-    return this.registry().agents[agentId]?.sessionId;
+  lastSession(agentId: string, provider?: string): string | undefined {
+    const a = this.registry().agents[agentId];
+    // A session recorded under another provider is not resumable by this one.
+    if (provider && a?.sessionProvider && a.sessionProvider !== provider) return undefined;
+    return a?.sessionId;
+  }
+
+  /** Forget the recorded session (a resume that the CLI rejected). */
+  clearSession(agentId: string): void {
+    const root = this.root();
+    if (!root) return;
+    try {
+      const reg = this.registry();
+      const a = reg.agents[agentId];
+      if (!a?.sessionId) return;
+      delete a.sessionId; delete a.sessionProvider;
+      this.atomicWriteJson(join(root, 'registry.json'), reg);
+      this.appendLog({ kind: 'session-cleared', agentId });
+    } catch { /* best-effort */ }
   }
 
   /** Claude Code settings that route every relevant hook through the shim, plus
