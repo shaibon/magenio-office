@@ -184,6 +184,13 @@ export class IntegrationBroker {
     if (token) { this.byToken.delete(token); this.byWorker.delete(workerId); }
   }
 
+  /** True when `provided` is a live capability that may WRITE (not a read-only PM
+   *  one). Used by other loopback endpoints (Slack alert) to gate god-only actions. */
+  hasWritableCapability(provided: string | undefined): boolean {
+    const cap = this.resolveCapability(provided);
+    return !!cap && !cap.readOnly;
+  }
+
   /** Constant-time-ish lookup of a presented token against live capabilities. */
   private resolveCapability(provided: string | undefined): Capability | undefined {
     if (!provided) return undefined;

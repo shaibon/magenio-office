@@ -43,6 +43,10 @@ export interface JiraProjectBinding {
    *  project a request is about. Absent/empty = no channel; a channel maps to at
    *  most one project. */
   slackChannels?: string[];
+  /** Slack channel id where god may open a NEW (non-threaded) alarm message for this
+   *  project via `md-slack-reply --alert`. The only root-post exception to the
+   *  thread-only rule; absent = the project has no alert channel (fail closed). */
+  slackAlertChannel?: string;
   /** GlitchTip projects (slugs, e.g. "bravifarmacie-prod") whose errors belong to
    *  this project. Absent = none. A slug belongs to at most one project. */
   glitchtip?: GlitchtipBinding;
@@ -247,4 +251,18 @@ export function validateGlitchtip(
     if (owner) return `GlitchTip project ${slug} is already bound to ${owner.key}.`;
   }
   return null;
+}
+
+/** Slack channel ids look like C03G9FGU2RE / G…; anything else is a typo. */
+export function isSlackChannelId(v: string): boolean {
+  return /^[CG][A-Z0-9]{8,}$/.test(v);
+}
+
+/** The alert channel configured for `projectKey`, or null. Disabled bindings
+ *  and malformed ids resolve to null (fail closed). */
+export function alertChannelFor(bindings: JiraProjectBinding[] | undefined, projectKey: string): string | null {
+  const key = projectKey.trim().toUpperCase();
+  const b = (bindings ?? []).find((x) => x.key.toUpperCase() === key && x.enabled !== false);
+  const ch = b?.slackAlertChannel?.trim();
+  return ch && isSlackChannelId(ch) ? ch : null;
 }

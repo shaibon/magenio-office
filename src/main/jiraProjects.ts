@@ -17,7 +17,8 @@ import {
   validateGlitchtip,
   normalizeSlackChannels,
   parseSlackChannelsJson,
-  resolveSlackProject
+  resolveSlackProject,
+  isSlackChannelId
 } from '../shared/jiraProjects';
 import { validateTrelloIntake } from '../shared/trelloIntake';
 import { readConfig, writeConfig } from './config';
@@ -97,6 +98,11 @@ export async function validateJiraProjectBinding(
 
   const slackError = validateSlackChannels(binding.slackChannels, otherBindings);
   if (slackError) return { ok: false, error: slackError };
+
+  const alertCh = binding.slackAlertChannel?.trim();
+  if (alertCh && !isSlackChannelId(alertCh)) {
+    return { ok: false, error: `Slack alert channel must be a channel id like C03G9FGU2RE: ${alertCh}` };
+  }
 
   const glitchError = validateGlitchtip(binding.glitchtip, otherBindings);
   if (glitchError) return { ok: false, error: glitchError };

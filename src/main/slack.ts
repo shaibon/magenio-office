@@ -313,19 +313,45 @@ export function postSlackReply(opts: {
   channel: string;
   thread_ts: string;
   text: string;
-}): Promise<{ ok: boolean; error?: string }> {
+}): Promise<{ ok: boolean; error?: string; ts?: string }> {
+  // CLAUSE-1 guard (fix-slack-integration): refuse any send that lacks an
+  // EXPLICIT channel + thread target. A blank/whitespace thread_ts would post
+  // to the channel root — an implicit destination the caller never named — so
+  // every app/voice-initiated send must pass the thread it was explicitly given.
+  // The Slack-origin done-reply poller and the loopback /reply endpoint always
+  // pass concrete values, so this never fires for them (no behaviour change).
+  if (!opts.channel?.trim() || !opts.thread_ts?.trim()) {
+    return Promise.resolve({ ok: false, error: 'missing explicit channel or thread_ts' });
+  }
+  return slackChatPost(opts.botToken, { channel: opts.channel, thread_ts: opts.thread_ts, text: opts.text });
+}
+
+/**
+ * Open a NEW (root, non-threaded) alarm message. The ONLY root-post path, so it
+ * takes the already-resolved project alert channel and refuses anything else:
+ * the caller must have matched `channel` against the project's configured
+ * `slackAlertChannel` (see SlackReplyServer /alert). Returns the message `ts` so
+ * the conversation can continue in its thread via postSlackReply.
+ */
+export function postSlackAlert(opts: {
+  botToken: string;
+  channel: string;
+  configuredChannel: string | null;
+  text: string;
+}): Promise<{ ok: boolean; error?: string; ts?: string }> {
+  const channel = opts.channel?.trim();
+  if (!channel || !opts.configuredChannel || channel !== opts.configuredChannel) {
+    return Promise.resolve({ ok: false, error: 'channel is not the project alert channel' });
+  }
+  return slackChatPost(opts.botToken, { channel, text: opts.text });
+}
+
+/** Raw chat.postMessage POST (no `@slack/*` dep). The bot token is passed in by the
+ *  caller, lives in main's config, and is NEVER logged. Resolves `{ ok, error?, ts? }`. */
+function slackChatPost(botToken: string, payload: Record<string, string>): Promise<{ ok: boolean; error?: string; ts?: string }> {
   return new Promise((resolve) => {
-    if (!opts.botToken) { resolve({ ok: false, error: 'missing bot token' }); return; }
-    // CLAUSE-1 guard (fix-slack-integration): refuse any send that lacks an
-    // EXPLICIT channel + thread target. A blank/whitespace thread_ts would post
-    // to the channel root — an implicit destination the caller never named — so
-    // every app/voice-initiated send must pass the thread it was explicitly given.
-    // The Slack-origin done-reply poller and the loopback /reply endpoint always
-    // pass concrete values, so this never fires for them (no behaviour change).
-    if (!opts.channel?.trim() || !opts.thread_ts?.trim()) {
-      resolve({ ok: false, error: 'missing explicit channel or thread_ts' }); return;
-    }
-    const body = JSON.stringify({ channel: opts.channel, thread_ts: opts.thread_ts, text: opts.text });
+    if (!botToken) { resolve({ ok: false, error: 'missing bot token' }); return; }
+    const body = JSON.stringify(payload);
     const req = httpsRequest({
       method: 'POST',
       hostname: 'slack.com',
@@ -333,15 +359,15 @@ export function postSlackReply(opts: {
       headers: {
         'content-type': 'application/json; charset=utf-8',
         'content-length': Buffer.byteLength(body),
-        authorization: `Bearer ${opts.botToken}`
+        authorization: `Bearer ${botToken}`
       }
     }, (res) => {
       const chunks: Buffer[] = [];
       res.on('data', (c: Buffer) => chunks.push(c));
       res.on('end', () => {
         try {
-          const json = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { ok?: boolean; error?: string };
-          resolve({ ok: json.ok === true, error: json.error });
+          const json = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { ok?: boolean; error?: string; ts?: string };
+          resolve({ ok: json.ok === true, error: json.error, ts: json.ok === true ? json.ts : undefined });
         } catch { resolve({ ok: false, error: 'bad response from Slack' }); }
       });
     });
@@ -367,6 +393,11 @@ export interface SlackReplyServerOptions {
    *  this loopback. Lets main record that the thread was already answered so the
    *  done-summary poller can skip it (the poller is a fallback, not a duplicator). */
   onReplied?: (thread_ts: string) => void;
+  /** Alert channel configured for a project key (binding `slackAlertChannel`), or
+   *  null. Absent = the /alert endpoint is disabled. */
+  alertChannelFor?: (project: string) => string | null;
+  /** True when the presented broker token may write (god / MD_BROKER holders). */
+  isBrokerWriter?: (token: string | undefined) => boolean;
 }
 
 /**
@@ -383,11 +414,15 @@ export class SlackReplyServer {
   private readonly token: string;
   private readonly getBotToken: () => string | undefined;
   private readonly onReplied?: (thread_ts: string) => void;
+  private readonly alertChannelFor?: (project: string) => string | null;
+  private readonly isBrokerWriter?: (token: string | undefined) => boolean;
 
   constructor(opts: SlackReplyServerOptions) {
     this.token = opts.token;
     this.getBotToken = opts.getBotToken;
     this.onReplied = opts.onReplied;
+    this.alertChannelFor = opts.alertChannelFor;
+    this.isBrokerWriter = opts.isBrokerWriter;
   }
 
   /** Bind a loopback port (0 ⇒ OS-assigned). Resolves the actual bound port. */
@@ -418,10 +453,17 @@ export class SlackReplyServer {
   private handle(req: IncomingMessage, res: ServerResponse): void {
     // Defense in depth: even bound loopback-only, refuse any non-loopback peer.
     if (!isLoopback(req.socket.remoteAddress ?? '')) { res.writeHead(403); res.end(); return; }
-    if (req.method !== 'POST' || (req.url ?? '').split('?')[0] !== '/reply') {
+    const route = (req.url ?? '').split('?')[0];
+    if (req.method !== 'POST' || (route !== '/reply' && route !== '/alert')) {
       res.writeHead(404); res.end(); return;
     }
     if (!this.checkToken(req.headers['x-md-reply-token'])) { res.writeHead(401); res.end(); return; }
+    // /alert is the one root-post path: besides the reply token it needs a WRITABLE
+    // broker capability (god / MD_BROKER holders), checked before the body is read.
+    const brokerHdr = req.headers['x-md-broker-token'];
+    if (route === '/alert' && !(this.isBrokerWriter?.(typeof brokerHdr === 'string' ? brokerHdr : undefined))) {
+      res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'alert requires a writable broker capability (god)' })); return;
+    }
 
     const chunks: Buffer[] = [];
     let size = 0;
@@ -434,11 +476,25 @@ export class SlackReplyServer {
     });
     req.on('end', () => {
       if (aborted) return;
-      let parsed: { channel?: string; thread_ts?: string; text?: string };
+      let parsed: { channel?: string; thread_ts?: string; text?: string; project?: string };
       try { parsed = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
       catch { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'bad json' })); return; }
       const botToken = this.getBotToken();
       if (!botToken) { res.writeHead(503); res.end(JSON.stringify({ ok: false, error: 'no bot token' })); return; }
+      if (route === '/alert') {
+        const configured = parsed.project && this.alertChannelFor ? this.alertChannelFor(parsed.project) : null;
+        if (!parsed.project || !parsed.text) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'project, text required' })); return; }
+        if (!configured) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'project has no alert channel configured' })); return; }
+        // channel is optional; when given it must be exactly the configured one.
+        const channel = parsed.channel?.trim() || configured;
+        postSlackAlert({ botToken, channel, configuredChannel: configured, text: parsed.text })
+          .then((r) => {
+            res.writeHead(r.ok ? 200 : r.error === 'channel is not the project alert channel' ? 403 : 502, { 'content-type': 'application/json' });
+            res.end(JSON.stringify(r.ok ? { ok: true, ts: r.ts, channel } : { ok: false, error: r.error }));
+          })
+          .catch((e) => { res.writeHead(500); res.end(JSON.stringify({ ok: false, error: errMsg(e) })); });
+        return;
+      }
       if (!parsed.channel || !parsed.thread_ts || !parsed.text) {
         res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'channel, thread, text required' })); return;
       }

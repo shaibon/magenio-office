@@ -1,4 +1,5 @@
 import { magentoConfigForProject, magentoStageConfigForProject, magentoDeniedReadPaths } from './magentoMcp';
+import { alertChannelFor } from '../shared/jiraProjects';
 import { withCodexSandboxMode, withCodexSandboxCommand } from '../shared/codexSandbox';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
 import { execFileSync, spawn } from 'node:child_process';
@@ -1939,7 +1940,9 @@ async function startSlackReplyServer(): Promise<void> {
     getBotToken: () => readConfig().slackBotToken,
     // An agent posted a DIRECT substantive reply into this thread → record it so the
     // done-summary poller skips it (the poller is a fallback, not a duplicator).
-    onReplied: (thread_ts) => { directlyRepliedThreads.add(thread_ts); }
+    onReplied: (thread_ts) => { directlyRepliedThreads.add(thread_ts); },
+    alertChannelFor: (project) => alertChannelFor(readConfig().jiraProjects, project),
+    isBrokerWriter: (tok) => integrationBroker.hasWritableCapability(tok)
   });
   const r = await slackReplyServer.start();
   if (!r.ok || r.port === undefined) {

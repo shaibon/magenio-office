@@ -14,6 +14,12 @@
  *   node md-slack-reply.cjs --channel C123 --thread 1700000000.000100 --text "..."
  *   (optional) --config /abs/path/to/slack-reply.json
  *
+ * ALERT mode (god only — needs MD_BROKER_TOKEN with write access):
+ *   node md-slack-reply.cjs --alert --project BURD --text "..." [--channel C123]
+ *   Opens a NEW root message, and only in the project's configured
+ *   `slackAlertChannel`; --channel, if given, must equal it. Prints the message
+ *   ts so the thread can be continued with --thread <ts>.
+ *
  * The discovery file is located via, in order: --config, then the
  * MD_SLACK_REPLY_CONFIG env var (injected into every agent by main).
  */
@@ -48,7 +54,12 @@ const channel = args.channel;
 const thread = args.thread || args.thread_ts;
 const text = args.text;
 
-if (!channel || !thread || !text || text === true) {
+const alert = args.alert === true || args.alert === 'true';
+if (alert) {
+  if (!args.project || args.project === true || !text || text === true) {
+    fail('alert mode requires: --alert --project <KEY> --text "<message>" [--channel <id>]');
+  }
+} else if (!channel || !thread || !text || text === true) {
   fail('required: --channel <id> --thread <ts> --text "<message>"');
 }
 
@@ -67,17 +78,21 @@ if (!cfg || typeof cfg.port !== 'number' || typeof cfg.token !== 'string') {
   fail(`malformed reply config at ${configPath}`);
 }
 
-const body = JSON.stringify({ channel, thread_ts: thread, text });
+const body = alert
+  ? JSON.stringify({ project: args.project, channel: typeof channel === 'string' ? channel : undefined, text })
+  : JSON.stringify({ channel, thread_ts: thread, text });
 const req = http.request(
   {
     method: 'POST',
     host: '127.0.0.1',
     port: cfg.port,
-    path: '/reply',
+    path: alert ? '/alert' : '/reply',
     headers: {
       'content-type': 'application/json',
       'content-length': Buffer.byteLength(body),
-      'x-md-reply-token': cfg.token
+      'x-md-reply-token': cfg.token,
+      // alert mode proves it is god / an MD_BROKER holder; never printed.
+      ...(alert && process.env.MD_BROKER_TOKEN ? { 'x-md-broker-token': process.env.MD_BROKER_TOKEN } : {})
     }
   },
   (res) => {
@@ -88,7 +103,7 @@ const req = http.request(
       let json = {};
       try { json = JSON.parse(raw); } catch { /* non-JSON body */ }
       if (res.statusCode === 200 && json.ok) {
-        process.stdout.write('Posted reply to Slack thread.\n');
+        process.stdout.write(alert ? `Posted alert (ts=${json.ts}, channel=${json.channel}).\n` : 'Posted reply to Slack thread.\n');
         process.exit(0);
       }
       fail(`reply failed (HTTP ${res.statusCode}): ${json.error || raw || 'unknown error'}`);

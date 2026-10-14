@@ -332,6 +332,12 @@ export function JiraProjectsRegistry() {
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={fieldLabel}>{tr('jiraProjects.slackAlertChannel')}</span>
+            <input value={draft.slackAlertChannel} onChange={(e) => patch({ slackAlertChannel: e.target.value })} placeholder="C0ALERTS123" style={{ ...inputStyle, fontFamily: 'var(--cth-font-mono)' }} />
+            <span style={hint}>{tr('jiraProjects.slackAlertChannelHint')}</span>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <span style={fieldLabel}>{tr('jiraProjects.glitchtip')}</span>
             <input value={draft.glitchtip} onChange={(e) => patch({ glitchtip: e.target.value })} placeholder="bravifarmacie-prod" style={{ ...inputStyle, fontFamily: 'var(--cth-font-mono)' }} />
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
