@@ -40,6 +40,8 @@ export interface QuotaChip {
   balances?: QuotaBalance[];
   /** DeepSeek: balance drop since the first reading of the local day, per currency. */
   spentToday?: Record<string, number>;
+  /** Claude: the keychain token has expired and Claude Code will renew it; the values are the last good reading. */
+  renewing?: boolean;
   /** Epoch ms of the reading. */
   fetchedAt: number;
 }

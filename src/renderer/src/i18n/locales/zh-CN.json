@@ -1735,6 +1735,7 @@
     "tip": "套餐配额 — 点击查看详情",
     "unavailable": "不可用：{{reason}}",
     "weekly": "每周",
+    "renewing": "等待 Claude Code 续期令牌 · 上次读数 {{when}}",
     "updatedAt": "更新于 {{when}}",
     "noReset": "重置时间未知",
     "resets": "重置于 {{when}}",

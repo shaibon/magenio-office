@@ -38,7 +38,7 @@ const na = (provider: QuotaProvider, kind: QuotaChip['kind'], reason: string, no
   ({ provider, kind, ok: false, reason, fetchedAt: now });
 
 /** One pass over the enabled providers. Never throws; a failing source is an n/d chip. */
-export async function collectQuota(cfgIn: Partial<ProviderQuotaConfig> | undefined, deps: QuotaDeps): Promise<QuotaChip[]> {
+export async function collectQuota(cfgIn: Partial<ProviderQuotaConfig> | undefined, deps: QuotaDeps, prev: QuotaChip[] = []): Promise<QuotaChip[]> {
   const cfg = normalizeProviderQuota(cfgIn);
   const now = deps.now();
   const chips: QuotaChip[] = [];
@@ -48,7 +48,13 @@ export async function collectQuota(cfgIn: Partial<ProviderQuotaConfig> | undefin
       const windows = parseClaudeUsage(await deps.claudeUsage(), now);
       chips.push(windows ? { provider: 'claude', kind: 'percent', ok: true, windows, fetchedAt: now }
         : na('claude', 'percent', 'unexpected-response', now));
-    } catch (e) { chips.push(na('claude', 'percent', (e as Error).message || 'error', now)); }
+    } catch (e) {
+      const msg = (e as Error).message || 'error';
+      // Expired keychain token: Claude Code renews it on its next API call, so keep the last good reading (old fetchedAt) instead of asking for a login.
+      const last = prev.find((c) => c.provider === 'claude' && c.ok);
+      if (msg === 'claude-login-expired') chips.push(last ? { ...last, renewing: true } : na('claude', 'percent', 'waiting for Claude Code to renew the token', now));
+      else chips.push(na('claude', 'percent', msg, now));
+    }
   }
 
   if (cfg.codex) {
@@ -99,7 +105,7 @@ const run = (cmd: string, args: string[]): Promise<string | null> =>
 
 /** The Claude Code OAuth access token: env override, then the macOS keychain item
  *  Claude Code itself writes, then its credentials file. Not refreshed here (a
- *  refresh rotates the token Claude Code holds) — an expired token is just n/d. */
+ *  refresh rotates the token Claude Code holds) — an expired token waits for Claude Code to renew it. */
 async function claudeToken(): Promise<string> {
   const env = process.env.CLAUDE_CODE_OAUTH_TOKEN?.trim();
   if (env) return env;

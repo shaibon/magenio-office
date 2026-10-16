@@ -4501,7 +4501,7 @@ function refreshQuota(): Promise<QuotaChip[]> {
     const v = captureFromLoginShell(`printf %s "$${name}"`);
     return v && v.trim() ? v.trim() : null;
   }, { bin: resolveCliCommand('codex'), env: { ...process.env, PATH: userShellPath() } },
-  () => integrations.getSecret(providerKeyRef('deepseek')) || null)).then((chips) => {
+  () => integrations.getSecret(providerKeyRef('deepseek')) || null), quotaChips).then((chips) => {
     quotaChips = chips;
     try { liveWebContents()?.send('quota:update', chips); } catch { /* window torn down */ }
     return chips;

@@ -1735,6 +1735,7 @@
     "tip": "حصة الخطة — انقر للتفاصيل",
     "unavailable": "غير متاح: {{reason}}",
     "weekly": "أسبوعي",
+    "renewing": "بانتظار تجديد Claude Code للرمز · آخر قراءة {{when}}",
     "updatedAt": "آخر تحديث {{when}}",
     "noReset": "وقت إعادة التعيين غير معروف",
     "resets": "تُعاد في {{when}}",

@@ -137,3 +137,14 @@ test('deepcode settings: key + https base; absent file, broken JSON, missing key
   assert.equal(Q.parseDeepcodeSettings('{"env":{"BASE_URL":"https://x.y"}}'), null);
   assert.equal(Q.parseDeepcodeSettings('{"env":{"API_KEY":"  "}}'), null);
 });
+
+test('collect: expired claude token keeps the last good reading as renewing; without one it is a waiting n/d, not a login', async () => {
+  const expired = deps({ claudeUsage: async () => { throw new Error('claude-login-expired'); } });
+  const prev = await collectQuota({ codex: false, deepseek: false }, deps({}));
+  const [kept] = await collectQuota({ codex: false, deepseek: false }, expired, prev);
+  assert.equal(kept.ok, true); assert.equal(kept.renewing, true); assert.deepEqual(kept.windows, prev[0].windows);
+  const [none] = await collectQuota({ codex: false, deepseek: false }, expired);
+  assert.equal(none.ok, false); assert.doesNotMatch(none.reason, /login/);
+  const [lost] = await collectQuota({ codex: false, deepseek: false }, deps({ claudeUsage: async () => { throw new Error('no-claude-login'); } }), prev);
+  assert.equal(lost.reason, 'no-claude-login');
+});

@@ -50,7 +50,7 @@ export function QuotaChips(): JSX.Element | null {
       {shown.map((c) => {
         const level = chipLevel(c, cfg);
         const stale = c.ok && Date.now() - c.fetchedAt > QUOTA_STALE_MS;
-        const tip = stale ? t('quota.updatedAt', { when: new Date(c.fetchedAt).toLocaleString(i18n.language, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) }) : c.ok ? t('quota.tip') : t('quota.unavailable', { reason: c.reason ?? '' });
+        const tip = c.renewing ? t('quota.renewing', { when: new Date(c.fetchedAt).toLocaleString(i18n.language, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) }) : stale ? t('quota.updatedAt', { when: new Date(c.fetchedAt).toLocaleString(i18n.language, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) }) : c.ok ? t('quota.tip') : t('quota.unavailable', { reason: c.reason ?? '' });
         return (
           <button
             key={c.provider}
@@ -78,7 +78,10 @@ export function QuotaChips(): JSX.Element | null {
             boxShadow: 'inset 0 0 0 1px var(--cth-ink-700), var(--cth-shadow-hard)'
           }}>
             <div style={{ fontWeight: 600, marginBottom: 4 }}>{t(`quota.provider.${c.provider}`)}</div>
-            {c.ok && Date.now() - c.fetchedAt > QUOTA_STALE_MS && (
+            {c.renewing && (
+              <div style={{ color: 'var(--cth-ink-500)' }}>{t('quota.renewing', { when: new Date(c.fetchedAt).toLocaleString(i18n.language, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) })}</div>
+            )}
+            {c.ok && !c.renewing && Date.now() - c.fetchedAt > QUOTA_STALE_MS && (
               <div style={{ color: 'var(--cth-ink-500)' }}>{t('quota.updatedAt', { when: new Date(c.fetchedAt).toLocaleString(i18n.language, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) })}</div>
             )}
             {!c.ok && <div>{t('quota.unavailable', { reason: c.reason ?? '' })}</div>}

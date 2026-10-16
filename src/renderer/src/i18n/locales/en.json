@@ -1735,6 +1735,7 @@
     "tip": "Plan quota — click for details",
     "unavailable": "Not available: {{reason}}",
     "weekly": "Weekly",
+    "renewing": "waiting for Claude Code to renew the token · last reading {{when}}",
     "updatedAt": "updated {{when}}",
     "noReset": "reset time unknown",
     "resets": "resets {{when}}",
