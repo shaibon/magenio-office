@@ -535,6 +535,19 @@ export const n8nProjectOps = {
   }
 };
 
+/** Remove an n8n project: FIRST a verified clear of its bearer, THEN the config entry.
+ *  Clear fails -> nothing changed. Clear ok but the config write fails -> the entry is left
+ *  without a token, which is fail-closed (it mounts nothing). No rollback, so nothing can
+ *  overwrite an edit queued meanwhile. Returns whether the entry was removed. */
+export async function removeN8nProjectFlow(
+  project: string,
+  clearToken: () => Promise<boolean>,
+  write: (patch: ConsentPatch) => Promise<unknown>
+): Promise<boolean> {
+  if (!(await clearToken())) return false;
+  try { await write(n8nProjectOps.remove(project)); return true; } catch { return false; }
+}
+
 /** The Settings panel's consent writer. `ref` is the optimistic view the UI reads; every
  *  write applies its patch, when it runs in the queue, to the last PERSISTED state (never
  *  to the optimistic one), so a rejected write cannot leak into a write queued behind it.

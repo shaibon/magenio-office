@@ -19,7 +19,7 @@ require.cache[electronPath] = {
 test.after(() => fs.rmSync(userData, { recursive: true, force: true }));
 
 const { HiveManager } = loadTs('src/main/hive.ts');
-const { MCP_CATALOG, normalizeN8nUrl, resolveN8nProject, migrateN8nConsent, runN8nMigration, createConsentWriter, n8nProjectOps, isN8nProjectKey, n8nSecretRef, N8N_LEGACY_SECRET_REF } = loadTs('src/shared/mcpCatalog.ts');
+const { MCP_CATALOG, normalizeN8nUrl, resolveN8nProject, migrateN8nConsent, runN8nMigration, createConsentWriter, n8nProjectOps, removeN8nProjectFlow, isN8nProjectKey, n8nSecretRef, N8N_LEGACY_SECRET_REF } = loadTs('src/shared/mcpCatalog.ts');
 const { codexMcpServers, codexMcpToml } = loadTs('src/shared/codexMcp.ts');
 
 const hive = new HiveManager(() => userData);
@@ -254,7 +254,8 @@ test('Clear IPC and Settings only report success on a verified deletion; Remove 
   const ui = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/src/components/McpDefaultsSettings.tsx'), 'utf8');
   assert.match(ui, /if \(!\(await window\.cth\.mcpN8nClearToken\(project\)\)\.ok\) throw/);
   // Remove ordering/rollback is covered behaviorally by the createConsentWriter tests below.
-  assert.match(ui, /n8nProjectOps\.remove\(project\)[\s\S]*clearN8nToken\(project\)[\s\S]*n8nProjectOps\.upsert\(project, kept\)/, 'remove, verified clear, then restore');
+  assert.match(ui, /removeN8nProjectFlow\(project, \(\) => clearN8nToken\(project\)/);
+  assert.doesNotMatch(ui, /upsert\(project, kept\)/, 'no rollback');
 });
 
 // ── QA t-232 re-QA fixes ────────────────────────────────────────────────────
@@ -403,4 +404,39 @@ test('Settings writer: rejected middle write never loses or resurrects a project
   t = mk(-1);
   await Promise.all([t.write('n8n', n8nProjectOps.remove('B')), t.write('n8n', n8nProjectOps.upsert('C', E))]);
   assert.equal(keys(t.saved.at(-1)), 'AC');
+});
+
+// ── QA5: Remove = verified Clear first, no rollback ─────────────────────────
+test('Remove: Clear failure leaves config intact; Clear ok + rejected remove leaves a token-less (non-mounting) entry; queued Edit is not overwritten', async () => {
+  const E = { url: URL_OK, agents: ['jim'] };
+  const mk = (failWrite) => {
+    const ref = { current: { n8n: { enabled: true, projects: { A: E, B: E } } } };
+    const saved = [];
+    const write = createConsentWriter(ref, async (next) => { if (failWrite) throw new Error('disk'); saved.push(next); });
+    return { ref, saved, write: (p) => write('n8n', p) };
+  };
+  // Clear fails -> abort, nothing written
+  let t = mk(false);
+  assert.equal(await removeN8nProjectFlow('B', async () => false, t.write), false);
+  assert.equal(t.saved.length, 0);
+  assert.deepEqual(Object.keys(t.ref.current.n8n.projects).sort(), ['A', 'B']);
+  // Clear ok, config write rejected -> entry stays, but without a token it does not mount
+  t = mk(true);
+  assert.equal(await removeN8nProjectFlow('B', async () => true, t.write), false);
+  assert.ok(t.ref.current.n8n.projects.B, 'entry left in place');
+  assert.equal(build(t.ref.current.n8n && { ...ALL_OFF, n8n: t.ref.current.n8n }, 'jim', 'claude', '')['munder-n8n'], undefined, 'no token/broker route -> no mount');
+  // Toby: Remove's write rejected while an Edit is queued behind it -> the Edit survives, nothing overwrites it
+  const ref = { current: { n8n: { enabled: true, projects: { A: E, B: E } } } };
+  const saved = []; let n = 0;
+  const w = createConsentWriter(ref, async (next) => { if (n++ === 0) { await new Promise((r) => setTimeout(r, 20)); throw new Error('disk'); } saved.push(next); });
+  const rm = removeN8nProjectFlow('B', async () => true, (p) => w('n8n', p));
+  await new Promise((r) => setTimeout(r, 5)); // Remove's write is now in flight (and will reject)
+  const edit = w('n8n', n8nProjectOps.upsert('B', { url: 'https://b2.example.com/mcp' }));
+  assert.equal(await rm, false);
+  await edit;
+  assert.equal(saved.at(-1).n8n.projects.B.url, 'https://b2.example.com/mcp', 'queued edit persisted, not overwritten');
+  // Success path
+  t = mk(false);
+  assert.equal(await removeN8nProjectFlow('B', async () => true, t.write), true);
+  assert.deepEqual(Object.keys(t.saved.at(-1).n8n.projects), ['A']);
 });

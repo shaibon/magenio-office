@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { HarnessConfig } from '@/store/config';
-import { MCP_CATALOG, createConsentWriter, n8nProjectOps, isN8nProjectKey, type McpTier, type N8nProjectEntry } from '@shared/mcpCatalog';
+import { MCP_CATALOG, createConsentWriter, n8nProjectOps, removeN8nProjectFlow, isN8nProjectKey, type McpTier, type N8nProjectEntry } from '@shared/mcpCatalog';
 import { canInstallMcp } from './mcpInstallRule';
 
 export interface McpDefaultsSettingsProps {
@@ -201,14 +201,12 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
       return true;
     } catch { fail(); return false; }
   };
-  // Remove = drop the config entry first (a rejected write changes nothing), then verify
-  // the token is gone; if that fails the entry is put back, so there is never a removed
-  // project with a live bearer or a kept project without one.
+  // Remove: verified Clear first, then the config entry (see removeN8nProjectFlow).
   const removeN8nProject = async (project: string) => {
-    const kept = mcpDefaultsRef.current?.n8n?.projects?.[project];
-    try { await writeConsentPatch('n8n', n8nProjectOps.remove(project)); } catch { fail(); return; }
-    if (await clearN8nToken(project)) return;
-    if (kept) await writeConsentPatch('n8n', n8nProjectOps.upsert(project, kept)).catch(fail);
+    if (!(await removeN8nProjectFlow(project, () => clearN8nToken(project), (p) => writeConsentPatch('n8n', p)))) {
+      if (!mcpDefaultsRef.current?.n8n?.projects?.[project]) return;
+      fail();
+    }
   };
   const addN8nProject = async () => {
     const project = n8nNewProject.trim();
