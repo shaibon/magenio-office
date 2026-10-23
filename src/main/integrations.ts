@@ -71,10 +71,16 @@ export function upsertRecord(input: unknown): { ok: true; record: IntegrationRec
 }
 
 /** Remove a record AND its stored secret. */
-export function removeRecord(id: string): { ok: boolean } {
+export function removeRecord(id: string): { ok: boolean; error?: string } {
+  // Secret first: if it cannot be verifiably removed the record stays, so there is no
+  // half-removed integration with a live credential.
+  try {
+    if (!deleteSecret(secretRefFor(id))) return { ok: false, error: 'the stored secret could not be removed' };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
   const next = listRecords().filter((r) => r.id !== id);
   writeConfig({ integrations: next });
-  deleteSecret(secretRefFor(id));
   return { ok: true };
 }
 
@@ -117,11 +123,15 @@ function secretsPath(): string {
   return join(app.getPath('userData'), 'integration-secrets.json');
 }
 
+/** The stored blob. A store that EXISTS but cannot be read (permissions, I/O) throws:
+ *  "unreadable" must never look like "no secrets" (a delete would then claim success on a
+ *  live token). Only a readable-but-corrupt file is treated as empty. */
 function readSecretBlob(): Record<string, string> {
   const p = secretsPath();
   if (!existsSync(p)) return {};
+  const text = readFileSync(p, 'utf8');
   try {
-    const parsed = JSON.parse(readFileSync(p, 'utf8'));
+    const parsed = JSON.parse(text);
     return parsed && typeof parsed === 'object' ? (parsed as Record<string, string>) : {};
   } catch {
     return {};
@@ -170,7 +180,7 @@ export function getSecret(secretRef: string | undefined): string | undefined {
 /** Whether a secret is stored for this ref (no decryption). */
 export function hasSecret(secretRef: string | undefined): boolean {
   if (!secretRef) return false;
-  return !!readSecretBlob()[secretRef];
+  try { return !!readSecretBlob()[secretRef]; } catch { return true; } // unreadable: may exist, never claim it is absent
 }
 
 /** Delete a stored secret. Idempotent. Returns whether the secret is verifiably gone
@@ -186,5 +196,5 @@ export function deleteSecret(secretRef: string | undefined): boolean {
       writeSecretBlob(blob);
     }
   }
-  return !hasSecret(secretRef);
+  return !readSecretBlob()[secretRef]; // throws if the store became unreadable
 }

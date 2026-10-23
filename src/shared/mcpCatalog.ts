@@ -156,8 +156,17 @@ export function runN8nMigration(deps: {
   writeConsent: (c: McpConsentEntry) => void;
 }): { migrated: boolean; projects: string[] } {
   const m = migrateN8nConsent(deps.consent, deps.projectOf);
-  if (!m) return { migrated: false, projects: [] };
+  if (!m) {
+    // Nothing left to migrate, but a previous run may have written the config and failed
+    // to delete the legacy secret: finish that cleanup (the legacy ref is no longer used).
+    if (deps.hasSecret(N8N_LEGACY_SECRET_REF) && !deps.deleteSecret(N8N_LEGACY_SECRET_REF))
+      throw new Error('the legacy n8n token could not be removed');
+    return { migrated: false, projects: [] };
+  }
   const legacy = deps.getLegacy();
+  // A stored but unreadable legacy token (decryption unavailable): keep the global config
+  // untouched and retry at the next start instead of migrating with no bearer.
+  if (!legacy && deps.hasSecret(N8N_LEGACY_SECRET_REF)) throw new Error('the legacy n8n token is stored but cannot be read');
   const created: string[] = [];
   const rollback = () => { for (const p of created) deps.deleteSecret(n8nSecretRef(p)); };
   try {
@@ -173,7 +182,7 @@ export function runN8nMigration(deps: {
     rollback();
     throw e;
   }
-  if (legacy && !deps.deleteSecret(N8N_LEGACY_SECRET_REF)) throw new Error('migrated, but the legacy n8n token could not be removed');
+  if (legacy && !deps.deleteSecret(N8N_LEGACY_SECRET_REF)) throw new Error('migrated, but the legacy n8n token could not be removed (retried at next start)');
   return { migrated: true, projects: m.projects };
 }
 
@@ -508,4 +517,25 @@ export function mergeMcpConsent(
     else delete merged.roles;
   }
   return merged;
+}
+
+/** The Settings panel's consent writer: merges each patch against the latest known
+ *  `mcpDefaults` (`ref`, advanced synchronously so back-to-back edits stack), and
+ *  serializes the `update` calls so they land in order. A rejected write puts `ref`
+ *  back (unless a later edit already built on it), so a failed edit can never leak
+ *  into the next merge and be persisted by an unrelated save. */
+export function createConsentWriter(
+  ref: { current: Record<string, McpConsentEntry> | undefined },
+  update: (next: Record<string, McpConsentEntry>) => Promise<unknown>
+): (id: string, patch: Partial<McpConsentEntry>) => Promise<unknown> {
+  let queue: Promise<unknown> = Promise.resolve();
+  return (id, patch) => {
+    const prev = ref.current;
+    const merged = { ...(prev ?? {}), [id]: mergeMcpConsent(id, prev?.[id], patch) };
+    ref.current = merged;
+    const run = () => update(merged);
+    const result = queue.then(run, run);
+    queue = result.then(() => undefined, () => undefined);
+    return result.catch((e) => { if (ref.current === merged) ref.current = prev; throw e; });
+  };
 }

@@ -3723,7 +3723,7 @@ ipcMain.handle('providerKey:has', (_evt, backend: unknown) =>
   typeof backend === 'string' ? integrations.hasSecret(providerKeyRef(backend)) : false);
 ipcMain.handle('providerKey:clear', (_evt, backend: unknown) => {
   if (typeof backend !== 'string' || !(backend in BACKEND_KEY_ENV)) return { ok: false, error: 'unknown backend' };
-  try { integrations.deleteSecret(providerKeyRef(backend)); return { ok: true }; }
+  try { return integrations.deleteSecret(providerKeyRef(backend)) ? { ok: true } : { ok: false, error: 'the stored key could not be removed' }; }
   catch (e) { return { ok: false, error: e instanceof Error ? e.message : String(e) }; }
 });
 // Probe an integration's reachability through the broker's own auth path (admin-only;
@@ -4615,7 +4615,12 @@ ipcMain.handle('mail:accountRemove', (_evt, id: unknown) => {
   if (!store) return NO_STORE;
   if (typeof id !== 'string') return { ok: false, error: 'id required' };
   const acct = store.getAccount(id);
-  if (acct) { integrations.deleteSecret(acct.secretRef); store.removeAccount(id); }
+  if (acct) {
+    // Secret first and verified: a failed removal keeps the account, not an orphaned password.
+    try { if (!integrations.deleteSecret(acct.secretRef)) return { ok: false, error: 'the stored password could not be removed' }; }
+    catch (e) { return { ok: false, error: e instanceof Error ? e.message : String(e) }; }
+    store.removeAccount(id);
+  }
   return { ok: true };
 });
 ipcMain.handle('mail:messages', (_evt, f: unknown) => {

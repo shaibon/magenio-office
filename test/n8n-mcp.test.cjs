@@ -19,7 +19,7 @@ require.cache[electronPath] = {
 test.after(() => fs.rmSync(userData, { recursive: true, force: true }));
 
 const { HiveManager } = loadTs('src/main/hive.ts');
-const { MCP_CATALOG, normalizeN8nUrl, resolveN8nProject, migrateN8nConsent, runN8nMigration, isN8nProjectKey, n8nSecretRef, N8N_LEGACY_SECRET_REF } = loadTs('src/shared/mcpCatalog.ts');
+const { MCP_CATALOG, normalizeN8nUrl, resolveN8nProject, migrateN8nConsent, runN8nMigration, createConsentWriter, isN8nProjectKey, n8nSecretRef, N8N_LEGACY_SECRET_REF } = loadTs('src/shared/mcpCatalog.ts');
 const { codexMcpServers, codexMcpToml } = loadTs('src/shared/codexMcp.ts');
 
 const hive = new HiveManager(() => userData);
@@ -201,7 +201,7 @@ test('migration: success writes config, then deletes the legacy secret last', ()
 test('migration: a failed setSecret leaves everything as it was (legacy kept, new secrets rolled back, no config write)', () => {
   const st = fakeStore({ [N8N_LEGACY_SECRET_REF]: TOKEN }, { failSet: ['mcp:n8n:RISTO'] });
   let wrote = false;
-  assert.throws(() => runN8nMigration({ consent: legacyConsent(), projectOf: projOf, ...st, writeConsent: () => { wrote = true; } }));
+  assert.throws(() => runN8nMigration({ consent: legacyConsent(), projectOf: projOf, ...st, writeConsent: () => { wrote = true; } }), /could not store the n8n token for/);
   assert.equal(wrote, false);
   assert.equal(st.m.get(N8N_LEGACY_SECRET_REF), TOKEN, 'legacy bearer preserved');
   assert.equal(st.m.has('mcp:n8n:BURD'), false, 'partial copies rolled back');
@@ -216,7 +216,7 @@ test('migration: a failed config write keeps the legacy secret and rolls the cop
 
 test('migration: retry after a failure succeeds', () => {
   const st = fakeStore({ [N8N_LEGACY_SECRET_REF]: TOKEN });
-  assert.throws(() => runN8nMigration({ consent: legacyConsent(), projectOf: projOf, ...st, writeConsent: () => { throw new Error('x'); } }));
+  assert.throws(() => runN8nMigration({ consent: legacyConsent(), projectOf: projOf, ...st, writeConsent: () => { throw new Error('x'); } }), /^Error: x$/);
   assert.equal(runN8nMigration({ consent: legacyConsent(), projectOf: projOf, ...st, writeConsent: () => {} }).migrated, true);
   assert.equal(st.m.has(N8N_LEGACY_SECRET_REF), false);
 });
@@ -257,4 +257,72 @@ test('Clear IPC and Settings only report success on a verified deletion; Remove 
   assert.ok(rm.indexOf('writeN8nProjects(rest)') < rm.indexOf('clearN8nToken(project)'), 'config write first, then verified clear');
   assert.match(rm, /try \{ await writeN8nProjects\(rest\); \} catch \{ fail\(\); return; \}/, 'config rejection aborts with nothing changed');
   assert.match(rm, /\[project\]: kept/, 'entry restored when the token cannot be cleared');
+});
+
+// ── QA t-232 re-QA fixes ────────────────────────────────────────────────────
+test('migration: a stored but undecryptable legacy token blocks migration and keeps the global config', () => {
+  const st = fakeStore({ [N8N_LEGACY_SECRET_REF]: TOKEN });
+  st.getLegacy = () => undefined; // safeStorage unavailable
+  let wrote = false;
+  assert.throws(() => runN8nMigration({ consent: legacyConsent(), projectOf: projOf, ...st, writeConsent: () => { wrote = true; } }), /cannot be read/);
+  assert.equal(wrote, false);
+  assert.equal(st.m.has('mcp:n8n:BURD'), false);
+  st.getLegacy = () => st.m.get(N8N_LEGACY_SECRET_REF); // decryption back: migrates
+  assert.equal(runN8nMigration({ consent: legacyConsent(), projectOf: projOf, ...st, writeConsent: () => {} }).migrated, true);
+  assert.equal(st.m.get('mcp:n8n:BURD'), TOKEN);
+});
+
+test('migration: no legacy secret at all still migrates the config (nothing to copy)', () => {
+  const st = fakeStore();
+  assert.equal(runN8nMigration({ consent: legacyConsent(), projectOf: projOf, ...st, writeConsent: () => {} }).migrated, true);
+});
+
+test('migration: a failed legacy cleanup is retried at the next start even though the config is already migrated', () => {
+  const st = fakeStore({ [N8N_LEGACY_SECRET_REF]: TOKEN });
+  let cfgNow = legacyConsent();
+  const run = () => runN8nMigration({ consent: cfgNow, projectOf: projOf, ...st, writeConsent: (c) => { cfgNow = c; } });
+  const realDel = st.deleteSecret;
+  st.deleteSecret = (r) => (r === N8N_LEGACY_SECRET_REF ? false : realDel(r));
+  assert.throws(run, /legacy n8n token could not be removed/);
+  assert.equal(st.m.has(N8N_LEGACY_SECRET_REF), true);
+  assert.equal(cfgNow.url, undefined, 'config already migrated');
+  assert.throws(run, /legacy n8n token could not be removed/, 'still retried while deletion fails');
+  st.deleteSecret = realDel;
+  assert.equal(run().migrated, false);
+  assert.equal(st.m.has(N8N_LEGACY_SECRET_REF), false, 'cleaned up on retry');
+  assert.equal(st.m.get('mcp:n8n:BURD'), TOKEN);
+});
+
+test('Clear: an unreadable secret store is not "no secrets" (deleteSecret throws, hasSecret does not say absent)', () => {
+  const { setSecret, hasSecret, deleteSecret } = loadTs('src/main/integrations.ts');
+  assert.equal(setSecret('mcp:n8n:UNR', TOKEN).ok, true);
+  const f = path.join(userData, 'integration-secrets.json');
+  fs.chmodSync(f, 0o000);
+  try {
+    if (process.getuid && process.getuid() !== 0) {
+      assert.throws(() => deleteSecret('mcp:n8n:UNR'), /EACCES/);
+      assert.equal(hasSecret('mcp:n8n:UNR'), true, 'never claims absent');
+    }
+  } finally { fs.chmodSync(f, 0o600); }
+  assert.equal(hasSecret('mcp:n8n:UNR'), true);
+  assert.equal(deleteSecret('mcp:n8n:UNR'), true);
+});
+
+test('Settings writer: a rejected write does not leak into the next edit (rejected Remove, then another edit)', async () => {
+  const entryA = { url: URL_OK, agents: ['jim'] };
+  const ref = { current: { n8n: { enabled: true, projects: { BURD: entryA, RISTO: entryA } } } };
+  const saved = [];
+  let fail = true;
+  const write = createConsentWriter(ref, async (next) => { if (fail) throw new Error('disk'); saved.push(next); });
+  // Remove RISTO: the config write is rejected.
+  await assert.rejects(write('n8n', { projects: { BURD: entryA } }), /disk/);
+  assert.deepEqual(Object.keys(ref.current.n8n.projects).sort(), ['BURD', 'RISTO'], 'ref restored');
+  // Another consent edit now must still carry RISTO.
+  fail = false;
+  await write('n8n', { enabled: true });
+  assert.deepEqual(Object.keys(saved.at(-1).n8n.projects).sort(), ['BURD', 'RISTO'], 'project not lost');
+  // Successful writes stack and stay ordered.
+  await Promise.all([write('n8n', { projects: { BURD: entryA } }), write('n8n', { enabled: false })]);
+  assert.deepEqual(Object.keys(saved.at(-1).n8n.projects), ['BURD']);
+  assert.equal(saved.at(-1).n8n.enabled, false);
 });

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { HarnessConfig } from '@/store/config';
-import { MCP_CATALOG, mergeMcpConsent, isN8nProjectKey, type McpTier, type N8nProjectEntry } from '@shared/mcpCatalog';
+import { MCP_CATALOG, createConsentWriter, isN8nProjectKey, type McpTier, type N8nProjectEntry } from '@shared/mcpCatalog';
 import { canInstallMcp } from './mcpInstallRule';
 
 export interface McpDefaultsSettingsProps {
@@ -122,37 +122,11 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
     mcpDefaultsRef.current = config.mcpDefaults;
   }, [config.mcpDefaults]);
 
-  // Serializes the actual `updateConfig` IPC calls. Merging against
-  // `mcpDefaultsRef` alone isn't enough: each write's payload is already a
-  // full, correctly-merged snapshot, but if two writes are in flight at once
-  // and complete out of order, the earlier (smaller) snapshot landing after
-  // the later (larger) one would still overwrite it. Chaining every write
-  // onto this queue guarantees they land in the order they were issued.
-  const writeQueueRef = useRef<Promise<unknown>>(Promise.resolve());
-
-  /** Merge `patch` into consent entry `id` against the latest known state and
-   *  queue the write. Returns the real write promise (rejects on failure);
-   *  the queue itself is kept always-resolved so one failed write never
-   *  stalls the ones queued after it. */
-  const writeConsentPatch = (
-    id: string,
-    patch: { enabled?: boolean; agents?: string[]; command?: string; args?: string[]; url?: string; projects?: Record<string, N8nProjectEntry> }
-  ): Promise<unknown> => {
-    const base = mcpDefaultsRef.current ?? {};
-    // `mergeMcpConsent` — not a hand-rolled spread — is what applies the
-    // catalog's `defaultAgents` allow-list, so a server that ships restricted
-    // to specific agents is restricted by the FIRST write this panel makes
-    // (enabling it, or an Install pre-filling command/args), rather than only
-    // once the user remembers to type an allow-list. An allow-list the user
-    // deliberately emptied is left alone; see mergeMcpConsent.
-    const mergedDefaults = { ...base, [id]: mergeMcpConsent(id, base[id], patch) };
-    mcpDefaultsRef.current = mergedDefaults;
-
-    const run = () => window.cth.updateConfig({ mcpDefaults: mergedDefaults });
-    const result = writeQueueRef.current.then(run, run);
-    writeQueueRef.current = result.then(() => undefined, () => undefined);
-    return result;
-  };
+  // Merges each patch against the latest known state (`mcpDefaultsRef`), serializes the
+  // `updateConfig` calls and restores the ref when one is rejected. See createConsentWriter.
+  const writeConsentPatch = useRef(
+    createConsentWriter(mcpDefaultsRef, (next) => window.cth.updateConfig({ mcpDefaults: next }))
+  ).current;
 
   const toggle = async (id: string) => {
     const next = !enabledFor(id);
