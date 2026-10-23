@@ -173,16 +173,18 @@ export function hasSecret(secretRef: string | undefined): boolean {
   return !!readSecretBlob()[secretRef];
 }
 
-/** Delete a stored secret. Idempotent. */
-export function deleteSecret(secretRef: string | undefined): void {
-  if (!secretRef) return;
+/** Delete a stored secret. Idempotent. Returns whether the secret is verifiably gone
+ *  (a failed removal of the last-secret file is not swallowed into a false "deleted"). */
+export function deleteSecret(secretRef: string | undefined): boolean {
+  if (!secretRef) return true;
   const blob = readSecretBlob();
   if (secretRef in blob) {
     delete blob[secretRef];
     if (Object.keys(blob).length === 0) {
-      try { rmSync(secretsPath(), { force: true }); } catch { /* best-effort */ }
+      try { rmSync(secretsPath(), { force: true }); } catch { /* verified below */ }
     } else {
       writeSecretBlob(blob);
     }
   }
+  return !hasSecret(secretRef);
 }

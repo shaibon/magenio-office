@@ -11,12 +11,15 @@ const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'md-n8n-'));
 const electronPath = require.resolve('electron');
 require.cache[electronPath] = {
   id: electronPath, filename: electronPath, loaded: true,
-  exports: { app: { getPath: () => userData, isPackaged: false, getAppPath: () => path.join(__dirname, '..') } }
+  exports: {
+    app: { getPath: () => userData, isPackaged: false, getAppPath: () => path.join(__dirname, '..') },
+    safeStorage: { isEncryptionAvailable: () => true, encryptString: (t) => Buffer.from(t), decryptString: (b) => b.toString() }
+  }
 };
 test.after(() => fs.rmSync(userData, { recursive: true, force: true }));
 
 const { HiveManager } = loadTs('src/main/hive.ts');
-const { MCP_CATALOG, normalizeN8nUrl, resolveN8nProject, migrateN8nConsent, n8nSecretRef } = loadTs('src/shared/mcpCatalog.ts');
+const { MCP_CATALOG, normalizeN8nUrl, resolveN8nProject, migrateN8nConsent, runN8nMigration, isN8nProjectKey, n8nSecretRef, N8N_LEGACY_SECRET_REF } = loadTs('src/shared/mcpCatalog.ts');
 const { codexMcpServers, codexMcpToml } = loadTs('src/shared/codexMcp.ts');
 
 const hive = new HiveManager(() => userData);
@@ -156,7 +159,7 @@ test('P1 regression: an empty token save never deletes the stored token; clearin
   const set = /ipcMain\.handle\('mcp:n8nSetToken'[\s\S]*?\n\}\);/.exec(idx)[0];
   assert.doesNotMatch(set, /deleteSecret/, 'set handler must not delete');
   assert.match(set, /if \(!token\) return \{ ok: true \}/);
-  assert.match(idx, /ipcMain\.handle\('mcp:n8nClearToken'.*deleteSecret\(n8nSecretRef\(project\)\)/);
+  assert.match(idx, /ipcMain\.handle\('mcp:n8nClearToken'[^]*?deleteSecret\(n8nSecretRef\(project\)\)/);
   const ui = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/src/components/McpDefaultsSettings.tsx'), 'utf8');
   assert.match(ui, /if \(!token\.trim\(\)\) return;/, 'empty blur is a no-op in the renderer too');
 });
@@ -166,4 +169,92 @@ test('an n8n-only capability is not a writable capability (Slack /alert guard)',
   const b = new IntegrationBroker({ getRecord: () => undefined, getSecret: () => undefined });
   assert.equal(b.hasWritableCapability(b.grantN8n('ordinary-agent')), false);
   assert.equal(b.hasWritableCapability(b.grant('god', [])), true);
+});
+
+// ── QA t-232 fixes ──────────────────────────────────────────────────────────
+function fakeStore(seed = {}, { failSet = [], failDelete = [] } = {}) {
+  const m = new Map(Object.entries(seed));
+  const log = [];
+  return {
+    m, log,
+    getLegacy: () => m.get(N8N_LEGACY_SECRET_REF),
+    hasSecret: (r) => m.has(r),
+    setSecret: (r, v) => { log.push(`set:${r}`); if (failSet.includes(r)) return { ok: false }; m.set(r, v); return { ok: true }; },
+    deleteSecret: (r) => { log.push(`del:${r}`); if (failDelete.includes(r)) return false; m.delete(r); return true; }
+  };
+}
+const legacyConsent = () => ({ enabled: true, url: URL_OK, agents: ['jim', 'dwight'] });
+const projOf = (id) => ({ jim: 'BURD', dwight: 'RISTO' })[id];
+
+test('migration: success writes config, then deletes the legacy secret last', () => {
+  const st = fakeStore({ [N8N_LEGACY_SECRET_REF]: TOKEN });
+  const order = [];
+  const r = runN8nMigration({ consent: legacyConsent(), projectOf: projOf, ...st, writeConsent: () => order.push('write') });
+  assert.equal(r.migrated, true);
+  assert.equal(st.m.get('mcp:n8n:BURD'), TOKEN);
+  assert.equal(st.m.get('mcp:n8n:RISTO'), TOKEN);
+  assert.equal(st.m.has(N8N_LEGACY_SECRET_REF), false);
+  assert.deepEqual(order, ['write']);
+  assert.equal(st.log.at(-1), `del:${N8N_LEGACY_SECRET_REF}`, 'legacy deleted only after everything else');
+});
+
+test('migration: a failed setSecret leaves everything as it was (legacy kept, new secrets rolled back, no config write)', () => {
+  const st = fakeStore({ [N8N_LEGACY_SECRET_REF]: TOKEN }, { failSet: ['mcp:n8n:RISTO'] });
+  let wrote = false;
+  assert.throws(() => runN8nMigration({ consent: legacyConsent(), projectOf: projOf, ...st, writeConsent: () => { wrote = true; } }));
+  assert.equal(wrote, false);
+  assert.equal(st.m.get(N8N_LEGACY_SECRET_REF), TOKEN, 'legacy bearer preserved');
+  assert.equal(st.m.has('mcp:n8n:BURD'), false, 'partial copies rolled back');
+});
+
+test('migration: a failed config write keeps the legacy secret and rolls the copies back', () => {
+  const st = fakeStore({ [N8N_LEGACY_SECRET_REF]: TOKEN });
+  assert.throws(() => runN8nMigration({ consent: legacyConsent(), projectOf: projOf, ...st, writeConsent: () => { throw new Error('disk full'); } }), /disk full/);
+  assert.equal(st.m.get(N8N_LEGACY_SECRET_REF), TOKEN);
+  assert.equal(st.m.has('mcp:n8n:BURD') || st.m.has('mcp:n8n:RISTO'), false);
+});
+
+test('migration: retry after a failure succeeds', () => {
+  const st = fakeStore({ [N8N_LEGACY_SECRET_REF]: TOKEN });
+  assert.throws(() => runN8nMigration({ consent: legacyConsent(), projectOf: projOf, ...st, writeConsent: () => { throw new Error('x'); } }));
+  assert.equal(runN8nMigration({ consent: legacyConsent(), projectOf: projOf, ...st, writeConsent: () => {} }).migrated, true);
+  assert.equal(st.m.has(N8N_LEGACY_SECRET_REF), false);
+});
+
+test('prototype-name project keys are rejected everywhere', () => {
+  for (const k of ['constructor', 'toString', 'hasOwnProperty', '__proto__', 'valueOf'])
+    assert.equal(isN8nProjectKey(k), false, k);
+  assert.equal(isN8nProjectKey('BURD'), true);
+  const m = migrateN8nConsent({ enabled: true, url: URL_OK, agents: ['jim'] }, () => 'constructor');
+  assert.deepEqual(m.projects, [], 'agent of a prototype-named project is dropped, not mis-placed');
+  assert.deepEqual(m.consent.projects, {});
+  assert.equal(resolveN8nProject({ enabled: true, projects: {} }, 'constructor', 'jim'), null);
+});
+
+test('Clear: deleteSecret reports failure when the last secret file cannot be removed', () => {
+  const { setSecret, hasSecret, deleteSecret } = loadTs('src/main/integrations.ts');
+  assert.equal(setSecret('mcp:n8n:CLR', TOKEN).ok, true);
+  assert.equal(hasSecret('mcp:n8n:CLR'), true);
+  fs.chmodSync(userData, 0o500); // directory not writable: the secrets file cannot be unlinked
+  try {
+    if (process.getuid && process.getuid() !== 0) {
+      assert.equal(deleteSecret('mcp:n8n:CLR'), false, 'failure is observable');
+      assert.equal(hasSecret('mcp:n8n:CLR'), true, 'and the secret really is still there');
+    }
+  } finally { fs.chmodSync(userData, 0o700); }
+  assert.equal(deleteSecret('mcp:n8n:CLR'), true);
+  assert.equal(hasSecret('mcp:n8n:CLR'), false);
+});
+
+test('Clear IPC and Settings only report success on a verified deletion; Remove is failure-aware', () => {
+  const idx = fs.readFileSync(path.join(__dirname, '..', 'src/main/index.ts'), 'utf8');
+  const clear = /ipcMain\.handle\('mcp:n8nClearToken'[\s\S]*?\n\}\);/.exec(idx)[0];
+  assert.match(clear, /ok: integrations\.deleteSecret\(/);
+  assert.match(clear, /catch \{ return \{ ok: false \}/);
+  const ui = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/src/components/McpDefaultsSettings.tsx'), 'utf8');
+  assert.match(ui, /if \(!\(await window\.cth\.mcpN8nClearToken\(project\)\)\.ok\) throw/);
+  const rm = /const removeN8nProject[\s\S]*?\n  \};/.exec(ui)[0];
+  assert.ok(rm.indexOf('writeN8nProjects(rest)') < rm.indexOf('clearN8nToken(project)'), 'config write first, then verified clear');
+  assert.match(rm, /try \{ await writeN8nProjects\(rest\); \} catch \{ fail\(\); return; \}/, 'config rejection aborts with nothing changed');
+  assert.match(rm, /\[project\]: kept/, 'entry restored when the token cannot be cleared');
 });

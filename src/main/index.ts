@@ -39,7 +39,7 @@ import { CircuitBreaker, type BreakerInput } from './breaker';
 import { CumulativeSampleGate, type UsageProvider } from './usage';
 import { MemoryManager } from './memory';
 import { KnowledgeManager } from './knowledge';
-import { n8nSecretRef, N8N_LEGACY_SECRET_REF, N8N_BROKER_TOKEN_ENV, isN8nProjectKey, resolveN8nProject, migrateN8nConsent } from '../shared/mcpCatalog';
+import { n8nSecretRef, N8N_LEGACY_SECRET_REF, N8N_BROKER_TOKEN_ENV, isN8nProjectKey, resolveN8nProject, runN8nMigration } from '../shared/mcpCatalog';
 import { vaultScopesFor, type VaultMount } from '../shared/vaultMount';
 import { resolveProjectForCwd, runVaultSync, type VaultSyncResult } from './knowledgeVaultSync';
 import { MemoryReflector, type ReflectSettings } from './reflect';
@@ -3779,7 +3779,11 @@ ipcMain.handle('mcp:n8nSetToken', (_evt, payload: unknown) => {
   if (!token) return { ok: true };
   return integrations.setSecret(n8nSecretRef(p.project), token);
 });
-ipcMain.handle('mcp:n8nClearToken', (_evt, project: unknown) => { if (isN8nProjectKey(project)) integrations.deleteSecret(n8nSecretRef(project)); return { ok: true }; });
+// ok only when the secret is verifiably gone (the renderer shows "no token" on ok).
+ipcMain.handle('mcp:n8nClearToken', (_evt, project: unknown) => {
+  if (!isN8nProjectKey(project)) return { ok: false };
+  try { return { ok: integrations.deleteSecret(n8nSecretRef(project)) }; } catch { return { ok: false }; }
+});
 ipcMain.handle('mcp:n8nHasToken', (_evt, project: unknown) => isN8nProjectKey(project) && integrations.hasSecret(n8nSecretRef(project)));
 
 /** Startup migration: the single global n8n endpoint becomes one entry per project
@@ -3789,15 +3793,18 @@ function migrateN8nPerProject(): void {
   try {
     const cfg = readConfig().mcpDefaults;
     const agents = hive.registry().agents as Record<string, { project?: string }>;
-    const m = migrateN8nConsent(cfg?.n8n, (id) => agents[id]?.project);
-    if (!m) return;
-    const legacy = integrations.getSecret(N8N_LEGACY_SECRET_REF);
-    if (legacy) for (const p of m.projects) integrations.setSecret(n8nSecretRef(p), legacy);
-    integrations.deleteSecret(N8N_LEGACY_SECRET_REF);
-    writeConfig({ mcpDefaults: { ...cfg, n8n: m.consent } });
-    console.log('[migration] n8n global endpoint -> per-project entries:', m.projects.join(', ') || '(none)');
+    const r = runN8nMigration({
+      consent: cfg?.n8n,
+      projectOf: (id) => agents[id]?.project,
+      getLegacy: () => integrations.getSecret(N8N_LEGACY_SECRET_REF),
+      hasSecret: integrations.hasSecret,
+      setSecret: integrations.setSecret,
+      deleteSecret: integrations.deleteSecret,
+      writeConsent: (n8n) => writeConfig({ mcpDefaults: { ...cfg, n8n } })
+    });
+    if (r.migrated) console.log('[migration] n8n global endpoint -> per-project entries:', r.projects.join(', ') || '(none)');
   } catch (e) {
-    console.error('[migration] migrateN8nPerProject failed:', e);
+    console.error('[migration] migrateN8nPerProject failed (retried next start):', e);
   }
 }
 

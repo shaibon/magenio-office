@@ -206,11 +206,11 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
       (r) => setN8nHasToken(Object.fromEntries(keys.map((k, i) => [k, r[i]]))), () => undefined);
   }, [n8nKeys]);
   const fail = () => { setNote(t('mcpDefaults.couldNotSave')); setTimeout(() => setNote(''), 2000); };
-  const patchN8nProject = (project: string, p: N8nProjectEntry | null) => {
-    const next = { ...(mcpDefaultsRef.current?.n8n?.projects ?? {}) };
-    if (p) next[project] = { ...next[project], ...p }; else delete next[project];
-    return patchConsent('n8n', { projects: next });
-  };
+  // Rejects on a failed config write (unlike patchConsent, which reports and swallows).
+  const writeN8nProjects = (next: Record<string, N8nProjectEntry>) => writeConsentPatch('n8n', { projects: next });
+  const patchN8nProject = (project: string, p: N8nProjectEntry) =>
+    writeN8nProjects({ ...(mcpDefaultsRef.current?.n8n?.projects ?? {}), [project]: { ...mcpDefaultsRef.current?.n8n?.projects?.[project], ...p } })
+      .catch(fail);
   const saveN8nToken = async (project: string, token: string) => {
     if (!token.trim()) return; // an empty blur never touches the stored token; Clear is explicit
     try {
@@ -219,19 +219,27 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
       setN8nHasToken((h) => ({ ...h, [project]: true }));
     } catch { fail(); }
   };
-  const clearN8nToken = async (project: string) => {
+  /** True only when main verified the secret is gone; the UI flips to "no token" only then. */
+  const clearN8nToken = async (project: string): Promise<boolean> => {
     try {
-      await window.cth.mcpN8nClearToken(project);
+      if (!(await window.cth.mcpN8nClearToken(project)).ok) throw new Error('not cleared');
       setN8nHasToken((h) => ({ ...h, [project]: false }));
-    } catch { fail(); }
+      return true;
+    } catch { fail(); return false; }
   };
+  // Remove = drop the config entry first (a rejected write changes nothing), then verify
+  // the token is gone; if that fails the entry is put back, so there is never a removed
+  // project with a live bearer or a kept project without one.
   const removeN8nProject = async (project: string) => {
-    await clearN8nToken(project);
-    await patchN8nProject(project, null);
+    const prev = mcpDefaultsRef.current?.n8n?.projects ?? {};
+    const { [project]: kept, ...rest } = prev;
+    try { await writeN8nProjects(rest); } catch { fail(); return; }
+    if (await clearN8nToken(project)) return;
+    try { await writeN8nProjects({ ...(mcpDefaultsRef.current?.n8n?.projects ?? {}), [project]: kept }); } catch { fail(); }
   };
   const addN8nProject = async () => {
     const project = n8nNewProject.trim();
-    if (!isN8nProjectKey(project) || n8nProjects[project]) return;
+    if (!isN8nProjectKey(project) || Object.prototype.hasOwnProperty.call(n8nProjects, project)) { fail(); return; }
     setN8nNewProject('');
     await patchN8nProject(project, { url: '', agents: [] });
   };

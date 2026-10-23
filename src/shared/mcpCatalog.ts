@@ -103,7 +103,8 @@ export const n8nSecretRef = (project: string): string => `mcp:n8n:${project}`;
 export const N8N_LEGACY_SECRET_REF = 'mcp:n8n';
 
 /** A project key safe to use in a secret ref and as a config key. */
-export const isN8nProjectKey = (p: unknown): p is string => typeof p === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(p);
+export const isN8nProjectKey = (p: unknown): p is string =>
+  typeof p === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(p) && !(p in Object.prototype); // constructor, toString, ...
 
 /** The n8n upstream config for `agentId` of `project`, or null (fail closed): the
  *  server must be enabled, the project must have its OWN entry with a valid URL, and
@@ -133,12 +134,47 @@ export function migrateN8nConsent(
   if (url) {
     for (const a of agents ?? []) {
       const p = projectOf(a);
-      if (!isN8nProjectKey(p) || projects[p]) continue;
+      if (!isN8nProjectKey(p) || Object.prototype.hasOwnProperty.call(projects, p)) continue;
       projects[p] = { url, agents: (agents ?? []).filter((x) => projectOf(x) === p) };
       moved.push(p);
     }
   }
   return { consent: { ...rest, projects }, projects: moved };
+}
+
+/** Run the legacy-global -> per-project migration so a failure never loses the bearer:
+ *  copy the legacy secret to each new project (never overwriting an existing one),
+ *  persist the config, and only then delete the legacy secret. Any failure rolls the
+ *  new secrets back and leaves everything as it was (retried at the next startup). */
+export function runN8nMigration(deps: {
+  consent: McpConsentEntry | undefined;
+  projectOf: (agentId: string) => string | undefined;
+  getLegacy: () => string | undefined;
+  hasSecret: (ref: string) => boolean;
+  setSecret: (ref: string, v: string) => { ok: boolean };
+  deleteSecret: (ref: string) => boolean;
+  writeConsent: (c: McpConsentEntry) => void;
+}): { migrated: boolean; projects: string[] } {
+  const m = migrateN8nConsent(deps.consent, deps.projectOf);
+  if (!m) return { migrated: false, projects: [] };
+  const legacy = deps.getLegacy();
+  const created: string[] = [];
+  const rollback = () => { for (const p of created) deps.deleteSecret(n8nSecretRef(p)); };
+  try {
+    if (legacy) {
+      for (const p of m.projects) {
+        if (deps.hasSecret(n8nSecretRef(p))) continue;
+        if (!deps.setSecret(n8nSecretRef(p), legacy).ok) throw new Error(`could not store the n8n token for ${p}`);
+        created.push(p);
+      }
+    }
+    deps.writeConsent(m.consent);
+  } catch (e) {
+    rollback();
+    throw e;
+  }
+  if (legacy && !deps.deleteSecret(N8N_LEGACY_SECRET_REF)) throw new Error('migrated, but the legacy n8n token could not be removed');
+  return { migrated: true, projects: m.projects };
 }
 
 /** Env var carrying an allowed agent's n8n-route broker capability, and the header
