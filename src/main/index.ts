@@ -39,6 +39,7 @@ import { CircuitBreaker, type BreakerInput } from './breaker';
 import { CumulativeSampleGate, type UsageProvider } from './usage';
 import { MemoryManager } from './memory';
 import { KnowledgeManager } from './knowledge';
+import { N8N_SECRET_REF } from '../shared/mcpCatalog';
 import { vaultScopesFor, type VaultMount } from '../shared/vaultMount';
 import { resolveProjectForCwd, runVaultSync, type VaultSyncResult } from './knowledgeVaultSync';
 import { MemoryReflector, type ReflectSettings } from './reflect';
@@ -3292,6 +3293,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
             denyRead: magentoDeniedReadPaths(readConfig().jiraProjects)
           },
           vault: (await vaultMountForCwd(opts.cwd, opts.hive?.id)) ?? undefined,
+          n8nToken: integrations.getSecret(N8N_SECRET_REF),
           skillsDir: skillsResourceDir(),
           // The shared palace is mutated by the agent's own `mempalace` calls, so
           // the OS sandbox must let it through (empty when memory is off).
@@ -3748,6 +3750,16 @@ ipcMain.handle('mcp:install', async (_evt, payload: unknown) => {
   if (p.id !== 'trello') return { ok: false, error: 'only the trello MCP server has an installer' };
   return installTrelloMcp(trelloMcpInstallDest(), nodeInstallDeps());
 });
+
+// n8n MCP bearer token: WRITE-ONLY, like the provider keys. The renderer can set
+// or clear it and ask whether one is stored; the plaintext is read back only in
+// main, at spawn, and goes into the per-agent MCP config (never the shell env).
+ipcMain.handle('mcp:n8nSetToken', (_evt, payload: unknown) => {
+  const token = String((payload as { token?: unknown } | null)?.token ?? '').trim();
+  if (!token) { integrations.deleteSecret(N8N_SECRET_REF); return { ok: true }; }
+  return integrations.setSecret(N8N_SECRET_REF, token);
+});
+ipcMain.handle('mcp:n8nHasToken', () => integrations.hasSecret(N8N_SECRET_REF));
 
 // ─── IPC: config ────────────────────────────────────────────────────────────
 ipcMain.handle('config:get', (): HarnessConfig => readConfig());
@@ -6520,3 +6532,4 @@ app.on('will-quit', (e) => {
     new Promise<void>((r) => setTimeout(r, 1200))
   ]).then(finish, finish);
 });
+

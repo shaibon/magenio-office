@@ -38,7 +38,7 @@ import {
   bridgeOf,
   type AgentProvider
 } from '../shared/agentProvider';
-import { MCP_CATALOG, trelloDeniedToolIds } from '../shared/mcpCatalog';
+import { MCP_CATALOG, normalizeN8nUrl, trelloDeniedToolIds } from '../shared/mcpCatalog';
 import { selectBroadcastTargets } from '../shared/broadcast';
 import { preferredAgentRole, isPmRole } from '../shared/agentRole';
 import { emptyRoleLedger, ledgerRole, normalizeRoleLedger, rememberLedgerRole, type RoleLedger } from '../shared/roleLedger';
@@ -51,13 +51,13 @@ import { ensureMineIgnore } from './memory';
 import { resolveCommand, userShellPath } from './shellEnv';
 import { checkMcpPresence, nodePresenceDeps } from './mcpProvision';
 import { probeStdioServer, type McpServerSpec } from './mcpProbe';
-import { codexMcpServers, codexMcpToml } from '../shared/codexMcp';
+import { codexMcpServers, codexMcpToml, type CodexMcpServer } from '../shared/codexMcp';
 
 /** The subset of HarnessConfig the hive consumes for the default-MCP merge.
  *  Kept as a local shape so hive.ts never imports the foundation-owned config
  *  module just for a type. */
 type McpDefaultsMap =
-  | { [id: string]: { enabled: boolean; agents?: string[]; roles?: string[]; command?: string; args?: string[] } }
+  | { [id: string]: { enabled: boolean; agents?: string[]; roles?: string[]; command?: string; args?: string[]; url?: string } }
   | undefined;
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -808,6 +808,8 @@ export class HiveManager {
       magento?: { config?: string; stageConfig?: string; denyRead: string[] };
       /** Read-only vault scope for this agent's project; undefined → not mounted. */
       vault?: VaultMount;
+      /** Decrypted n8n MCP bearer token (main-only; goes into the per-agent MCP config, never the env). */
+      n8nToken?: string;
       /** App-resources `skills/` source dir (W3). The bundled read-only skills are
        *  copied into the agent's `.claude/skills/` per spawn; undefined or missing
        *  is a no-op (tolerated until Kevin populates the resource dir). */
@@ -1122,7 +1124,7 @@ export class HiveManager {
     if (sock && shim) {
       env.HIVE_SOCK = sock;
       const settingsPath = join(dir, 'settings.json');
-      this.writeJson(settingsPath, this.hookSettings(shim, meta.id, meta.cwd, opts.mcpDefaults, opts.theme, this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs), meta, opts.magento, opts.vault));
+      this.writeJson(settingsPath, this.hookSettings(shim, meta.id, meta.cwd, opts.mcpDefaults, opts.theme, this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs), meta, opts.magento, opts.vault, opts.n8nToken));
       args.push('--settings', settingsPath);
       // Claude Code ignores `mcpServers` inside --settings (see hookSettings) —
       // it only reads MCP server definitions from a file passed via
@@ -1131,7 +1133,7 @@ export class HiveManager {
       // just handed to Claude through the flag it actually honors. Omitted
       // entirely when no server is enabled, so a plain worker spawns with no
       // --mcp-config at all.
-      const mcpServers = this.buildDefaultMcpServers(meta.cwd, opts.mcpDefaults, meta.id, meta, opts.magento?.config, opts.vault, opts.magento?.stageConfig);
+      const mcpServers = this.buildDefaultMcpServers(meta.cwd, opts.mcpDefaults, meta.id, meta, opts.magento?.config, opts.vault, opts.magento?.stageConfig, opts.n8nToken);
       if (Object.keys(mcpServers).length) {
         const mcpConfigPath = join(dir, 'mcp.json');
         this.writeJson(mcpConfigPath, { mcpServers });
@@ -1464,7 +1466,8 @@ export class HiveManager {
     writableDirs: string[] = [],
     roleMeta?: Pick<AgentMeta, 'role' | 'capabilities' | 'isGod' | 'provider'>,
     magento?: { config?: string; stageConfig?: string; denyRead: string[] },
-    vault?: VaultMount
+    vault?: VaultMount,
+    n8nToken?: string
   ): unknown {
     // Bundled node, NOT bare `node` — see nodeLauncherPath(). Claude runs each of
     // these through `sh -c` with a stripped PATH, where `node` is often absent.
@@ -1473,7 +1476,7 @@ export class HiveManager {
       ...(matcher ? { matcher } : {}),
       hooks: [{ type: 'command', command: cmd }]
     });
-    const mcpServers = this.buildDefaultMcpServers(cwd, cfg, agentId, roleMeta, magento?.config, vault, magento?.stageConfig);
+    const mcpServers = this.buildDefaultMcpServers(cwd, cfg, agentId, roleMeta, magento?.config, vault, magento?.stageConfig, n8nToken);
     // Credential isolation for the Magento MCP: no agent may read any project's
     // magento config or the SSH keys it names (the MCP process itself runs outside
     // the Bash sandbox). Bash children via sandbox.filesystem.denyRead, the Read
@@ -1578,9 +1581,10 @@ export class HiveManager {
     roleMeta?: Pick<AgentMeta, 'role' | 'capabilities' | 'isGod' | 'provider'>,
     magentoConfig?: string,
     vault?: VaultMount,
-    magentoStageConfig?: string
-  ): Record<string, { command: string; args: string[]; env?: Record<string, string> }> {
-    const out: Record<string, { command: string; args: string[]; env?: Record<string, string> }> = {};
+    magentoStageConfig?: string,
+    n8nToken?: string
+  ): Record<string, CodexMcpServer> {
+    const out: Record<string, CodexMcpServer> = {};
     const presenceDeps = nodePresenceDeps();
     for (const e of MCP_CATALOG) {
       const consent = cfg?.[e.id];
@@ -1610,6 +1614,21 @@ export class HiveManager {
       if (!idAllowed && !roleAllowed) continue;
       // Magento is opt-in per project; projects without a config are expected.
       if (e.id === 'magento' && !magentoConfig) continue;
+      // Remote (n8n): fail closed. Unlike every other entry an EMPTY allow-list
+      // means nobody, not everybody (this server can run workflows), and the role
+      // path never applies. A missing/invalid URL or token mounts nothing, loudly.
+      if (e.remote) {
+        if (!consent?.agents?.includes(agentId)) continue;
+        const url = normalizeN8nUrl(consent.url);
+        const missing = !url ? 'a valid https URL' : !n8nToken ? 'its bearer token' : '';
+        if (missing) {
+          console.error(`[hive] MCP '${e.id}' not wired for ${agentId}: no ${missing} is configured`);
+          this.noteMcpMountFailure(agentId, `munder-${e.id}`, `no ${missing} is configured (Settings → MCP defaults)`);
+          continue;
+        }
+        out[`munder-${e.id}`] = { type: 'http', url: url!, headers: { Authorization: `Bearer ${n8nToken}` } };
+        continue;
+      }
       // Vault: fail closed. An agent whose repo does not map to a vault project
       // (or whose server script is missing) gets no vault server at all.
       if (e.id === 'vault') {
@@ -1702,7 +1721,7 @@ export class HiveManager {
       if (e.id === 'magento' && magentoStageConfig) {
         const stage = { command, args: [args[0], '--config', magentoStageConfig], env: e.spec.env };
         if (this.magentoProbeOk(agentId, e.id, 'munder-magento-stage', stage, magentoStageConfig)) {
-          out['munder-magento-stage'] = { command, args: stage.args, ...(out['munder-magento'].env ? { env: out['munder-magento'].env } : {}) };
+          out['munder-magento-stage'] = { command, args: stage.args, ...((out['munder-magento'] as { env?: Record<string, string> }).env ? { env: (out['munder-magento'] as { env?: Record<string, string> }).env } : {}) };
         }
       }
     }
@@ -2687,9 +2706,9 @@ export class HiveManager {
    */
   private codexMcpTables(
     meta: Pick<AgentMeta, 'id' | 'cwd' | 'role' | 'capabilities' | 'isGod' | 'provider'>,
-    opts: { mcpDefaults?: McpDefaultsMap; magento?: { config?: string; stageConfig?: string }; vault?: VaultMount }
+    opts: { mcpDefaults?: McpDefaultsMap; magento?: { config?: string; stageConfig?: string }; vault?: VaultMount; n8nToken?: string }
   ): string {
-    const servers = this.buildDefaultMcpServers(meta.cwd, opts.mcpDefaults, meta.id, meta, opts.magento?.config, opts.vault, opts.magento?.stageConfig);
+    const servers = this.buildDefaultMcpServers(meta.cwd, opts.mcpDefaults, meta.id, meta, opts.magento?.config, opts.vault, opts.magento?.stageConfig, opts.n8nToken);
     return codexMcpToml(codexMcpServers(servers, { isGod: !!meta.isGod }));
   }
 
