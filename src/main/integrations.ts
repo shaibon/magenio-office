@@ -72,16 +72,20 @@ export function upsertRecord(input: unknown): { ok: true; record: IntegrationRec
 
 /** Remove a record AND its stored secret. */
 export function removeRecord(id: string): { ok: boolean; error?: string } {
-  // Secret first: if it cannot be verifiably removed the record stays, so there is no
-  // half-removed integration with a live credential.
+  // Config first, then the secret. If the secret cannot be verifiably removed the record is
+  // put back, so there is never a record without its credential or a credential without a
+  // record (a failed config write throws before the secret is touched).
+  const before = listRecords();
+  writeConfig({ integrations: before.filter((r) => r.id !== id) });
+  let error: string | undefined;
   try {
-    if (!deleteSecret(secretRefFor(id))) return { ok: false, error: 'the stored secret could not be removed' };
+    if (!deleteSecret(secretRefFor(id))) error = 'the stored secret could not be removed';
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    error = e instanceof Error ? e.message : String(e);
   }
-  const next = listRecords().filter((r) => r.id !== id);
-  writeConfig({ integrations: next });
-  return { ok: true };
+  if (!error) return { ok: true };
+  try { writeConfig({ integrations: before }); } catch { error += ' (and the record could not be restored)'; }
+  return { ok: false, error };
 }
 
 /** Records with the secretRef redacted to a boolean — the renderer-safe shape. */

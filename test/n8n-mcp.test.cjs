@@ -326,3 +326,49 @@ test('Settings writer: a rejected write does not leak into the next edit (reject
   assert.deepEqual(Object.keys(saved.at(-1).n8n.projects), ['BURD']);
   assert.equal(saved.at(-1).n8n.enabled, false);
 });
+
+// ── QA3 ─────────────────────────────────────────────────────────────────────
+test('Settings writer: an edit queued BEHIND a rejected Remove does not persist it (Toby case)', async () => {
+  const entryA = { url: URL_OK, agents: ['jim'] };
+  const ref = { current: { n8n: { enabled: true, projects: { A: entryA, B: entryA } } } };
+  const saved = [];
+  let calls = 0;
+  const write = createConsentWriter(ref, async (next) => { if (calls++ === 0) throw new Error('disk'); saved.push(next); });
+  const p1 = write('n8n', { projects: { A: entryA } }); // remove B: rejected
+  const p2 = write('n8n', { enabled: false });          // queued before the rejection
+  await assert.rejects(p1, /disk/);
+  await p2;
+  assert.deepEqual(Object.keys(saved.at(-1).n8n.projects).sort(), ['A', 'B'], 'on disk B is still there');
+  assert.equal(saved.at(-1).n8n.enabled, false, 'the later edit still applied');
+  assert.deepEqual(Object.keys(ref.current.n8n.projects).sort(), ['A', 'B'], 'and in the ref');
+  assert.equal(ref.current.n8n.enabled, false);
+});
+
+test('removeRecord: config first; a failed secret removal restores the record; a failed config write keeps the secret', () => {
+  const ints = loadTs('src/main/integrations.ts');
+  const cfgMod = loadTs('src/main/config.ts');
+  const rec = { id: 'rr-test', label: 'RR', kind: 'http', authType: 'bearer', baseUrl: 'https://rr.example.com', secretRef: loadTs('src/shared/integrations.ts').secretRefFor('rr-test'), enabled: true, createdAt: 1, updatedAt: 1 };
+  cfgMod.writeConfig({ integrations: [rec] });
+  assert.equal(ints.setSecret(rec.secretRef, 'x').ok, true);
+  // 1) secret store unreadable -> deletion fails -> record restored, ok:false
+  const f = path.join(userData, 'integration-secrets.json');
+  if (process.getuid && process.getuid() !== 0) {
+    fs.chmodSync(f, 0o000);
+    try {
+      const r = ints.removeRecord('rr-test');
+      assert.equal(r.ok, false);
+      assert.deepEqual(ints.listRecords().map((x) => x.id), ['rr-test'], 'record restored');
+    } finally { fs.chmodSync(f, 0o600); }
+    // 2) config write fails -> throws before the secret is touched
+    fs.chmodSync(userData, 0o500);
+    try {
+      assert.throws(() => ints.removeRecord('rr-test'));
+    } finally { fs.chmodSync(userData, 0o700); }
+    assert.equal(ints.hasSecret(rec.secretRef), true, 'credential still there');
+    assert.deepEqual(ints.listRecords().map((x) => x.id), ['rr-test']);
+  }
+  // 3) happy path
+  assert.deepEqual(ints.removeRecord('rr-test'), { ok: true });
+  assert.equal(ints.hasSecret(rec.secretRef), false);
+  assert.deepEqual(ints.listRecords(), []);
+});

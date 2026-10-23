@@ -519,23 +519,39 @@ export function mergeMcpConsent(
   return merged;
 }
 
-/** The Settings panel's consent writer: merges each patch against the latest known
- *  `mcpDefaults` (`ref`, advanced synchronously so back-to-back edits stack), and
- *  serializes the `update` calls so they land in order. A rejected write puts `ref`
- *  back (unless a later edit already built on it), so a failed edit can never leak
- *  into the next merge and be persisted by an unrelated save. */
+/** The Settings panel's consent writer. `ref` is the optimistic view the UI reads; every
+ *  write applies its PATCH, when it runs in the queue, to the last PERSISTED state (never
+ *  to the optimistic one), so a rejected write cannot leak into a write queued behind it.
+ *  After a rejection `ref` is rebuilt as persisted + the patches still pending. */
 export function createConsentWriter(
   ref: { current: Record<string, McpConsentEntry> | undefined },
   update: (next: Record<string, McpConsentEntry>) => Promise<unknown>
 ): (id: string, patch: Partial<McpConsentEntry>) => Promise<unknown> {
+  type Defaults = Record<string, McpConsentEntry>;
+  const apply = (base: Defaults | undefined, id: string, patch: Partial<McpConsentEntry>): Defaults =>
+    ({ ...(base ?? {}), [id]: mergeMcpConsent(id, base?.[id], patch) });
   let queue: Promise<unknown> = Promise.resolve();
+  let persisted: Defaults | undefined;
+  const pending: Array<{ id: string; patch: Partial<McpConsentEntry> }> = [];
   return (id, patch) => {
-    const prev = ref.current;
-    const merged = { ...(prev ?? {}), [id]: mergeMcpConsent(id, prev?.[id], patch) };
-    ref.current = merged;
-    const run = () => update(merged);
+    if (pending.length === 0) persisted = ref.current; // idle: the ref is the persisted truth (synced from config)
+    const job = { id, patch };
+    pending.push(job);
+    ref.current = apply(ref.current, id, patch);
+    const run = async () => {
+      const merged = apply(persisted, id, patch);
+      try {
+        await update(merged);
+        persisted = merged;
+      } catch (e) {
+        pending.splice(pending.indexOf(job), 1);
+        ref.current = pending.reduce((acc, j) => apply(acc, j.id, j.patch), persisted);
+        throw e;
+      }
+      pending.splice(pending.indexOf(job), 1);
+    };
     const result = queue.then(run, run);
     queue = result.then(() => undefined, () => undefined);
-    return result.catch((e) => { if (ref.current === merged) ref.current = prev; throw e; });
+    return result;
   };
 }
