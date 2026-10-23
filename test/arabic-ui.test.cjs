@@ -216,6 +216,7 @@ test('no Arabic string is left as its English source', () => {
     'settings.memory.vaultPathPlaceholder',  // /path/to/Obsidian/SecondBrain — same
     'mcpDefaults.commandPlaceholder',        // /opt/homebrew/bin/bun — a path the user types
     'mcpDefaults.argsPlaceholder',           // /Users/you/mcp/trello/build/index.js — same
+    'mcpDefaults.n8nUrlPlaceholder',         // https://n8n.example.com/... — a URL the user types
     'mcpDefaults.toggleNote',                // "{{id}}: {{state}}" — pure interpolation
     'webhooksSection.summary'                // "{{count}} · {{state}}" — same
   ]);

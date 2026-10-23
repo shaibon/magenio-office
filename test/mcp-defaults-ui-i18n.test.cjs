@@ -11,6 +11,7 @@ const KEYS = [
   'command', 'commandHint', 'commandPlaceholder',
   'args', 'argsHint', 'argsPlaceholder',
   'agents', 'agentsHint', 'agentsPlaceholder',
+  'n8nUrl', 'n8nUrlHint', 'n8nUrlPlaceholder', 'n8nToken', 'n8nTokenHint', 'n8nTokenSet', 'n8nTokenPlaceholder', 'n8nAgentsHint',
   'setupTitle', 'setupIntro', 'setupAfter',
   'install', 'installDest', 'installing', 'installFailed', 'presenceOk',
   'presence.not_configured', 'presence.command_missing',
@@ -20,7 +21,7 @@ const KEYS = [
 // A placeholder shows a REAL example of what the field wants, so its value is
 // a literal path or id — not prose. Translating one would teach the user to
 // type a path that does not exist, which is worse than no example at all.
-const UNTRANSLATED_KEYS = ['commandPlaceholder', 'argsPlaceholder', 'agentsPlaceholder'];
+const UNTRANSLATED_KEYS = ['commandPlaceholder', 'argsPlaceholder', 'agentsPlaceholder', 'n8nUrlPlaceholder'];
 
 // Keys whose translated string must keep its i18next interpolation
 // placeholder verbatim — losing it during translation would silently drop

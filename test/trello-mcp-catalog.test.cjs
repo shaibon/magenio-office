@@ -149,7 +149,7 @@ test('the installer source is pinned to a tag, never a branch', () => {
 
 test('every other catalog entry keeps a non-empty command', () => {
   for (const entry of MCP_CATALOG) {
-    if (entry.userConfigured) continue;
+    if (entry.userConfigured || entry.remote) continue;
     assert.ok(entry.spec.command.length > 0, `${entry.id} lost its command`);
   }
 });
