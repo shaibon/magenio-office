@@ -136,7 +136,7 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
    *  stalls the ones queued after it. */
   const writeConsentPatch = (
     id: string,
-    patch: { enabled?: boolean; agents?: string[]; command?: string; args?: string[] }
+    patch: { enabled?: boolean; agents?: string[]; command?: string; args?: string[]; url?: string }
   ): Promise<unknown> => {
     const base = mcpDefaultsRef.current ?? {};
     // `mergeMcpConsent` — not a hand-rolled spread — is what applies the
@@ -184,10 +184,25 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
   useEffect(() => { void refreshPresence(); }, []);
 
   /** Merge a partial consent for one entry and re-run its preflight. */
-  const patchConsent = async (id: string, p: { command?: string; args?: string[]; agents?: string[] }) => {
+  const patchConsent = async (id: string, p: { command?: string; args?: string[]; agents?: string[]; url?: string }) => {
     try {
       await writeConsentPatch(id, p);
       await refreshPresence();
+    } catch {
+      setNote(t('mcpDefaults.couldNotSave'));
+      setTimeout(() => setNote(''), 2000);
+    }
+  };
+
+  // n8n bearer token is write-only: main tells us only WHETHER one is stored.
+  const [n8nHasToken, setN8nHasToken] = useState(false);
+  useEffect(() => { void window.cth.mcpN8nHasToken().then(setN8nHasToken, () => undefined); }, []);
+  const saveN8nToken = async (token: string) => {
+    if (!token.trim() && !n8nHasToken) return;
+    try {
+      const res = await window.cth.mcpN8nSetToken(token);
+      if (!res.ok) throw new Error(res.error);
+      setN8nHasToken(!!token.trim());
     } catch {
       setNote(t('mcpDefaults.couldNotSave'));
       setTimeout(() => setNote(''), 2000);
@@ -246,7 +261,7 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
                   <div
                     key={entry.id}
                     style={{
-                      display: 'flex', alignItems: entry.userConfigured ? 'flex-start' : 'center', justifyContent: 'space-between',
+                      display: 'flex', alignItems: entry.userConfigured || entry.remote ? 'flex-start' : 'center', justifyContent: 'space-between',
                       gap: 12, padding: '7px 10px',
                       background: 'var(--cth-paper-100)',
                       boxShadow: `inset 0 0 0 1px ${isConsent && on ? '#6E1423' : 'var(--cth-ink-300)'}`
@@ -361,6 +376,41 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
                             style={{ width: '100%', padding: '6px 8px', background: 'var(--cth-paper-100)', border: 'none', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)', fontSize: 12, color: 'var(--cth-ink-900)' }}
                           />
                           <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{t('mcpDefaults.agentsHint')}</span>
+                        </div>
+                      )}
+
+                      {entry.remote && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
+                          <label style={labelStyle}>{t('mcpDefaults.n8nUrl')}</label>
+                          <ConsentField
+                            value={config.mcpDefaults?.[entry.id]?.url ?? ''}
+                            onCommit={(v) => { void patchConsent(entry.id, { url: v.trim() }); }}
+                            placeholder={t('mcpDefaults.n8nUrlPlaceholder')}
+                            style={{ width: '100%', padding: '6px 8px', background: 'var(--cth-paper-100)', border: 'none', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)', fontSize: 12, color: 'var(--cth-ink-900)' }}
+                          />
+                          <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{t('mcpDefaults.n8nUrlHint')}</span>
+
+                          <label style={labelStyle}>{t('mcpDefaults.n8nToken')}</label>
+                          <input
+                            type="password"
+                            autoComplete="off"
+                            defaultValue=""
+                            onBlur={(e) => { const v = e.target.value; e.target.value = ''; void saveN8nToken(v); }}
+                            placeholder={t('mcpDefaults.n8nTokenPlaceholder')}
+                            style={{ width: '100%', padding: '6px 8px', background: 'var(--cth-paper-100)', border: 'none', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)', fontSize: 12, color: 'var(--cth-ink-900)' }}
+                          />
+                          <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>
+                            {n8nHasToken ? t('mcpDefaults.n8nTokenSet') : t('mcpDefaults.n8nTokenHint')}
+                          </span>
+
+                          <label style={labelStyle}>{t('mcpDefaults.agents')}</label>
+                          <ConsentField
+                            value={(config.mcpDefaults?.[entry.id]?.agents ?? []).join(', ')}
+                            onCommit={(v) => { void patchConsent(entry.id, { agents: v.split(',').map((a) => a.trim()).filter(Boolean) }); }}
+                            placeholder={t('mcpDefaults.agentsPlaceholder')}
+                            style={{ width: '100%', padding: '6px 8px', background: 'var(--cth-paper-100)', border: 'none', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)', fontSize: 12, color: 'var(--cth-ink-900)' }}
+                          />
+                          <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{t('mcpDefaults.n8nAgentsHint')}</span>
                         </div>
                       )}
                     </div>
