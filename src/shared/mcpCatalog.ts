@@ -47,6 +47,11 @@ export interface McpCatalogEntry {
    *  the user's own build): `spec` is a placeholder and the real values come
    *  from `config.mcpDefaults[id].command/args`. */
   userConfigured?: boolean;
+  /** A remote (HTTP) server rather than a local process: `config.mcpDefaults[id].url`
+   *  is the endpoint and a write-only bearer token lives in the encrypted secret
+   *  store under `N8N_SECRET_REF`. Mounted natively as
+   *  `type: http` for Claude and `url` + `http_headers` for Codex. `spec` is unused. */
+  remote?: boolean;
   /** Seed for `config.mcpDefaults[id].enabled`. Always === (tier === 'safe-readonly'). */
   defaultEnabled: boolean;
   /** Seed for `config.mcpDefaults[id].agents` — the per-agent allow-list this
@@ -76,6 +81,26 @@ export interface McpConsentEntry {
   roles?: string[];
   command?: string;
   args?: string[];
+  /** Endpoint of a `remote` entry (non-secret; the token is in the secret store). */
+  url?: string;
+}
+
+/** Secret-store handle of the n8n MCP bearer token (same encrypted store as the
+ *  integrations' `int:<id>` secrets, but a distinct namespace). */
+export const N8N_SECRET_REF = 'mcp:n8n';
+
+/** Validate an n8n MCP endpoint: https (http only for a loopback dev instance),
+ *  no userinfo. Returns the normalized URL, or null. */
+export function normalizeN8nUrl(raw: string | undefined | null): string | null {
+  try {
+    const u = new URL(String(raw ?? '').trim());
+    const local = u.hostname === 'localhost' || u.hostname === '127.0.0.1';
+    if (u.protocol !== 'https:' && !(u.protocol === 'http:' && local)) return null;
+    if (u.username || u.password) return null;
+    return u.toString();
+  } catch {
+    return null;
+  }
 }
 
 /** The READ-ONLY tools of the pinned Trello MCP server build
@@ -300,6 +325,20 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
     tier: 'secret',
     defaultEnabled: false,
     userConfigured: true
+  },
+  {
+    id: 'n8n',
+    label: 'n8n (workflows)',
+    description: 'Lets the listed agents search, inspect and run workflows on your n8n instance through its built-in MCP server (https://<domain>/mcp-server/http). Write-capable: only the agents named in the allow-list receive it. The bearer token is stored encrypted and is never shown to agents.',
+    // Placeholder: `remote` entries take their endpoint from the consent map.
+    spec: { command: '', args: [] },
+    // 'secret', not 'write': the write tier is withheld from non-god codex
+    // agents, and this server is meant for codex too. The safeguard is the
+    // explicit enabled:true consent PLUS a mandatory non-empty agent allow-list
+    // (an empty list means "nobody" here, never "everybody").
+    tier: 'secret',
+    defaultEnabled: false,
+    remote: true
   },
   {
     id: 'vault',

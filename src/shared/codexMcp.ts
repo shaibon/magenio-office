@@ -19,12 +19,24 @@
  */
 import { mcpCatalogEntry } from './mcpCatalog';
 
-/** One server as it appears under `[mcp_servers.<name>]`. */
-export interface CodexMcpServer {
+/** A stdio server as it appears under `[mcp_servers.<name>]`. */
+export interface StdioMcpServer {
   command: string;
   args: string[];
   env?: Record<string, string>;
 }
+
+/** A native remote (streamable HTTP) server. Claude's `mcp.json` takes it as-is;
+ *  codex gets `url` + `http_headers`. `headers` may carry a credential, so it only
+ *  ever lands in the per-agent config files, never in the agent's shell env. */
+export interface RemoteMcpServer {
+  type: 'http';
+  url: string;
+  headers?: Record<string, string>;
+}
+
+/** One server as it appears under `[mcp_servers.<name>]`. */
+export type CodexMcpServer = StdioMcpServer | RemoteMcpServer;
 
 /** Namespace every catalog id carries, same as the Claude path. */
 const MANAGED_PREFIX = 'munder-';
@@ -138,6 +150,12 @@ export function codexMcpToml(servers: Record<string, CodexMcpServer>): string {
   for (const name of names) {
     const s = servers[name];
     const key = tomlKey(name);
+    if ('url' in s) {
+      out += `\n[mcp_servers.${key}]\nurl = ${JSON.stringify(s.url)}\n${approvalModeLine(name)}`;
+      const hdrs = Object.entries(s.headers ?? {});
+      if (hdrs.length) out += `http_headers = { ${hdrs.map(([k, v]) => `${tomlKey(k)} = ${JSON.stringify(v)}`).join(', ')} }\n`;
+      continue;
+    }
     out += `\n[mcp_servers.${key}]\ncommand = ${JSON.stringify(s.command)}\nargs = ${JSON.stringify(s.args ?? [])}\n`;
     // without a pre-approval the tools of a mounted server are uncallable
     // on the unattended codex path (see approvalModeLine). Before the env sub-table,
