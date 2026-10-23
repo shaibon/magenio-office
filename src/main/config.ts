@@ -359,7 +359,7 @@ export interface HarnessConfig {
    *  command for catalog entries flagged `userConfigured` — and are IGNORED for
    *  every other entry. */
   mcpDefaults?: {
-    [id: string]: { enabled: boolean; agents?: string[]; roles?: string[]; command?: string; args?: string[]; url?: string };
+    [id: string]: { enabled: boolean; agents?: string[]; roles?: string[]; command?: string; args?: string[]; url?: string; projects?: Record<string, { url?: string; agents?: string[] }> };
   };
   /** Codex agent shell permissions (network / extra writable dirs / full access). Opt-in; absent = sandbox as before. See shared/codexSandbox.ts. */
   codexSandbox?: { networkAccess?: boolean; extraWritableDirs?: string[]; dangerFullAccess?: boolean };

@@ -298,7 +298,7 @@ export interface HarnessConfig {
   godModel?: string;
   /** Per-server consent for the default MCP bundle, keyed by catalog id. Mirrors
    *  src/main/config.ts. */
-  mcpDefaults?: { [id: string]: { enabled: boolean; agents?: string[]; command?: string; args?: string[]; url?: string } };
+  mcpDefaults?: { [id: string]: { enabled: boolean; agents?: string[]; command?: string; args?: string[]; url?: string; projects?: Record<string, { url?: string; agents?: string[] }> } };
   /** Codex agent shell permissions (network / extra writable dirs / full access). Opt-in; absent = sandbox as before. See shared/codexSandbox.ts. */
   codexSandbox?: { networkAccess?: boolean; extraWritableDirs?: string[]; dangerFullAccess?: boolean };
   semanticMemory: boolean;
@@ -1419,11 +1419,11 @@ const api = {
    *  today): the directory main would clone into, so the UI can show the
    *  destination before the user presses Install. Main derives it; the
    *  renderer only displays it and can never send one back. */
-  /** n8n MCP bearer token: write-only. An empty string is a no-op; clearing is explicit. */
-  mcpN8nSetToken: (token: string): Promise<{ ok: boolean; error?: string }> =>
-    ipcRenderer.invoke('mcp:n8nSetToken', { token }),
-  mcpN8nClearToken: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('mcp:n8nClearToken'),
-  mcpN8nHasToken: (): Promise<boolean> => ipcRenderer.invoke('mcp:n8nHasToken'),
+  /** Per-project n8n MCP bearer token: write-only. An empty string is a no-op; clearing is explicit. */
+  mcpN8nSetToken: (project: string, token: string): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('mcp:n8nSetToken', { project, token }),
+  mcpN8nClearToken: (project: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('mcp:n8nClearToken', project),
+  mcpN8nHasToken: (project: string): Promise<boolean> => ipcRenderer.invoke('mcp:n8nHasToken', project),
   mcpPresence: (id: string): Promise<{ ok: boolean; reason?: string; detail?: string; installDest?: string }> =>
     ipcRenderer.invoke('mcp:presence', { id }),
   /** Clone + build a user-configured MCP server. The destination is chosen by

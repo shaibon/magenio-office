@@ -82,13 +82,64 @@ export interface McpConsentEntry {
   roles?: string[];
   command?: string;
   args?: string[];
-  /** Endpoint of a `remote` entry (non-secret; the token is in the secret store). */
+  /** Legacy single global n8n endpoint; `migrateN8nConsent` folds it into `projects`. */
   url?: string;
+  /** Per-project n8n endpoints (`remote` entry), keyed by project (the key agents carry
+   *  as `project`). Each has its own allow-list; its bearer is in the secret store under
+   *  `n8nSecretRef(project)`. */
+  projects?: Record<string, N8nProjectEntry>;
 }
 
-/** Secret-store handle of the n8n MCP bearer token (same encrypted store as the
- *  integrations' `int:<id>` secrets, but a distinct namespace). */
-export const N8N_SECRET_REF = 'mcp:n8n';
+export interface N8nProjectEntry {
+  /** n8n MCP endpoint (non-secret). */
+  url?: string;
+  agents?: string[];
+}
+
+/** Secret-store handle of a project's n8n MCP bearer token (same encrypted store as
+ *  the integrations' `int:<id>` secrets, but a distinct namespace). */
+export const n8nSecretRef = (project: string): string => `mcp:n8n:${project}`;
+/** Pre-per-project global handle; only read by the migration. */
+export const N8N_LEGACY_SECRET_REF = 'mcp:n8n';
+
+/** A project key safe to use in a secret ref and as a config key. */
+export const isN8nProjectKey = (p: unknown): p is string => typeof p === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(p);
+
+/** The n8n upstream config for `agentId` of `project`, or null (fail closed): the
+ *  server must be enabled, the project must have its OWN entry with a valid URL, and
+ *  the agent must be on that entry's list (empty/absent list = nobody). */
+export function resolveN8nProject(
+  consent: McpConsentEntry | undefined,
+  project: string | undefined,
+  agentId: string
+): { url: string } | null {
+  if (!consent?.enabled || !isN8nProjectKey(project)) return null;
+  const e = Object.prototype.hasOwnProperty.call(consent.projects ?? {}, project) ? consent.projects![project] : undefined;
+  const url = normalizeN8nUrl(e?.url);
+  return url && e?.agents?.includes(agentId) ? { url } : null;
+}
+
+/** Fold a legacy global `{url, agents}` n8n consent into per-project entries, using
+ *  `projectOf` to place each allow-listed agent; agents with no known project are
+ *  dropped (fail closed). Returns null when there is nothing legacy to migrate. */
+export function migrateN8nConsent(
+  consent: McpConsentEntry | undefined,
+  projectOf: (agentId: string) => string | undefined
+): { consent: McpConsentEntry; projects: string[] } | null {
+  if (!consent || (consent.url === undefined && !('agents' in consent))) return null;
+  const { url, agents, ...rest } = consent;
+  const projects: Record<string, N8nProjectEntry> = { ...(consent.projects ?? {}) };
+  const moved: string[] = [];
+  if (url) {
+    for (const a of agents ?? []) {
+      const p = projectOf(a);
+      if (!isN8nProjectKey(p) || projects[p]) continue;
+      projects[p] = { url, agents: (agents ?? []).filter((x) => projectOf(x) === p) };
+      moved.push(p);
+    }
+  }
+  return { consent: { ...rest, projects }, projects: moved };
+}
 
 /** Env var carrying an allowed agent's n8n-route broker capability, and the header
  *  the agent's MCP config sends it in (value `${N8N_BROKER_TOKEN_ENV}`, expanded by

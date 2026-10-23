@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { HarnessConfig } from '@/store/config';
-import { MCP_CATALOG, mergeMcpConsent, type McpTier } from '@shared/mcpCatalog';
+import { MCP_CATALOG, mergeMcpConsent, isN8nProjectKey, type McpTier, type N8nProjectEntry } from '@shared/mcpCatalog';
 import { canInstallMcp } from './mcpInstallRule';
 
 export interface McpDefaultsSettingsProps {
@@ -136,7 +136,7 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
    *  stalls the ones queued after it. */
   const writeConsentPatch = (
     id: string,
-    patch: { enabled?: boolean; agents?: string[]; command?: string; args?: string[]; url?: string }
+    patch: { enabled?: boolean; agents?: string[]; command?: string; args?: string[]; url?: string; projects?: Record<string, N8nProjectEntry> }
   ): Promise<unknown> => {
     const base = mcpDefaultsRef.current ?? {};
     // `mergeMcpConsent` — not a hand-rolled spread — is what applies the
@@ -184,7 +184,7 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
   useEffect(() => { void refreshPresence(); }, []);
 
   /** Merge a partial consent for one entry and re-run its preflight. */
-  const patchConsent = async (id: string, p: { command?: string; args?: string[]; agents?: string[]; url?: string }) => {
+  const patchConsent = async (id: string, p: { command?: string; args?: string[]; agents?: string[]; url?: string; projects?: Record<string, N8nProjectEntry> }) => {
     try {
       await writeConsentPatch(id, p);
       await refreshPresence();
@@ -194,29 +194,46 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
     }
   };
 
-  // n8n bearer token is write-only: main tells us only WHETHER one is stored.
-  const [n8nHasToken, setN8nHasToken] = useState(false);
-  useEffect(() => { void window.cth.mcpN8nHasToken().then(setN8nHasToken, () => undefined); }, []);
-  const saveN8nToken = async (token: string) => {
+  // n8n is per project. Bearer tokens are write-only: main tells us only WHETHER one is
+  // stored for a project.
+  const n8nProjects = config.mcpDefaults?.n8n?.projects ?? {};
+  const n8nKeys = Object.keys(n8nProjects).sort().join('\n');
+  const [n8nHasToken, setN8nHasToken] = useState<Record<string, boolean>>({});
+  const [n8nNewProject, setN8nNewProject] = useState('');
+  useEffect(() => {
+    const keys = n8nKeys ? n8nKeys.split('\n') : [];
+    void Promise.all(keys.map((k) => window.cth.mcpN8nHasToken(k))).then(
+      (r) => setN8nHasToken(Object.fromEntries(keys.map((k, i) => [k, r[i]]))), () => undefined);
+  }, [n8nKeys]);
+  const fail = () => { setNote(t('mcpDefaults.couldNotSave')); setTimeout(() => setNote(''), 2000); };
+  const patchN8nProject = (project: string, p: N8nProjectEntry | null) => {
+    const next = { ...(mcpDefaultsRef.current?.n8n?.projects ?? {}) };
+    if (p) next[project] = { ...next[project], ...p }; else delete next[project];
+    return patchConsent('n8n', { projects: next });
+  };
+  const saveN8nToken = async (project: string, token: string) => {
     if (!token.trim()) return; // an empty blur never touches the stored token; Clear is explicit
     try {
-      const res = await window.cth.mcpN8nSetToken(token);
+      const res = await window.cth.mcpN8nSetToken(project, token);
       if (!res.ok) throw new Error(res.error);
-      setN8nHasToken(true);
-    } catch {
-      setNote(t('mcpDefaults.couldNotSave'));
-      setTimeout(() => setNote(''), 2000);
-    }
+      setN8nHasToken((h) => ({ ...h, [project]: true }));
+    } catch { fail(); }
   };
-
-  const clearN8nToken = async () => {
+  const clearN8nToken = async (project: string) => {
     try {
-      await window.cth.mcpN8nClearToken();
-      setN8nHasToken(false);
-    } catch {
-      setNote(t('mcpDefaults.couldNotSave'));
-      setTimeout(() => setNote(''), 2000);
-    }
+      await window.cth.mcpN8nClearToken(project);
+      setN8nHasToken((h) => ({ ...h, [project]: false }));
+    } catch { fail(); }
+  };
+  const removeN8nProject = async (project: string) => {
+    await clearN8nToken(project);
+    await patchN8nProject(project, null);
+  };
+  const addN8nProject = async () => {
+    const project = n8nNewProject.trim();
+    if (!isN8nProjectKey(project) || n8nProjects[project]) return;
+    setN8nNewProject('');
+    await patchN8nProject(project, { url: '', agents: [] });
   };
 
   const onInstall = async (id: string) => {
@@ -391,52 +408,62 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
 
                       {entry.remote && (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
-                          <label style={labelStyle}>{t('mcpDefaults.n8nUrl')}</label>
-                          <ConsentField
-                            value={config.mcpDefaults?.[entry.id]?.url ?? ''}
-                            onCommit={(v) => { void patchConsent(entry.id, { url: v.trim() }); }}
-                            placeholder={t('mcpDefaults.n8nUrlPlaceholder')}
-                            style={{ width: '100%', padding: '6px 8px', background: 'var(--cth-paper-100)', border: 'none', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)', fontSize: 12, color: 'var(--cth-ink-900)' }}
-                          />
-                          <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{t('mcpDefaults.n8nUrlHint')}</span>
+                          <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{t('mcpDefaults.n8nProjectsHint')}</span>
+                          {Object.entries(n8nProjects).sort(([a], [b]) => a.localeCompare(b)).map(([project, pe]) => (
+                            <div key={project} style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: 8, boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)' }}>
+                              <label style={labelStyle}>{t('mcpDefaults.n8nProject')}: {project}</label>
+                              <label style={labelStyle}>{t('mcpDefaults.n8nUrl')}</label>
+                              <ConsentField
+                                value={pe.url ?? ''}
+                                onCommit={(v) => { void patchN8nProject(project, { url: v.trim() }); }}
+                                placeholder={t('mcpDefaults.n8nUrlPlaceholder')}
+                                style={{ width: '100%', padding: '6px 8px', background: 'var(--cth-paper-100)', border: 'none', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)', fontSize: 12, color: 'var(--cth-ink-900)' }}
+                              />
+                              <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{t('mcpDefaults.n8nUrlHint')}</span>
 
-                          <label style={labelStyle}>{t('mcpDefaults.n8nToken')}</label>
-                          <input
-                            type="password"
-                            autoComplete="off"
-                            defaultValue=""
-                            onBlur={(e) => { const v = e.target.value; e.target.value = ''; void saveN8nToken(v); }}
-                            placeholder={t('mcpDefaults.n8nTokenPlaceholder')}
-                            style={{ width: '100%', padding: '6px 8px', background: 'var(--cth-paper-100)', border: 'none', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)', fontSize: 12, color: 'var(--cth-ink-900)' }}
-                          />
-                          <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>
-                            {n8nHasToken ? t('mcpDefaults.n8nTokenSet') : t('mcpDefaults.n8nTokenHint')}
-                          </span>
-                          {n8nHasToken && (
-                            <button
-                              type="button"
-                              onClick={() => { void clearN8nToken(); }}
-                              style={{
-                                alignSelf: 'flex-start', padding: '3px 10px 1px',
-                                background: 'var(--cth-paper-100)',
-                                boxShadow: 'inset 0 0 0 1px var(--cth-ink-700)',
-                                border: 'none', fontFamily: 'var(--cth-font-display)',
-                                fontSize: 8, lineHeight: '14px', color: 'var(--cth-ink-900)',
-                                cursor: 'pointer', textTransform: 'uppercase'
-                              }}
-                            >
-                              {t('mcpDefaults.n8nTokenClear')}
+                              <label style={labelStyle}>{t('mcpDefaults.n8nToken')}</label>
+                              <input
+                                type="password"
+                                autoComplete="off"
+                                defaultValue=""
+                                onBlur={(e) => { const v = e.target.value; e.target.value = ''; void saveN8nToken(project, v); }}
+                                placeholder={t('mcpDefaults.n8nTokenPlaceholder')}
+                                style={{ width: '100%', padding: '6px 8px', background: 'var(--cth-paper-100)', border: 'none', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)', fontSize: 12, color: 'var(--cth-ink-900)' }}
+                              />
+                              <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>
+                                {n8nHasToken[project] ? t('mcpDefaults.n8nTokenSet') : t('mcpDefaults.n8nTokenHint')}
+                              </span>
+                              {n8nHasToken[project] && (
+                                <button type="button" onClick={() => { void clearN8nToken(project); }} style={{ alignSelf: 'flex-start', padding: '3px 10px 1px', background: 'var(--cth-paper-100)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-700)', border: 'none', fontFamily: 'var(--cth-font-display)', fontSize: 8, lineHeight: '14px', color: 'var(--cth-ink-900)', cursor: 'pointer', textTransform: 'uppercase' }}>
+                                  {t('mcpDefaults.n8nTokenClear')}
+                                </button>
+                              )}
+
+                              <label style={labelStyle}>{t('mcpDefaults.agents')}</label>
+                              <ConsentField
+                                value={(pe.agents ?? []).join(', ')}
+                                onCommit={(v) => { void patchN8nProject(project, { agents: v.split(',').map((a) => a.trim()).filter(Boolean) }); }}
+                                placeholder={t('mcpDefaults.agentsPlaceholder')}
+                                style={{ width: '100%', padding: '6px 8px', background: 'var(--cth-paper-100)', border: 'none', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)', fontSize: 12, color: 'var(--cth-ink-900)' }}
+                              />
+                              <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{t('mcpDefaults.n8nAgentsHint')}</span>
+                              <button type="button" onClick={() => { void removeN8nProject(project); }} style={{ alignSelf: 'flex-start', padding: '3px 10px 1px', background: 'var(--cth-paper-100)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-700)', border: 'none', fontFamily: 'var(--cth-font-display)', fontSize: 8, lineHeight: '14px', color: 'var(--cth-ink-900)', cursor: 'pointer', textTransform: 'uppercase' }}>
+                                {t('mcpDefaults.n8nProjectRemove')}
+                              </button>
+                            </div>
+                          ))}
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            <input
+                              value={n8nNewProject}
+                              onChange={(e) => setN8nNewProject(e.target.value)}
+                              onKeyDown={(e) => { if (e.key === 'Enter') void addN8nProject(); }}
+                              placeholder={t('mcpDefaults.n8nProjectPlaceholder')}
+                              style={{ width: '100%', padding: '6px 8px', background: 'var(--cth-paper-100)', border: 'none', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)', fontSize: 12, color: 'var(--cth-ink-900)' }}
+                            />
+                            <button type="button" onClick={() => { void addN8nProject(); }} style={{ alignSelf: 'flex-start', padding: '3px 10px 1px', background: 'var(--cth-paper-100)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-700)', border: 'none', fontFamily: 'var(--cth-font-display)', fontSize: 8, lineHeight: '14px', color: 'var(--cth-ink-900)', cursor: 'pointer', textTransform: 'uppercase' }}>
+                              {t('mcpDefaults.n8nProjectAdd')}
                             </button>
-                          )}
-
-                          <label style={labelStyle}>{t('mcpDefaults.agents')}</label>
-                          <ConsentField
-                            value={(config.mcpDefaults?.[entry.id]?.agents ?? []).join(', ')}
-                            onCommit={(v) => { void patchConsent(entry.id, { agents: v.split(',').map((a) => a.trim()).filter(Boolean) }); }}
-                            placeholder={t('mcpDefaults.agentsPlaceholder')}
-                            style={{ width: '100%', padding: '6px 8px', background: 'var(--cth-paper-100)', border: 'none', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)', fontSize: 12, color: 'var(--cth-ink-900)' }}
-                          />
-                          <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{t('mcpDefaults.n8nAgentsHint')}</span>
+                          </div>
                         </div>
                       )}
                     </div>

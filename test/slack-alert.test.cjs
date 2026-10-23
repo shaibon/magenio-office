@@ -121,7 +121,7 @@ test('/alert rejects an n8n-only broker capability (403, nothing posted)', async
   t.after(() => srv.stop());
   const hdr = (tok) => ({ 'x-md-reply-token': 'rt', 'x-md-broker-token': tok });
   const body = { project: 'BURD', text: 'x' };
-  assert.equal((await call(port, '/alert', hdr(broker.grantN8n('agent')), body)).status, 403);
+  assert.equal((await call(port, '/alert', hdr(broker.grantN8n('agent', 'BURD')), body)).status, 403);
   assert.equal((await call(port, '/alert', hdr(broker.grant('god', [])), body)).status, 200, 'a god capability still works');
   assert.equal(posts.length, 1);
 });

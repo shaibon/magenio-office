@@ -38,7 +38,7 @@ import {
   bridgeOf,
   type AgentProvider
 } from '../shared/agentProvider';
-import { MCP_CATALOG, N8N_BROKER_TOKEN_ENV, BROKER_TOKEN_HEADER, normalizeN8nUrl, trelloDeniedToolIds } from '../shared/mcpCatalog';
+import { MCP_CATALOG, N8N_BROKER_TOKEN_ENV, BROKER_TOKEN_HEADER, resolveN8nProject, isN8nProjectKey, trelloDeniedToolIds } from '../shared/mcpCatalog';
 import { selectBroadcastTargets } from '../shared/broadcast';
 import { preferredAgentRole, isPmRole } from '../shared/agentRole';
 import { emptyRoleLedger, ledgerRole, normalizeRoleLedger, rememberLedgerRole, type RoleLedger } from '../shared/roleLedger';
@@ -57,7 +57,7 @@ import { codexMcpServers, codexMcpToml, type CodexMcpServer } from '../shared/co
  *  Kept as a local shape so hive.ts never imports the foundation-owned config
  *  module just for a type. */
 type McpDefaultsMap =
-  | { [id: string]: { enabled: boolean; agents?: string[]; roles?: string[]; command?: string; args?: string[]; url?: string } }
+  | { [id: string]: { enabled: boolean; agents?: string[]; roles?: string[]; command?: string; args?: string[]; url?: string; projects?: Record<string, { url?: string; agents?: string[] }> } }
   | undefined;
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -1465,7 +1465,7 @@ export class HiveManager {
     cfg: McpDefaultsMap,
     theme?: 'light' | 'dark',
     writableDirs: string[] = [],
-    roleMeta?: Pick<AgentMeta, 'role' | 'capabilities' | 'isGod' | 'provider'>,
+    roleMeta?: Pick<AgentMeta, 'role' | 'capabilities' | 'isGod' | 'provider' | 'project'>,
     magento?: { config?: string; stageConfig?: string; denyRead: string[] },
     vault?: VaultMount,
     n8nBrokerUrl?: string
@@ -1579,7 +1579,7 @@ export class HiveManager {
     cwd: string,
     cfg: McpDefaultsMap,
     agentId: string,
-    roleMeta?: Pick<AgentMeta, 'role' | 'capabilities' | 'isGod' | 'provider'>,
+    roleMeta?: Pick<AgentMeta, 'role' | 'capabilities' | 'isGod' | 'provider' | 'project'>,
     magentoConfig?: string,
     vault?: VaultMount,
     magentoStageConfig?: string,
@@ -1615,16 +1615,18 @@ export class HiveManager {
       if (!idAllowed && !roleAllowed) continue;
       // Magento is opt-in per project; projects without a config are expected.
       if (e.id === 'magento' && !magentoConfig) continue;
-      // Remote (n8n): fail closed. Unlike every other entry an EMPTY allow-list
-      // means nobody, not everybody (this server can run workflows), and the role
-      // path never applies. A missing/invalid URL or token mounts nothing, loudly.
+      // Remote (n8n): fail closed and PER PROJECT. The agent's project must have its own
+      // entry that lists the agent (an empty list means nobody, and the role path never
+      // applies: this server can run workflows). A missing/invalid URL or token mounts
+      // nothing, loudly. `n8nBrokerUrl` is set by the caller only when THIS project's
+      // token is stored and the broker runs.
       if (e.remote) {
-        if (!consent?.agents?.includes(agentId)) continue;
-        const url = normalizeN8nUrl(consent.url);
-        const missing = !url ? 'a valid https URL' : !n8nBrokerUrl ? 'its bearer token (or the local broker)' : '';
+        const project = roleMeta?.project;
+        if (!isN8nProjectKey(project) || !consent?.projects?.[project]?.agents?.includes(agentId)) continue;
+        const missing = !resolveN8nProject(consent, project, agentId) ? 'a valid https URL' : !n8nBrokerUrl ? 'its bearer token (or the local broker)' : '';
         if (missing) {
-          console.error(`[hive] MCP '${e.id}' not wired for ${agentId}: no ${missing} is configured`);
-          this.noteMcpMountFailure(agentId, `munder-${e.id}`, `no ${missing} is configured (Settings → MCP defaults)`);
+          console.error(`[hive] MCP '${e.id}' not wired for ${agentId}: no ${missing} is configured for project ${project}`);
+          this.noteMcpMountFailure(agentId, `munder-${e.id}`, `no ${missing} is configured for project ${project} (Settings → MCP defaults)`);
           continue;
         }
         // The agent holds only a per-agent broker capability (env var N8N_BROKER_TOKEN_ENV, referenced
@@ -2708,7 +2710,7 @@ export class HiveManager {
    * from a non-god agent on top of that. Returns '' when nothing is enabled.
    */
   private codexMcpTables(
-    meta: Pick<AgentMeta, 'id' | 'cwd' | 'role' | 'capabilities' | 'isGod' | 'provider'>,
+    meta: Pick<AgentMeta, 'id' | 'cwd' | 'role' | 'capabilities' | 'isGod' | 'provider' | 'project'>,
     opts: { mcpDefaults?: McpDefaultsMap; magento?: { config?: string; stageConfig?: string }; vault?: VaultMount; n8nBrokerUrl?: string }
   ): string {
     const servers = this.buildDefaultMcpServers(meta.cwd, opts.mcpDefaults, meta.id, meta, opts.magento?.config, opts.vault, opts.magento?.stageConfig, opts.n8nBrokerUrl);

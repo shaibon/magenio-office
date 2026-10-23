@@ -69,6 +69,8 @@ interface Capability {
    *  route (it is carried in an agent's MCP config env, so it must not also open
    *  automations / agent control). `workerId` is the agent id. */
   n8nOnly?: boolean;
+  /** Project the n8n capability is bound to (set with n8nOnly); picks the upstream. */
+  n8nProject?: string;
 }
 
 export interface IntegrationBrokerDeps {
@@ -107,7 +109,7 @@ export interface IntegrationBrokerDeps {
   /** Upstream of the n8n MCP route for this agent: its endpoint and the decrypted
    *  bearer, or undefined when n8n is off / the agent is not allow-listed / no token
    *  is stored. Evaluated per request so consent changes apply without a respawn. */
-  n8nUpstream?: (agentId: string) => { url: string; token: string } | undefined;
+  n8nUpstream?: (agentId: string, project: string) => { url: string; token: string } | undefined;
 }
 
 /** True for IPv4 loopback (127.0.0.0/8) and IPv6 ::1 (incl. v4-mapped). Mirrors slack.ts. */
@@ -189,11 +191,11 @@ export class IntegrationBroker {
   /** Mint the n8n-route-only capability for an agent (see Capability.n8nOnly).
    *  Kept under its own key so it neither replaces nor is replaced by the agent's
    *  general token; `revoke(agentId)` drops both. */
-  grantN8n(agentId: string): string {
+  grantN8n(agentId: string, project: string): string {
     const key = `n8n:${agentId}`;
     this.revokeKey(key);
     const token = randomBytes(32).toString('base64url');
-    this.byToken.set(token, { workerId: agentId, allowedIds: new Set(), grantedAt: Date.now(), readOnly: false, n8nOnly: true });
+    this.byToken.set(token, { workerId: agentId, allowedIds: new Set(), grantedAt: Date.now(), readOnly: false, n8nOnly: true, n8nProject: project });
     this.byWorker.set(key, token);
     return token;
   }
@@ -294,7 +296,7 @@ export class IntegrationBroker {
       if (!cap.n8nOnly || !n8nRoute) {
         return IntegrationBroker.sendError(res, 403, 'forbidden', 'n8n capability: /n8n-mcp only');
       }
-      const up = this.deps.n8nUpstream?.(cap.workerId);
+      const up = cap.n8nProject ? this.deps.n8nUpstream?.(cap.workerId, cap.n8nProject) : undefined;
       if (!up) return IntegrationBroker.sendError(res, 403, 'forbidden', 'n8n is not enabled for this agent');
       let target: URL;
       try { target = new URL(up.url); if (n8nRoute[1]) target.search = n8nRoute[1]; } catch {
