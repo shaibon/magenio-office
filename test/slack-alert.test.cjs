@@ -107,3 +107,21 @@ test('/alert needs the reply token AND a writable broker capability; channel mus
   // /reply is unchanged: still needs a thread.
   assert.equal((await call(port, '/reply', H, { channel: 'C0ALERTS123', text: 'x' })).status, 400);
 });
+
+test('/alert rejects an n8n-only broker capability (403, nothing posted)', async (t) => {
+  const posts = fakeSlack(t);
+  const { IntegrationBroker } = loadTs('src/main/integrationBroker.ts');
+  const broker = new IntegrationBroker({ getRecord: () => undefined, getSecret: () => undefined });
+  const srv = new SlackReplyServer({
+    token: 'rt', getBotToken: () => 'xoxb-secret',
+    alertChannelFor: (p) => alertChannelFor(bindings, p),
+    isBrokerWriter: (tok) => broker.hasWritableCapability(tok)
+  });
+  const { port } = await srv.start();
+  t.after(() => srv.stop());
+  const hdr = (tok) => ({ 'x-md-reply-token': 'rt', 'x-md-broker-token': tok });
+  const body = { project: 'BURD', text: 'x' };
+  assert.equal((await call(port, '/alert', hdr(broker.grantN8n('agent')), body)).status, 403);
+  assert.equal((await call(port, '/alert', hdr(broker.grant('god', [])), body)).status, 200, 'a god capability still works');
+  assert.equal(posts.length, 1);
+});
