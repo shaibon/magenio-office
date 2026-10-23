@@ -19,7 +19,7 @@ require.cache[electronPath] = {
 test.after(() => fs.rmSync(userData, { recursive: true, force: true }));
 
 const { HiveManager } = loadTs('src/main/hive.ts');
-const { MCP_CATALOG, normalizeN8nUrl, resolveN8nProject, migrateN8nConsent, runN8nMigration, createConsentWriter, isN8nProjectKey, n8nSecretRef, N8N_LEGACY_SECRET_REF } = loadTs('src/shared/mcpCatalog.ts');
+const { MCP_CATALOG, normalizeN8nUrl, resolveN8nProject, migrateN8nConsent, runN8nMigration, createConsentWriter, n8nProjectOps, isN8nProjectKey, n8nSecretRef, N8N_LEGACY_SECRET_REF } = loadTs('src/shared/mcpCatalog.ts');
 const { codexMcpServers, codexMcpToml } = loadTs('src/shared/codexMcp.ts');
 
 const hive = new HiveManager(() => userData);
@@ -253,10 +253,8 @@ test('Clear IPC and Settings only report success on a verified deletion; Remove 
   assert.match(clear, /catch \{ return \{ ok: false \}/);
   const ui = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/src/components/McpDefaultsSettings.tsx'), 'utf8');
   assert.match(ui, /if \(!\(await window\.cth\.mcpN8nClearToken\(project\)\)\.ok\) throw/);
-  const rm = /const removeN8nProject[\s\S]*?\n  \};/.exec(ui)[0];
-  assert.ok(rm.indexOf('writeN8nProjects(rest)') < rm.indexOf('clearN8nToken(project)'), 'config write first, then verified clear');
-  assert.match(rm, /try \{ await writeN8nProjects\(rest\); \} catch \{ fail\(\); return; \}/, 'config rejection aborts with nothing changed');
-  assert.match(rm, /\[project\]: kept/, 'entry restored when the token cannot be cleared');
+  // Remove ordering/rollback is covered behaviorally by the createConsentWriter tests below.
+  assert.match(ui, /n8nProjectOps\.remove\(project\)[\s\S]*clearN8nToken\(project\)[\s\S]*n8nProjectOps\.upsert\(project, kept\)/, 'remove, verified clear, then restore');
 });
 
 // ── QA t-232 re-QA fixes ────────────────────────────────────────────────────
@@ -371,4 +369,38 @@ test('removeRecord: config first; a failed secret removal restores the record; a
   assert.deepEqual(ints.removeRecord('rr-test'), { ok: true });
   assert.equal(ints.hasSecret(rec.secretRef), false);
   assert.deepEqual(ints.listRecords(), []);
+});
+
+// ── QA4: semantic n8n ops, queue race closed ────────────────────────────────
+test('Settings writer: rejected middle write never loses or resurrects a project (Toby final case + variants)', async () => {
+  const E = { url: URL_OK, agents: ['jim'] };
+  const mk = (failAt) => {
+    const ref = { current: { n8n: { enabled: true, projects: { A: E, B: E } } } };
+    const saved = [];
+    let n = 0;
+    const write = createConsentWriter(ref, async (next) => { if (n++ === failAt) throw new Error('disk'); saved.push(next); });
+    return { ref, saved, write };
+  };
+  const keys = (d) => Object.keys(d.n8n.projects).sort().join('');
+  // enabled ok, Remove B rejected, Add C queued -> A,B,C
+  let t = mk(1);
+  const r = [t.write('n8n', { enabled: true }), t.write('n8n', n8nProjectOps.remove('B')), t.write('n8n', n8nProjectOps.upsert('C', E))];
+  const res = await Promise.allSettled(r);
+  assert.deepEqual(res.map((x) => x.status), ['fulfilled', 'rejected', 'fulfilled']);
+  assert.equal(keys(t.saved.at(-1)), 'ABC');
+  assert.equal(keys(t.ref.current), 'ABC');
+  // Remove B rejected, Edit B queued -> B kept with the edit
+  t = mk(0);
+  await Promise.allSettled([t.write('n8n', n8nProjectOps.remove('B')), t.write('n8n', n8nProjectOps.upsert('B', { url: 'https://b2.example.com/mcp' }))]);
+  assert.equal(t.saved.at(-1).n8n.projects.B.url, 'https://b2.example.com/mcp');
+  assert.equal(keys(t.saved.at(-1)), 'AB');
+  // Edit B rejected, Remove B queued -> B gone, nothing resurrected
+  t = mk(0);
+  await Promise.allSettled([t.write('n8n', n8nProjectOps.upsert('B', { url: 'https://b2.example.com/mcp' })), t.write('n8n', n8nProjectOps.remove('B'))]);
+  assert.equal(keys(t.saved.at(-1)), 'A');
+  assert.equal(keys(t.ref.current), 'A');
+  // all succeed: ordered, semantic ops stack
+  t = mk(-1);
+  await Promise.all([t.write('n8n', n8nProjectOps.remove('B')), t.write('n8n', n8nProjectOps.upsert('C', E))]);
+  assert.equal(keys(t.saved.at(-1)), 'AC');
 });

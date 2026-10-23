@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { HarnessConfig } from '@/store/config';
-import { MCP_CATALOG, createConsentWriter, isN8nProjectKey, type McpTier, type N8nProjectEntry } from '@shared/mcpCatalog';
+import { MCP_CATALOG, createConsentWriter, n8nProjectOps, isN8nProjectKey, type McpTier, type N8nProjectEntry } from '@shared/mcpCatalog';
 import { canInstallMcp } from './mcpInstallRule';
 
 export interface McpDefaultsSettingsProps {
@@ -181,10 +181,10 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
   }, [n8nKeys]);
   const fail = () => { setNote(t('mcpDefaults.couldNotSave')); setTimeout(() => setNote(''), 2000); };
   // Rejects on a failed config write (unlike patchConsent, which reports and swallows).
-  const writeN8nProjects = (next: Record<string, N8nProjectEntry>) => writeConsentPatch('n8n', { projects: next });
+  // Semantic edits (n8nProjectOps) applied by the writer to the last persisted state; a
+  // rejected write can never take another project's change with it.
   const patchN8nProject = (project: string, p: N8nProjectEntry) =>
-    writeN8nProjects({ ...(mcpDefaultsRef.current?.n8n?.projects ?? {}), [project]: { ...mcpDefaultsRef.current?.n8n?.projects?.[project], ...p } })
-      .catch(fail);
+    writeConsentPatch('n8n', n8nProjectOps.upsert(project, p)).catch(fail);
   const saveN8nToken = async (project: string, token: string) => {
     if (!token.trim()) return; // an empty blur never touches the stored token; Clear is explicit
     try {
@@ -205,11 +205,10 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
   // the token is gone; if that fails the entry is put back, so there is never a removed
   // project with a live bearer or a kept project without one.
   const removeN8nProject = async (project: string) => {
-    const prev = mcpDefaultsRef.current?.n8n?.projects ?? {};
-    const { [project]: kept, ...rest } = prev;
-    try { await writeN8nProjects(rest); } catch { fail(); return; }
+    const kept = mcpDefaultsRef.current?.n8n?.projects?.[project];
+    try { await writeConsentPatch('n8n', n8nProjectOps.remove(project)); } catch { fail(); return; }
     if (await clearN8nToken(project)) return;
-    try { await writeN8nProjects({ ...(mcpDefaultsRef.current?.n8n?.projects ?? {}), [project]: kept }); } catch { fail(); }
+    if (kept) await writeConsentPatch('n8n', n8nProjectOps.upsert(project, kept)).catch(fail);
   };
   const addN8nProject = async () => {
     const project = n8nNewProject.trim();

@@ -519,20 +519,36 @@ export function mergeMcpConsent(
   return merged;
 }
 
+/** A consent patch, or a function from the entry's CURRENT (persisted, at run time) state
+ *  to one. Semantic edits (upsert/remove one n8n project) must use the function form so
+ *  they never carry a whole `projects` map snapshotted from the optimistic view. */
+export type ConsentPatch = Partial<McpConsentEntry> | ((cur: McpConsentEntry | undefined) => Partial<McpConsentEntry>);
+
+/** Semantic n8n project edits for `createConsentWriter`. */
+export const n8nProjectOps = {
+  upsert: (key: string, p: N8nProjectEntry): ConsentPatch => (cur) => ({
+    projects: { ...(cur?.projects ?? {}), [key]: { ...(cur?.projects?.[key] ?? {}), ...p } }
+  }),
+  remove: (key: string): ConsentPatch => (cur) => {
+    const { [key]: _gone, ...rest } = cur?.projects ?? {};
+    return { projects: rest };
+  }
+};
+
 /** The Settings panel's consent writer. `ref` is the optimistic view the UI reads; every
- *  write applies its PATCH, when it runs in the queue, to the last PERSISTED state (never
+ *  write applies its patch, when it runs in the queue, to the last PERSISTED state (never
  *  to the optimistic one), so a rejected write cannot leak into a write queued behind it.
  *  After a rejection `ref` is rebuilt as persisted + the patches still pending. */
 export function createConsentWriter(
   ref: { current: Record<string, McpConsentEntry> | undefined },
   update: (next: Record<string, McpConsentEntry>) => Promise<unknown>
-): (id: string, patch: Partial<McpConsentEntry>) => Promise<unknown> {
+): (id: string, patch: ConsentPatch) => Promise<unknown> {
   type Defaults = Record<string, McpConsentEntry>;
-  const apply = (base: Defaults | undefined, id: string, patch: Partial<McpConsentEntry>): Defaults =>
-    ({ ...(base ?? {}), [id]: mergeMcpConsent(id, base?.[id], patch) });
+  const apply = (base: Defaults | undefined, id: string, patch: ConsentPatch): Defaults =>
+    ({ ...(base ?? {}), [id]: mergeMcpConsent(id, base?.[id], typeof patch === 'function' ? patch(base?.[id]) : patch) });
   let queue: Promise<unknown> = Promise.resolve();
   let persisted: Defaults | undefined;
-  const pending: Array<{ id: string; patch: Partial<McpConsentEntry> }> = [];
+  const pending: Array<{ id: string; patch: ConsentPatch }> = [];
   return (id, patch) => {
     if (pending.length === 0) persisted = ref.current; // idle: the ref is the persisted truth (synced from config)
     const job = { id, patch };
