@@ -158,7 +158,7 @@ test('the consent writer materializes entries through the shared catalog merge',
   const src = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/src/components/McpDefaultsSettings.tsx'), 'utf8');
   assert.match(src, /createConsentWriter\(/, 'the component must use the shared writer');
   const cat = fs.readFileSync(path.join(__dirname, '..', 'src/shared/mcpCatalog.ts'), 'utf8');
-  assert.match(cat, /mergeMcpConsent\(id, prev\?\.\[id\], patch\)/, 'consent writes must go through mergeMcpConsent');
+  assert.match(cat, /mergeMcpConsent\(id, base\?\.\[id\], patch\)/, 'consent writes must go through mergeMcpConsent');
 });
 
 test('canInstallMcp: behaviour for every branch', () => {
