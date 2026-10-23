@@ -27,8 +27,8 @@ export interface StdioMcpServer {
 }
 
 /** A native remote (streamable HTTP) server. Claude's `mcp.json` takes it as-is;
- *  codex gets `url` + `http_headers`. `headers` may carry a credential, so it only
- *  ever lands in the per-agent config files, never in the agent's shell env. */
+ *  codex gets `url` + `http_headers` / `env_http_headers`. A header value of the
+ *  form `${NAME}` is an env reference, never a literal credential. */
 export interface RemoteMcpServer {
   type: 'http';
   url: string;
@@ -152,8 +152,14 @@ export function codexMcpToml(servers: Record<string, CodexMcpServer>): string {
     const key = tomlKey(name);
     if ('url' in s) {
       out += `\n[mcp_servers.${key}]\nurl = ${JSON.stringify(s.url)}\n${approvalModeLine(name)}`;
+      // A `${NAME}` value is an env reference (codex `env_http_headers`), so a
+      // credential never has to be written into config.toml; anything else is literal.
       const hdrs = Object.entries(s.headers ?? {});
-      if (hdrs.length) out += `http_headers = { ${hdrs.map(([k, v]) => `${tomlKey(k)} = ${JSON.stringify(v)}`).join(', ')} }\n`;
+      const envRef = (v: string): string | undefined => /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(v)?.[1];
+      const lit = hdrs.filter(([, v]) => !envRef(v));
+      const env = hdrs.filter(([, v]) => envRef(v));
+      if (lit.length) out += `http_headers = { ${lit.map(([k, v]) => `${tomlKey(k)} = ${JSON.stringify(v)}`).join(', ')} }\n`;
+      if (env.length) out += `env_http_headers = { ${env.map(([k, v]) => `${tomlKey(k)} = ${JSON.stringify(envRef(v))}`).join(', ')} }\n`;
       continue;
     }
     out += `\n[mcp_servers.${key}]\ncommand = ${JSON.stringify(s.command)}\nargs = ${JSON.stringify(s.args ?? [])}\n`;

@@ -65,6 +65,10 @@ interface Capability {
   /** A PM's broker access is read-only — every non-GET request is
    *  rejected before route dispatch, regardless of which route it targets. */
   readOnly: boolean;
+  /** Token minted by `grantN8n`: valid ONLY on `/n8n-mcp`, rejected on every other
+   *  route (it is carried in an agent's MCP config env, so it must not also open
+   *  automations / agent control). `workerId` is the agent id. */
+  n8nOnly?: boolean;
 }
 
 export interface IntegrationBrokerDeps {
@@ -100,6 +104,10 @@ export interface IntegrationBrokerDeps {
    *  class as agent control: any valid, non-read-only token; ownership and caps are
    *  enforced in shared/agentAutomations. Optional: absent ⇒ 501. */
   automations?: AutomationHost;
+  /** Upstream of the n8n MCP route for this agent: its endpoint and the decrypted
+   *  bearer, or undefined when n8n is off / the agent is not allow-listed / no token
+   *  is stored. Evaluated per request so consent changes apply without a respawn. */
+  n8nUpstream?: (agentId: string) => { url: string; token: string } | undefined;
 }
 
 /** True for IPv4 loopback (127.0.0.0/8) and IPv6 ::1 (incl. v4-mapped). Mirrors slack.ts. */
@@ -171,17 +179,34 @@ export class IntegrationBroker {
    *  secret, never persisted. `readOnly` restricts the token to GET only,
    *  across every route — used for a PM's broker access. */
   grant(workerId: string, allowedIds: string[], opts?: { readOnly?: boolean }): string {
-    this.revoke(workerId);
+    this.revokeKey(workerId);
     const token = randomBytes(32).toString('base64url');
     this.byToken.set(token, { workerId, allowedIds: new Set(allowedIds), grantedAt: Date.now(), readOnly: !!opts?.readOnly });
     this.byWorker.set(workerId, token);
     return token;
   }
 
+  /** Mint the n8n-route-only capability for an agent (see Capability.n8nOnly).
+   *  Kept under its own key so it neither replaces nor is replaced by the agent's
+   *  general token; `revoke(agentId)` drops both. */
+  grantN8n(agentId: string): string {
+    const key = `n8n:${agentId}`;
+    this.revokeKey(key);
+    const token = randomBytes(32).toString('base64url');
+    this.byToken.set(token, { workerId: agentId, allowedIds: new Set(), grantedAt: Date.now(), readOnly: false, n8nOnly: true });
+    this.byWorker.set(key, token);
+    return token;
+  }
+
   /** Revoke a worker's capability (called on teardown). Idempotent. */
   revoke(workerId: string): void {
-    const token = this.byWorker.get(workerId);
-    if (token) { this.byToken.delete(token); this.byWorker.delete(workerId); }
+    this.revokeKey(workerId);
+    this.revokeKey(`n8n:${workerId}`);
+  }
+
+  private revokeKey(key: string): void {
+    const token = this.byWorker.get(key);
+    if (token) { this.byToken.delete(token); this.byWorker.delete(key); }
   }
 
   /** True when `provided` is a live capability that may WRITE (not a read-only PM
@@ -259,6 +284,24 @@ export class IntegrationBroker {
     // override would turn a permitted GET into a write.
     if (cap.readOnly && !IntegrationBroker.readOnlyAllows(req, req.url ?? '')) {
       return IntegrationBroker.sendError(res, 403, 'forbidden', 'read-only capability: GET only (thaw excepted)');
+    }
+
+    // 2a') The n8n MCP proxy. An n8n-only capability reaches this route and nothing
+    // else; no other capability reaches it (the bearer is injected here, so who may
+    // ask is decided by the per-agent token plus the live allow-list in n8nUpstream).
+    const n8nRoute = /^\/n8n-mcp\/?(\?[^#]*)?$/.exec(req.url ?? '');
+    if (cap.n8nOnly || n8nRoute) {
+      if (!cap.n8nOnly || !n8nRoute) {
+        return IntegrationBroker.sendError(res, 403, 'forbidden', 'n8n capability: /n8n-mcp only');
+      }
+      const up = this.deps.n8nUpstream?.(cap.workerId);
+      if (!up) return IntegrationBroker.sendError(res, 403, 'forbidden', 'n8n is not enabled for this agent');
+      let target: URL;
+      try { target = new URL(up.url); if (n8nRoute[1]) target.search = n8nRoute[1]; } catch {
+        return IntegrationBroker.sendError(res, 500, 'internal_error', 'invalid n8n endpoint');
+      }
+      void this.forward(req, res, target, { authorization: `Bearer ${up.token}` }, true);
+      return;
     }
 
     // 2b) GET /jira-bindings — config data, not an integration proxy, so any
@@ -342,7 +385,7 @@ export class IntegrationBroker {
       if (!secret) return IntegrationBroker.sendError(res, 503, 'no_secret', 'no secret configured for this integration');
     }
 
-    void this.forward(req, res, rec, upstream, secret);
+    void this.forward(req, res, upstream, buildAuthHeaders(rec.authType, rec.authHeader, secret));
   }
 
   private async automations(req: IncomingMessage, res: ServerResponse, actor: string, id: string | undefined): Promise<void> {
@@ -368,9 +411,10 @@ export class IntegrationBroker {
   private async forward(
     req: IncomingMessage,
     res: ServerResponse,
-    rec: IntegrationRecord,
     upstream: URL,
-    secret: string | undefined
+    injected: Record<string, string>,
+    /** Long-lived responses (MCP SSE): the timeout bounds the wait for headers only. */
+    streaming = false
   ): Promise<void> {
     // Buffer the request body with a hard cap (write methods).
     const method = (req.method ?? 'GET').toUpperCase();
@@ -397,7 +441,6 @@ export class IntegrationBroker {
       else if (typeof v === 'string') outHeaders[key] = v;
     }
     if (!outHeaders['user-agent']) outHeaders['user-agent'] = DEFAULT_USER_AGENT;
-    const injected = buildAuthHeaders(rec.authType, rec.authHeader, secret);
     for (const [k, v] of Object.entries(injected)) {
       delete outHeaders[k]; // ensure the worker can't shadow an injected header
       outHeaders[k] = v;
@@ -419,6 +462,7 @@ export class IntegrationBroker {
       // The message could in theory contain the URL but never the secret.
       return IntegrationBroker.sendError(res, 502, 'bad_gateway', `upstream request failed: ${(e as Error).message}`);
     }
+    if (streaming) clearTimeout(timer);
 
     // Stream the response back (status + sanitized headers + body).
     const respHeaders: Record<string, string> = {};

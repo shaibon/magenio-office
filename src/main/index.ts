@@ -39,7 +39,7 @@ import { CircuitBreaker, type BreakerInput } from './breaker';
 import { CumulativeSampleGate, type UsageProvider } from './usage';
 import { MemoryManager } from './memory';
 import { KnowledgeManager } from './knowledge';
-import { N8N_SECRET_REF } from '../shared/mcpCatalog';
+import { N8N_SECRET_REF, N8N_BROKER_TOKEN_ENV, normalizeN8nUrl } from '../shared/mcpCatalog';
 import { vaultScopesFor, type VaultMount } from '../shared/vaultMount';
 import { resolveProjectForCwd, runVaultSync, type VaultSyncResult } from './knowledgeVaultSync';
 import { MemoryReflector, type ReflectSettings } from './reflect';
@@ -439,6 +439,11 @@ interface WorkerRec {
  *  force-removed) when it holds unintegrated work — god is the sole integrator. */
 const liveWorkers = new Map<string, WorkerRec>();
 
+/** The broker route the n8n MCP is mounted on, or undefined while the broker is
+ *  down or no token is stored (the mount then fails closed, loudly). */
+const n8nBrokerRoute = (): string | undefined =>
+  integrationBroker.running() && integrations.hasSecret(N8N_SECRET_REF) ? `${integrationBroker.url()}/n8n-mcp` : undefined;
+
 /** The loopback secret broker (Phase 2). Workers reach registered integrations through
  *  it without ever seeing a credential. getRecord/getSecret are injected so the broker
  *  stays electron-free + unit-testable. Started in bootstrapHiveServices; each worker is
@@ -446,6 +451,12 @@ const liveWorkers = new Map<string, WorkerRec>();
 const integrationBroker = new IntegrationBroker({
   getRecord: integrations.getRecord,
   getSecret: integrations.getSecret,
+  n8nUpstream: (agentId) => {
+    const c = readConfig().mcpDefaults?.n8n;
+    const url = normalizeN8nUrl(c?.url);
+    const token = integrations.getSecret(N8N_SECRET_REF);
+    return c?.enabled && c.agents?.includes(agentId) && url && token ? { url, token } : undefined;
+  },
   getJiraBindings: () => ({
     bindings: jiraProjects.listBindings().filter((b) => b.enabled),
     poll: readConfig().jiraPoll
@@ -3293,7 +3304,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
             denyRead: magentoDeniedReadPaths(readConfig().jiraProjects)
           },
           vault: (await vaultMountForCwd(opts.cwd, opts.hive?.id)) ?? undefined,
-          n8nToken: integrations.getSecret(N8N_SECRET_REF),
+          n8nBrokerUrl: n8nBrokerRoute(),
           skillsDir: skillsResourceDir(),
           // The shared palace is mutated by the agent's own `mempalace` calls, so
           // the OS sandbox must let it through (empty when memory is off).
@@ -3336,6 +3347,11 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       // is read from the app-owned role ledger (HiveManager.isPrivilegedPm), NOT
       // from registry.json: that file sits in a directory agents can write, and an
       // agent promoting itself to PM there must grant it nothing.
+      // n8n MCP: an allow-listed agent gets a route-scoped broker capability (it can
+      // reach /n8n-mcp and nothing else); the n8n bearer itself stays in main.
+      if (n8nBrokerRoute() && readConfig().mcpDefaults?.n8n?.agents?.includes(opts.id)) {
+        opts.env = { ...(opts.env ?? {}), [N8N_BROKER_TOKEN_ENV]: integrationBroker.grantN8n(opts.id) };
+      }
       const isPm = hive.isPrivilegedPm(opts.id);
       if ((opts.hive?.isGod || isPm) && integrationBroker.running()) {
         const token = integrationBroker.grant(opts.id, integrations.enabledIds(), { readOnly: !opts.hive?.isGod });
@@ -3753,12 +3769,15 @@ ipcMain.handle('mcp:install', async (_evt, payload: unknown) => {
 
 // n8n MCP bearer token: WRITE-ONLY, like the provider keys. The renderer can set
 // or clear it and ask whether one is stored; the plaintext is read back only in
-// main, at spawn, and goes into the per-agent MCP config (never the shell env).
+// main, by the broker's /n8n-mcp route (never written to a config file or an env).
+// An empty value is a no-op (a blur on the empty field must not wipe the token);
+// removal is the explicit mcp:n8nClearToken.
 ipcMain.handle('mcp:n8nSetToken', (_evt, payload: unknown) => {
   const token = String((payload as { token?: unknown } | null)?.token ?? '').trim();
-  if (!token) { integrations.deleteSecret(N8N_SECRET_REF); return { ok: true }; }
+  if (!token) return { ok: true };
   return integrations.setSecret(N8N_SECRET_REF, token);
 });
+ipcMain.handle('mcp:n8nClearToken', () => { integrations.deleteSecret(N8N_SECRET_REF); return { ok: true }; });
 ipcMain.handle('mcp:n8nHasToken', () => integrations.hasSecret(N8N_SECRET_REF));
 
 // ─── IPC: config ────────────────────────────────────────────────────────────

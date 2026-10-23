@@ -198,11 +198,21 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
   const [n8nHasToken, setN8nHasToken] = useState(false);
   useEffect(() => { void window.cth.mcpN8nHasToken().then(setN8nHasToken, () => undefined); }, []);
   const saveN8nToken = async (token: string) => {
-    if (!token.trim() && !n8nHasToken) return;
+    if (!token.trim()) return; // an empty blur never touches the stored token; Clear is explicit
     try {
       const res = await window.cth.mcpN8nSetToken(token);
       if (!res.ok) throw new Error(res.error);
-      setN8nHasToken(!!token.trim());
+      setN8nHasToken(true);
+    } catch {
+      setNote(t('mcpDefaults.couldNotSave'));
+      setTimeout(() => setNote(''), 2000);
+    }
+  };
+
+  const clearN8nToken = async () => {
+    try {
+      await window.cth.mcpN8nClearToken();
+      setN8nHasToken(false);
     } catch {
       setNote(t('mcpDefaults.couldNotSave'));
       setTimeout(() => setNote(''), 2000);
@@ -402,6 +412,22 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
                           <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>
                             {n8nHasToken ? t('mcpDefaults.n8nTokenSet') : t('mcpDefaults.n8nTokenHint')}
                           </span>
+                          {n8nHasToken && (
+                            <button
+                              type="button"
+                              onClick={() => { void clearN8nToken(); }}
+                              style={{
+                                alignSelf: 'flex-start', padding: '3px 10px 1px',
+                                background: 'var(--cth-paper-100)',
+                                boxShadow: 'inset 0 0 0 1px var(--cth-ink-700)',
+                                border: 'none', fontFamily: 'var(--cth-font-display)',
+                                fontSize: 8, lineHeight: '14px', color: 'var(--cth-ink-900)',
+                                cursor: 'pointer', textTransform: 'uppercase'
+                              }}
+                            >
+                              {t('mcpDefaults.n8nTokenClear')}
+                            </button>
+                          )}
 
                           <label style={labelStyle}>{t('mcpDefaults.agents')}</label>
                           <ConsentField

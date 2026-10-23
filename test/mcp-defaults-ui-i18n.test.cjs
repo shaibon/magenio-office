@@ -11,7 +11,7 @@ const KEYS = [
   'command', 'commandHint', 'commandPlaceholder',
   'args', 'argsHint', 'argsPlaceholder',
   'agents', 'agentsHint', 'agentsPlaceholder',
-  'n8nUrl', 'n8nUrlHint', 'n8nUrlPlaceholder', 'n8nToken', 'n8nTokenHint', 'n8nTokenSet', 'n8nTokenPlaceholder', 'n8nAgentsHint',
+  'n8nUrl', 'n8nUrlHint', 'n8nUrlPlaceholder', 'n8nToken', 'n8nTokenHint', 'n8nTokenSet', 'n8nTokenClear', 'n8nTokenPlaceholder', 'n8nAgentsHint',
   'setupTitle', 'setupIntro', 'setupAfter',
   'install', 'installDest', 'installing', 'installFailed', 'presenceOk',
   'presence.not_configured', 'presence.command_missing',

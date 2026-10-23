@@ -38,7 +38,7 @@ import {
   bridgeOf,
   type AgentProvider
 } from '../shared/agentProvider';
-import { MCP_CATALOG, normalizeN8nUrl, trelloDeniedToolIds } from '../shared/mcpCatalog';
+import { MCP_CATALOG, N8N_BROKER_TOKEN_ENV, BROKER_TOKEN_HEADER, normalizeN8nUrl, trelloDeniedToolIds } from '../shared/mcpCatalog';
 import { selectBroadcastTargets } from '../shared/broadcast';
 import { preferredAgentRole, isPmRole } from '../shared/agentRole';
 import { emptyRoleLedger, ledgerRole, normalizeRoleLedger, rememberLedgerRole, type RoleLedger } from '../shared/roleLedger';
@@ -808,8 +808,9 @@ export class HiveManager {
       magento?: { config?: string; stageConfig?: string; denyRead: string[] };
       /** Read-only vault scope for this agent's project; undefined → not mounted. */
       vault?: VaultMount;
-      /** Decrypted n8n MCP bearer token (main-only; goes into the per-agent MCP config, never the env). */
-      n8nToken?: string;
+      /** Broker route (`<MD_BROKER_URL>/n8n-mcp`) the n8n MCP is mounted on; set only when a token is stored and the broker runs.
+       *  The bearer token itself never reaches the agent: the broker adds it upstream. */
+      n8nBrokerUrl?: string;
       /** App-resources `skills/` source dir (W3). The bundled read-only skills are
        *  copied into the agent's `.claude/skills/` per spawn; undefined or missing
        *  is a no-op (tolerated until Kevin populates the resource dir). */
@@ -1124,7 +1125,7 @@ export class HiveManager {
     if (sock && shim) {
       env.HIVE_SOCK = sock;
       const settingsPath = join(dir, 'settings.json');
-      this.writeJson(settingsPath, this.hookSettings(shim, meta.id, meta.cwd, opts.mcpDefaults, opts.theme, this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs), meta, opts.magento, opts.vault, opts.n8nToken));
+      this.writeJson(settingsPath, this.hookSettings(shim, meta.id, meta.cwd, opts.mcpDefaults, opts.theme, this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs), meta, opts.magento, opts.vault, opts.n8nBrokerUrl));
       args.push('--settings', settingsPath);
       // Claude Code ignores `mcpServers` inside --settings (see hookSettings) —
       // it only reads MCP server definitions from a file passed via
@@ -1133,7 +1134,7 @@ export class HiveManager {
       // just handed to Claude through the flag it actually honors. Omitted
       // entirely when no server is enabled, so a plain worker spawns with no
       // --mcp-config at all.
-      const mcpServers = this.buildDefaultMcpServers(meta.cwd, opts.mcpDefaults, meta.id, meta, opts.magento?.config, opts.vault, opts.magento?.stageConfig, opts.n8nToken);
+      const mcpServers = this.buildDefaultMcpServers(meta.cwd, opts.mcpDefaults, meta.id, meta, opts.magento?.config, opts.vault, opts.magento?.stageConfig, opts.n8nBrokerUrl);
       if (Object.keys(mcpServers).length) {
         const mcpConfigPath = join(dir, 'mcp.json');
         this.writeJson(mcpConfigPath, { mcpServers });
@@ -1467,7 +1468,7 @@ export class HiveManager {
     roleMeta?: Pick<AgentMeta, 'role' | 'capabilities' | 'isGod' | 'provider'>,
     magento?: { config?: string; stageConfig?: string; denyRead: string[] },
     vault?: VaultMount,
-    n8nToken?: string
+    n8nBrokerUrl?: string
   ): unknown {
     // Bundled node, NOT bare `node` — see nodeLauncherPath(). Claude runs each of
     // these through `sh -c` with a stripped PATH, where `node` is often absent.
@@ -1476,7 +1477,7 @@ export class HiveManager {
       ...(matcher ? { matcher } : {}),
       hooks: [{ type: 'command', command: cmd }]
     });
-    const mcpServers = this.buildDefaultMcpServers(cwd, cfg, agentId, roleMeta, magento?.config, vault, magento?.stageConfig, n8nToken);
+    const mcpServers = this.buildDefaultMcpServers(cwd, cfg, agentId, roleMeta, magento?.config, vault, magento?.stageConfig, n8nBrokerUrl);
     // Credential isolation for the Magento MCP: no agent may read any project's
     // magento config or the SSH keys it names (the MCP process itself runs outside
     // the Bash sandbox). Bash children via sandbox.filesystem.denyRead, the Read
@@ -1582,7 +1583,7 @@ export class HiveManager {
     magentoConfig?: string,
     vault?: VaultMount,
     magentoStageConfig?: string,
-    n8nToken?: string
+    n8nBrokerUrl?: string
   ): Record<string, CodexMcpServer> {
     const out: Record<string, CodexMcpServer> = {};
     const presenceDeps = nodePresenceDeps();
@@ -1620,13 +1621,15 @@ export class HiveManager {
       if (e.remote) {
         if (!consent?.agents?.includes(agentId)) continue;
         const url = normalizeN8nUrl(consent.url);
-        const missing = !url ? 'a valid https URL' : !n8nToken ? 'its bearer token' : '';
+        const missing = !url ? 'a valid https URL' : !n8nBrokerUrl ? 'its bearer token (or the local broker)' : '';
         if (missing) {
           console.error(`[hive] MCP '${e.id}' not wired for ${agentId}: no ${missing} is configured`);
           this.noteMcpMountFailure(agentId, `munder-${e.id}`, `no ${missing} is configured (Settings → MCP defaults)`);
           continue;
         }
-        out[`munder-${e.id}`] = { type: 'http', url: url!, headers: { Authorization: `Bearer ${n8nToken}` } };
+        // The agent holds only a per-agent broker capability (env var N8N_BROKER_TOKEN_ENV, referenced
+        // here by name so no secret lands in the config file); the broker adds the n8n bearer.
+        out[`munder-${e.id}`] = { type: 'http', url: n8nBrokerUrl!, headers: { [BROKER_TOKEN_HEADER]: `\${${N8N_BROKER_TOKEN_ENV}}` } };
         continue;
       }
       // Vault: fail closed. An agent whose repo does not map to a vault project
@@ -2706,9 +2709,9 @@ export class HiveManager {
    */
   private codexMcpTables(
     meta: Pick<AgentMeta, 'id' | 'cwd' | 'role' | 'capabilities' | 'isGod' | 'provider'>,
-    opts: { mcpDefaults?: McpDefaultsMap; magento?: { config?: string; stageConfig?: string }; vault?: VaultMount; n8nToken?: string }
+    opts: { mcpDefaults?: McpDefaultsMap; magento?: { config?: string; stageConfig?: string }; vault?: VaultMount; n8nBrokerUrl?: string }
   ): string {
-    const servers = this.buildDefaultMcpServers(meta.cwd, opts.mcpDefaults, meta.id, meta, opts.magento?.config, opts.vault, opts.magento?.stageConfig, opts.n8nToken);
+    const servers = this.buildDefaultMcpServers(meta.cwd, opts.mcpDefaults, meta.id, meta, opts.magento?.config, opts.vault, opts.magento?.stageConfig, opts.n8nBrokerUrl);
     return codexMcpToml(codexMcpServers(servers, { isGod: !!meta.isGod }));
   }
 
@@ -2818,13 +2821,14 @@ export class HiveManager {
         try { dirs.push(realpathSync(cwd)); } catch { /* folder not created yet */ }
         config += projectTrustToml(config, dirs);
       }
-      writeFileSync(join(home, 'config.toml'), config, 'utf8');
+      writeFileSync(join(home, 'config.toml'), config, { encoding: 'utf8', mode: 0o600 });
+      chmodSync(join(home, 'config.toml'), 0o600);
       // Hooks Codex does not trust are skipped in silence — and the session runs in
       // a daemon that never saw our bypass flag. Record trust for OUR hooks in the
       // config itself (see codexHookTrust.ts); say so loudly if that is not possible.
       if (shim) {
         const trust = this.codexHookTrustFor(home, config, hookCommand);
-        if (trust) writeFileSync(join(home, 'config.toml'), config + trust, 'utf8');
+        if (trust) writeFileSync(join(home, 'config.toml'), config + trust, { encoding: 'utf8', mode: 0o600 });
         else this.appendLog({ kind: 'codex-hooks-untrusted', agentId, detail: 'could not record hook trust; the agent may report no status and never drain its inbox' });
       }
 
@@ -3400,7 +3404,8 @@ export class HiveManager {
     try { return JSON.parse(readFileSync(p, 'utf8')) as T; } catch { return fallback; }
   }
   private writeJson(p: string, data: unknown): void {
-    writeFileSync(p, JSON.stringify(data, null, 2), 'utf8');
+    writeFileSync(p, JSON.stringify(data, null, 2), { encoding: 'utf8', mode: 0o600 });
+    chmodSync(p, 0o600); // mode only applies on create; tighten files written by an older build
   }
   private atomicWriteJson(p: string, data: unknown): void {
     const tmp = `${p}.tmp-${shortRand()}`;

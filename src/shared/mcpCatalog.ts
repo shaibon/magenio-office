@@ -50,7 +50,8 @@ export interface McpCatalogEntry {
   /** A remote (HTTP) server rather than a local process: `config.mcpDefaults[id].url`
    *  is the endpoint and a write-only bearer token lives in the encrypted secret
    *  store under `N8N_SECRET_REF`. Mounted natively as
-   *  `type: http` for Claude and `url` + `http_headers` for Codex. `spec` is unused. */
+   *  `type: http` for Claude and `url` + `env_http_headers` for Codex, pointed at the
+   *  loopback broker's `/n8n-mcp` route (which adds the bearer). `spec` is unused. */
   remote?: boolean;
   /** Seed for `config.mcpDefaults[id].enabled`. Always === (tier === 'safe-readonly'). */
   defaultEnabled: boolean;
@@ -88,6 +89,12 @@ export interface McpConsentEntry {
 /** Secret-store handle of the n8n MCP bearer token (same encrypted store as the
  *  integrations' `int:<id>` secrets, but a distinct namespace). */
 export const N8N_SECRET_REF = 'mcp:n8n';
+
+/** Env var carrying an allowed agent's n8n-route broker capability, and the header
+ *  the agent's MCP config sends it in (value `${N8N_BROKER_TOKEN_ENV}`, expanded by
+ *  Claude / codex at connect time). */
+export const N8N_BROKER_TOKEN_ENV = 'MD_N8N_MCP_TOKEN';
+export const BROKER_TOKEN_HEADER = 'X-MD-Broker-Token';
 
 /** Validate an n8n MCP endpoint: https (http only for a loopback dev instance),
  *  no userinfo. Returns the normalized URL, or null. */
