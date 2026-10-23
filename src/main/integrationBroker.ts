@@ -213,7 +213,7 @@ export class IntegrationBroker {
    *  one). Used by other loopback endpoints (Slack alert) to gate god-only actions. */
   hasWritableCapability(provided: string | undefined): boolean {
     const cap = this.resolveCapability(provided);
-    return !!cap && !cap.readOnly;
+    return !!cap && !cap.readOnly && !cap.n8nOnly; // the n8n route token is not a write capability
   }
 
   /** Constant-time-ish lookup of a presented token against live capabilities. */

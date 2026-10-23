@@ -120,3 +120,10 @@ test('P1 regression: an empty token save never deletes the stored token; clearin
   const ui = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/src/components/McpDefaultsSettings.tsx'), 'utf8');
   assert.match(ui, /if \(!token\.trim\(\)\) return;/, 'empty blur is a no-op in the renderer too');
 });
+
+test('an n8n-only capability is not a writable capability (Slack /alert guard)', () => {
+  const { IntegrationBroker } = loadTs('src/main/integrationBroker.ts');
+  const b = new IntegrationBroker({ getRecord: () => undefined, getSecret: () => undefined });
+  assert.equal(b.hasWritableCapability(b.grantN8n('ordinary-agent')), false);
+  assert.equal(b.hasWritableCapability(b.grant('god', [])), true);
+});
