@@ -553,6 +553,7 @@ function teardownPty(id: string): void {
   // 1) Archive the agent — retained + flagged; only live-PTY agents are active.
   const agentId = ptyToAgent.get(id);
   if (agentId) {
+    try { integrationBroker.revokeN8n(agentId); } catch { /* best-effort */ }
     ptyToAgent.delete(id);
     // Drop watchdog state so a dead agent can't get nudged or leak its grace.
     try { workerWake.forget(agentId, id); } catch { /* best-effort */ }
@@ -3283,7 +3284,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   if (opts.hive && hive.enabled()) {
     // True between minting the n8n grant and ensureAgent returning: the server is mounted
     // (--mcp-config comes only from ensureAgent's args) exactly when ensureAgent succeeded.
-    let n8nUnmounted = false;
+    let n8nUnmounted: string | undefined;
     try {
       // Resolve the shared project label BEFORE provisioning so registry.json is
       // born with it (fleet.json copies it every 8s). The registry row is the
@@ -3293,8 +3294,12 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       if (project) hiveMeta.project = project;
       // n8n: mount and capability env are one decision, made BEFORE anything below can
       // throw, so a server written to mcp.json always has its token env.
-      const n8n = n8nGrantFor(project, opts.id);
-      if (n8n) { opts.env = { ...(opts.env ?? {}), ...n8n.env }; n8nUnmounted = true; }
+      // Keyed by the HIVE agent id: the consent allow-list, the mount (hive.ensureAgent) and the
+      // broker's per-request allow-list check all use it, while opts.id is the pty id (they differ
+      // on restore/manual restart).
+      const n8nAgentId = hiveMeta.id;
+      const n8n = n8nGrantFor(project, n8nAgentId);
+      if (n8n) { opts.env = { ...(opts.env ?? {}), ...n8n.env }; n8nUnmounted = n8nAgentId; }
       const inj = await hive.ensureAgent(
         hiveMeta,
         {
@@ -3324,10 +3329,10 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
           autoMode: readConfig().autoMode
         }
       );
-      n8nUnmounted = false;
+      n8nUnmounted = undefined;
       // The capability is only worth holding if THIS provider's spawn really carries the server
       // (OpenCode/pi/etc. have no MCP surface; codex may fail to write its config).
-      if (n8n && !hive.n8nMounted(opts.id)) { integrationBroker.revokeN8n(opts.id); delete opts.env?.[N8N_BROKER_TOKEN_ENV]; }
+      if (n8n && !hive.n8nMounted(n8nAgentId)) { integrationBroker.revokeN8n(n8nAgentId); delete opts.env?.[N8N_BROKER_TOKEN_ENV]; }
       opts.args = [...(opts.args ?? []), ...inj.args];
       if (provider === 'codex') {
         const cs = readConfig().codexSandbox;
@@ -3371,7 +3376,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       // Hive provisioning is best-effort; never block a spawn on it.
       console.error('[hive] ensureAgent failed:', e);
       // No --mcp-config was passed, so no n8n server: don't leave its capability or env behind.
-      if (n8nUnmounted) { integrationBroker.revokeN8n(opts.id); delete opts.env?.[N8N_BROKER_TOKEN_ENV]; }
+      if (n8nUnmounted) { integrationBroker.revokeN8n(n8nUnmounted); delete opts.env?.[N8N_BROKER_TOKEN_ENV]; }
     }
   }
   // Long-run guardrails + tiering (Lane A #6.4/#6.6). All additive to the args

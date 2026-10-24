@@ -536,12 +536,12 @@ test('spawn grant: mount URL and token env come from one decision (restore path)
 
 test('spawn wiring: a failed ensureAgent revokes the unmounted n8n grant and drops its env', () => {
   const src = fs.readFileSync(path.join(__dirname, '../src/main/index.ts'), 'utf8');
-  const grant = src.indexOf('n8nUnmounted = true');
+  const grant = src.indexOf('n8nUnmounted = n8nAgentId');
   const ensure = src.indexOf('await hive.ensureAgent(', grant - 400);
-  const cleared = src.indexOf('n8nUnmounted = false', ensure);
+  const cleared = src.indexOf('n8nUnmounted = undefined', ensure);
   const catchAt = src.indexOf("console.error('[hive] ensureAgent failed:'", cleared);
   assert.ok(grant > 0 && ensure > grant && cleared > ensure && catchAt > cleared, 'grant < ensureAgent < flag cleared < catch');
-  assert.match(src.slice(catchAt, catchAt + 400), /n8nUnmounted[\s\S]*revokeN8n\(opts\.id\)[\s\S]*delete opts\.env\?\.\[N8N_BROKER_TOKEN_ENV\]/);
+  assert.match(src.slice(catchAt, catchAt + 400), /n8nUnmounted[\s\S]*revokeN8n\(n8nUnmounted\)[\s\S]*delete opts\.env\?\.\[N8N_BROKER_TOKEN_ENV\]/);
 });
 
 test('broker: revokeN8n kills only the n8n capability', () => {
@@ -564,4 +564,15 @@ test('ensureAgent: n8nMounted is true only when the provider really carries the 
   assert.equal(h.n8nMounted('dw-claude'), true);
   await run('dw-oc', 'opencode'); // no MCP surface: nothing mounted, so no capability may be kept
   assert.equal(h.n8nMounted('dw-oc'), false);
+});
+
+test('t-236: grant is keyed by the HIVE agent id, not the pty id (restore/restart)', () => {
+  const { n8nSpawnGrant } = loadTs('src/main/n8nGrant.ts');
+  const consent = { enabled: true, projects: { BURD: { url: URL_OK, agents: ['dwight-hive-id'] } } };
+  const deps = { brokerRunning: () => true, brokerUrl: () => 'http://127.0.0.1:1', hasToken: () => true, grant: () => 'cap' };
+  assert.equal(n8nSpawnGrant(deps, consent, 'BURD', 'pty-7f3a'), undefined); // the old call: opts.id
+  assert.ok(n8nSpawnGrant(deps, consent, 'BURD', 'dwight-hive-id'));
+  const src = fs.readFileSync(path.join(__dirname, '../src/main/index.ts'), 'utf8');
+  assert.match(src, /const n8nAgentId = hiveMeta\.id;\s+const n8n = n8nGrantFor\(project, n8nAgentId\)/);
+  assert.match(src, /integrationBroker\.revokeN8n\(agentId\)[^\n]*\n\s+ptyToAgent\.delete\(id\)/); // teardown drops it by hive id
 });
