@@ -117,7 +117,7 @@ export const classifyN8nTokenCheck = (status: number | null, body?: string): N8n
   if (status === 401 || status === 403) return 'invalid';
   if (status === null || status < 200 || status >= 300) return 'unreachable';
   const r = jsonRpcReply(body);
-  if (r?.error === undefined && typeof (r?.result as { protocolVersion?: unknown } | undefined)?.protocolVersion === 'string') return 'valid';
+  if (r?.error === undefined && typeof (r?.result as { protocolVersion?: unknown } | undefined)?.protocolVersion === 'string' && (r!.result as { protocolVersion: string }).protocolVersion !== '') return 'valid';
   return r?.error && (r.error.code === 401 || r.error.code === 403 || /unauthori[sz]ed|forbidden|invalid.*token|authenticat/i.test(String(r.error.message ?? ''))) ? 'invalid' : 'unreachable';
 };
 

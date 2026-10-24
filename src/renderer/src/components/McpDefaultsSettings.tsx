@@ -457,7 +457,7 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
                                 style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 0, background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', fontSize: 11, color: 'var(--cth-ink-500)' }}
                               >
                                 <span aria-hidden style={{ width: 10, display: 'inline-block', transform: n8nOpen[project] ? 'rotate(90deg)' : undefined, color: 'var(--cth-ink-700)' }}>▸</span>
-                                <span style={{ ...labelStyle, flex: 1 }}>{project}{pe.url ? <span style={{ fontWeight: 400, color: 'var(--cth-ink-500)' }} title={pe.url}> · {pe.url.replace(/^https?:\/\//, '')}</span> : null}</span>
+                                <span style={{ ...labelStyle, flex: 1 }}>{project}</span>
                                 <span>{normalizeN8nUrl(pe.url) ? t('mcpDefaults.n8nUrlOk') : pe.url ? t('mcpDefaults.n8nUrlInvalid') : t('mcpDefaults.n8nUrlMissing')}</span>
                                 <span>{tokenBadge(project)}</span>
                                 <span>{t('mcpDefaults.n8nAgentsCount', { n: (pe.agents ?? []).length })}</span>

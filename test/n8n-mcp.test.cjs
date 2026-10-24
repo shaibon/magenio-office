@@ -471,6 +471,8 @@ test('checkN8nToken against a local MCP stand-in: valid / invalid / unreachable 
       case '/sse-hang': res.writeHead(200, { 'content-type': 'text/event-stream' }); res.write(`data: ${ok}\n\n`); return; // never ends
       case '/sse-other-id': res.writeHead(200, { 'content-type': 'text/event-stream' }); res.write(`data: ${JSON.stringify({ jsonrpc: '2.0', id: 999, result: { protocolVersion: 'x' } })}\n\n`); return;
       case '/sse-noise-then-reply': res.writeHead(200, { 'content-type': 'text/event-stream' }); res.write('data: {"jsonrpc":"2.0","method":"notifications/message"}\n\n'); setTimeout(() => res.write(`data: ${ok}\n\n`), 50); return;
+      case '/empty-version': return send(200, 'application/json', JSON.stringify({ jsonrpc: '2.0', id: 1, result: { protocolVersion: '' } }));
+      case '/json-other-id': return send(200, 'application/json', JSON.stringify({ jsonrpc: '2.0', id: 999, result: { protocolVersion: '2025-03-26' } }));
       case '/empty-result': return send(200, 'application/json', JSON.stringify({ jsonrpc: '2.0', id: 1, result: {} }));
       case '/sse-silent': res.writeHead(200, { 'content-type': 'text/event-stream' }); return; // no event, never ends
       case '/401': return send(401, 'text/plain', 'no');
@@ -494,6 +496,8 @@ test('checkN8nToken against a local MCP stand-in: valid / invalid / unreachable 
     assert.equal(await run('/sse-noise-then-reply'), 'valid'); // held open, reply after a notification
     assert.equal(await run('/sse-other-id', 300), 'unreachable'); // unrelated id never counts
     assert.equal(await run('/empty-result'), 'unreachable');
+    assert.equal(await run('/empty-version'), 'unreachable');
+    assert.equal(await run('/json-other-id'), 'unreachable');
     assert.equal(await run('/sse-silent', 300), 'unreachable'); // time limit
     assert.ok(seen.every((a) => a === 'Bearer secret-token'));
   } finally { server.closeAllConnections(); server.close(); }
