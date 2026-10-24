@@ -440,3 +440,10 @@ test('Remove: Clear failure leaves config intact; Clear ok + rejected remove lea
   assert.equal(await removeN8nProjectFlow('B', async () => true, t.write), true);
   assert.deepEqual(Object.keys(t.saved.at(-1).n8n.projects), ['A']);
 });
+
+test('classifyN8nTokenCheck: 2xx valid, 401/403 invalid, network/5xx/other unreachable', () => {
+  const { classifyN8nTokenCheck } = loadTs('src/shared/mcpCatalog.ts');
+  for (const s of [200, 202, 299]) assert.equal(classifyN8nTokenCheck(s), 'valid');
+  for (const s of [401, 403]) assert.equal(classifyN8nTokenCheck(s), 'invalid');
+  for (const s of [null, 301, 404, 429, 500, 503]) assert.equal(classifyN8nTokenCheck(s), 'unreachable');
+});

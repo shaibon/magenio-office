@@ -1424,6 +1424,8 @@ const api = {
     ipcRenderer.invoke('mcp:n8nSetToken', { project, token }),
   mcpN8nClearToken: (project: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('mcp:n8nClearToken', project),
   mcpN8nHasToken: (project: string): Promise<boolean> => ipcRenderer.invoke('mcp:n8nHasToken', project),
+  /** Live check of a project's stored token (token never leaves main). */
+  mcpN8nTestToken: (project: string): Promise<'missing' | 'valid' | 'invalid' | 'unreachable'> => ipcRenderer.invoke('mcp:n8nTestToken', project),
   mcpPresence: (id: string): Promise<{ ok: boolean; reason?: string; detail?: string; installDest?: string }> =>
     ipcRenderer.invoke('mcp:presence', { id }),
   /** Clone + build a user-configured MCP server. The destination is chosen by

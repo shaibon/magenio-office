@@ -127,6 +127,9 @@ function N8nAgentPicker({ project, value, onChange }: { project: string; value: 
   );
 }
 
+/** Fake, non-submittable value shown when a token is stored; leaving it untouched never writes. */
+const N8N_TOKEN_MASK = '•••';
+
 export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
   const { t } = useTranslation();
   const [note, setNote] = useState('');
@@ -209,13 +212,19 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
   }, []);
   const n8nProjectChoices = [...new Set([...jiraKeys, ...liveAgents.map((a) => a.project ?? '')])]
     .filter((k) => isN8nProjectKey(k) && !Object.prototype.hasOwnProperty.call(n8nProjects, k)).sort();
-  // Rows are collapsed by default; only a just-added project opens. Saved flags the last token save.
+  // Rows are collapsed by default; only a just-added project opens.
   const [n8nOpen, setN8nOpen] = useState<Record<string, boolean>>({});
-  const [n8nSaved, setN8nSaved] = useState('');
+  type TokenCheck = 'missing' | 'valid' | 'invalid' | 'unreachable' | 'checking';
+  const [n8nCheck, setN8nCheck] = useState<Record<string, TokenCheck>>({});
+  const checkN8nToken = (project: string) => {
+    setN8nCheck((c) => ({ ...c, [project]: 'checking' }));
+    window.cth.mcpN8nTestToken(project).then(
+      (r) => setN8nCheck((c) => ({ ...c, [project]: r })), () => setN8nCheck((c) => ({ ...c, [project]: 'unreachable' })));
+  };
   useEffect(() => {
     const keys = n8nKeys ? n8nKeys.split('\n') : [];
     void Promise.all(keys.map((k) => window.cth.mcpN8nHasToken(k))).then(
-      (r) => setN8nHasToken(Object.fromEntries(keys.map((k, i) => [k, r[i]]))), () => undefined);
+      (r) => { setN8nHasToken(Object.fromEntries(keys.map((k, i) => [k, r[i]]))); keys.forEach((k, i) => { if (r[i]) checkN8nToken(k); else setN8nCheck((c) => ({ ...c, [k]: 'missing' })); }); }, () => undefined);
   }, [n8nKeys]);
   const fail = () => { setNote(t('mcpDefaults.couldNotSave')); setTimeout(() => setNote(''), 2000); };
   // Rejects on a failed config write (unlike patchConsent, which reports and swallows).
@@ -229,8 +238,7 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
       const res = await window.cth.mcpN8nSetToken(project, token);
       if (!res.ok) throw new Error(res.error);
       setN8nHasToken((h) => ({ ...h, [project]: true }));
-      setN8nSaved(project);
-      setTimeout(() => setN8nSaved((p) => (p === project ? '' : p)), 2500);
+      checkN8nToken(project);
     } catch { fail(); }
   };
   /** True only when main verified the secret is gone; the UI flips to "no token" only then. */
@@ -238,6 +246,7 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
     try {
       if (!(await window.cth.mcpN8nClearToken(project)).ok) throw new Error('not cleared');
       setN8nHasToken((h) => ({ ...h, [project]: false }));
+      setN8nCheck((c) => ({ ...c, [project]: 'missing' }));
       return true;
     } catch { fail(); return false; }
   };
@@ -247,6 +256,10 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
       if (!mcpDefaultsRef.current?.n8n?.projects?.[project]) return;
       fail();
     }
+  };
+  const tokenBadge = (project: string): string => {
+    const c = n8nCheck[project] ?? (n8nHasToken[project] ? 'checking' : 'missing');
+    return t({ missing: 'mcpDefaults.n8nTokenBadgeMissing', valid: 'mcpDefaults.n8nTokenValid', invalid: 'mcpDefaults.n8nTokenInvalid', unreachable: 'mcpDefaults.n8nTokenUnreachable', checking: 'mcpDefaults.n8nTokenChecking' }[c]);
   };
   const addN8nProject = async () => {
     const project = n8nNewProject.trim();
@@ -442,7 +455,7 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
                                 <span aria-hidden style={{ width: 10, display: 'inline-block', transform: n8nOpen[project] ? 'rotate(90deg)' : undefined, color: 'var(--cth-ink-700)' }}>▸</span>
                                 <span style={{ ...labelStyle, flex: 1 }}>{project}</span>
                                 <span>{pe.url ? t('mcpDefaults.n8nUrlOk') : t('mcpDefaults.n8nUrlMissing')}</span>
-                                <span>{n8nHasToken[project] ? t('mcpDefaults.n8nTokenBadgeSet') : t('mcpDefaults.n8nTokenBadgeMissing')}</span>
+                                <span>{tokenBadge(project)}</span>
                                 <span>{t('mcpDefaults.n8nAgentsCount', { n: (pe.agents ?? []).length })}</span>
                               </button>
                               {n8nOpen[project] && (<>
@@ -459,14 +472,21 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
                               <input
                                 type="password"
                                 autoComplete="off"
-                                defaultValue=""
-                                onBlur={(e) => { const v = e.target.value; e.target.value = ''; void saveN8nToken(project, v); }}
-                                placeholder={n8nHasToken[project] ? t('mcpDefaults.n8nTokenPlaceholderSet') : t('mcpDefaults.n8nTokenPlaceholder')}
+                                key={`${project}:${!!n8nHasToken[project]}`}
+                                defaultValue={n8nHasToken[project] ? N8N_TOKEN_MASK : ''}
+                                onFocus={(e) => { if (e.target.value === N8N_TOKEN_MASK) e.target.select(); }}
+                                onBlur={(e) => { const v = e.target.value; if (v === N8N_TOKEN_MASK) return; e.target.value = n8nHasToken[project] ? N8N_TOKEN_MASK : ''; void saveN8nToken(project, v); }}
+                                placeholder={t('mcpDefaults.n8nTokenPlaceholder')}
                                 style={{ width: '100%', padding: '6px 8px', background: 'var(--cth-paper-100)', border: 'none', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)', fontSize: 12, color: 'var(--cth-ink-900)' }}
                               />
                               <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>
-                                {n8nSaved === project ? t('mcpDefaults.n8nTokenJustSaved') : n8nHasToken[project] ? t('mcpDefaults.n8nTokenSet') : t('mcpDefaults.n8nTokenHint')}
+                                {n8nHasToken[project] ? t('mcpDefaults.n8nTokenSet') : t('mcpDefaults.n8nTokenHint')}
                               </span>
+                              {n8nHasToken[project] && (
+                                <button type="button" onClick={() => { checkN8nToken(project); }} disabled={n8nCheck[project] === 'checking'} style={{ alignSelf: 'flex-start', padding: '3px 10px 1px', background: 'var(--cth-paper-100)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-700)', border: 'none', fontFamily: 'var(--cth-font-display)', fontSize: 8, lineHeight: '14px', color: 'var(--cth-ink-900)', cursor: 'pointer', textTransform: 'uppercase' }}>
+                                  {t('mcpDefaults.n8nTokenVerify')}
+                                </button>
+                              )}
                               {n8nHasToken[project] && (
                                 <button type="button" onClick={() => { void clearN8nToken(project); }} style={{ alignSelf: 'flex-start', padding: '3px 10px 1px', background: 'var(--cth-paper-100)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-700)', border: 'none', fontFamily: 'var(--cth-font-display)', fontSize: 8, lineHeight: '14px', color: 'var(--cth-ink-900)', cursor: 'pointer', textTransform: 'uppercase' }}>
                                   {t('mcpDefaults.n8nTokenClear')}

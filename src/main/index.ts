@@ -39,7 +39,7 @@ import { CircuitBreaker, type BreakerInput } from './breaker';
 import { CumulativeSampleGate, type UsageProvider } from './usage';
 import { MemoryManager } from './memory';
 import { KnowledgeManager } from './knowledge';
-import { n8nSecretRef, N8N_LEGACY_SECRET_REF, N8N_BROKER_TOKEN_ENV, isN8nProjectKey, resolveN8nProject, runN8nMigration } from '../shared/mcpCatalog';
+import { n8nSecretRef, N8N_LEGACY_SECRET_REF, N8N_BROKER_TOKEN_ENV, isN8nProjectKey, resolveN8nProject, runN8nMigration, classifyN8nTokenCheck, normalizeN8nUrl } from '../shared/mcpCatalog';
 import { vaultScopesFor, type VaultMount } from '../shared/vaultMount';
 import { resolveProjectForCwd, runVaultSync, type VaultSyncResult } from './knowledgeVaultSync';
 import { MemoryReflector, type ReflectSettings } from './reflect';
@@ -3785,6 +3785,27 @@ ipcMain.handle('mcp:n8nClearToken', (_evt, project: unknown) => {
   try { return { ok: integrations.deleteSecret(n8nSecretRef(project)) }; } catch { return { ok: false }; }
 });
 ipcMain.handle('mcp:n8nHasToken', (_evt, project: unknown) => isN8nProjectKey(project) && integrations.hasSecret(n8nSecretRef(project)));
+// Live token check: an MCP `initialize` POST with the stored bearer. The token is read and
+// used only here; the renderer gets just 'missing' | 'valid' | 'invalid' | 'unreachable'.
+ipcMain.handle('mcp:n8nTestToken', async (_evt, project: unknown): Promise<'missing' | 'valid' | 'invalid' | 'unreachable'> => {
+  if (!isN8nProjectKey(project)) return 'missing';
+  const token = integrations.getSecret(n8nSecretRef(project));
+  if (!token) return 'missing';
+  const entry = readConfig().mcpDefaults?.n8n?.projects;
+  const url = normalizeN8nUrl(Object.prototype.hasOwnProperty.call(entry ?? {}, project) ? entry![project].url : undefined);
+  if (!url) return 'unreachable';
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      redirect: 'manual',
+      signal: AbortSignal.timeout(5000),
+      headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', authorization: `Bearer ${token}` },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'munder-difflin', version: app.getVersion() } } })
+    });
+    void res.body?.cancel().catch(() => undefined);
+    return classifyN8nTokenCheck(res.status);
+  } catch { return classifyN8nTokenCheck(null); }
+});
 
 /** Startup migration: the single global n8n endpoint becomes one entry per project
  *  (agents placed by their registry project; unplaced agents are dropped), and the

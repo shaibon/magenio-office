@@ -99,6 +99,13 @@ export interface N8nProjectEntry {
 /** Secret-store handle of a project's n8n MCP bearer token (same encrypted store as
  *  the integrations' `int:<id>` secrets, but a distinct namespace). */
 export const n8nSecretRef = (project: string): string => `mcp:n8n:${project}`;
+/** Outcome of a live token check against the project's n8n MCP endpoint. */
+export type N8nTokenCheck = 'valid' | 'invalid' | 'unreachable';
+/** HTTP status of the MCP initialize probe (null = network error / timeout) -> outcome:
+ *  2xx valid, 401/403 invalid, anything else (incl. 5xx, redirects, other 4xx) unreachable. */
+export const classifyN8nTokenCheck = (status: number | null): N8nTokenCheck =>
+  status !== null && status >= 200 && status < 300 ? 'valid' : status === 401 || status === 403 ? 'invalid' : 'unreachable';
+
 /** Pre-per-project global handle; only read by the migration. */
 export const N8N_LEGACY_SECRET_REF = 'mcp:n8n';
 
