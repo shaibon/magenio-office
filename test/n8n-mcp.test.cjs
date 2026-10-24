@@ -533,3 +533,22 @@ test('spawn grant: mount URL and token env come from one decision (restore path)
     assert.equal(build(cfg(c), a, 'claude', r?.url ?? '', p)['munder-n8n'], undefined);
   }
 });
+
+test('spawn wiring: a failed ensureAgent revokes the unmounted n8n grant and drops its env', () => {
+  const src = fs.readFileSync(path.join(__dirname, '../src/main/index.ts'), 'utf8');
+  const grant = src.indexOf('n8nUnmounted = true');
+  const ensure = src.indexOf('await hive.ensureAgent(', grant - 400);
+  const cleared = src.indexOf('n8nUnmounted = false', ensure);
+  const catchAt = src.indexOf("console.error('[hive] ensureAgent failed:'", cleared);
+  assert.ok(grant > 0 && ensure > grant && cleared > ensure && catchAt > cleared, 'grant < ensureAgent < flag cleared < catch');
+  assert.match(src.slice(catchAt, catchAt + 400), /n8nUnmounted[\s\S]*revokeN8n\(opts\.id\)[\s\S]*delete opts\.env\?\.\[N8N_BROKER_TOKEN_ENV\]/);
+});
+
+test('broker: revokeN8n kills only the n8n capability', () => {
+  const { IntegrationBroker } = loadTs('src/main/integrationBroker.ts');
+  const b = Object.create(IntegrationBroker.prototype);
+  b.byToken = new Map(); b.byWorker = new Map();
+  const gen = b.grant('a', []); const n = b.grantN8n('a', 'BURD');
+  b.revokeN8n('a');
+  assert.ok(!b.byToken.has(n) && b.byToken.has(gen));
+});

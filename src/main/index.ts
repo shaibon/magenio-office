@@ -41,7 +41,7 @@ import { CumulativeSampleGate, type UsageProvider } from './usage';
 import { MemoryManager } from './memory';
 import { KnowledgeManager } from './knowledge';
 import { n8nSpawnGrant } from './n8nGrant';
-import { n8nSecretRef, N8N_LEGACY_SECRET_REF, isN8nProjectKey, resolveN8nProject, runN8nMigration, normalizeN8nUrl } from '../shared/mcpCatalog';
+import { n8nSecretRef, N8N_LEGACY_SECRET_REF, N8N_BROKER_TOKEN_ENV, isN8nProjectKey, resolveN8nProject, runN8nMigration, normalizeN8nUrl } from '../shared/mcpCatalog';
 import { vaultScopesFor, type VaultMount } from '../shared/vaultMount';
 import { resolveProjectForCwd, runVaultSync, type VaultSyncResult } from './knowledgeVaultSync';
 import { MemoryReflector, type ReflectSettings } from './reflect';
@@ -3281,6 +3281,9 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // result so the renderer types it through the per-pty write-chain. (ondev-b)
   let seedPrompt: string | undefined;
   if (opts.hive && hive.enabled()) {
+    // True between minting the n8n grant and ensureAgent returning: the server is mounted
+    // (--mcp-config comes only from ensureAgent's args) exactly when ensureAgent succeeded.
+    let n8nUnmounted = false;
     try {
       // Resolve the shared project label BEFORE provisioning so registry.json is
       // born with it (fleet.json copies it every 8s). The registry row is the
@@ -3291,7 +3294,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       // n8n: mount and capability env are one decision, made BEFORE anything below can
       // throw, so a server written to mcp.json always has its token env.
       const n8n = n8nGrantFor(project, opts.id);
-      if (n8n) opts.env = { ...(opts.env ?? {}), ...n8n.env };
+      if (n8n) { opts.env = { ...(opts.env ?? {}), ...n8n.env }; n8nUnmounted = true; }
       const inj = await hive.ensureAgent(
         hiveMeta,
         {
@@ -3321,6 +3324,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
           autoMode: readConfig().autoMode
         }
       );
+      n8nUnmounted = false;
       opts.args = [...(opts.args ?? []), ...inj.args];
       if (provider === 'codex') {
         const cs = readConfig().codexSandbox;
@@ -3363,6 +3367,8 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     } catch (e) {
       // Hive provisioning is best-effort; never block a spawn on it.
       console.error('[hive] ensureAgent failed:', e);
+      // No --mcp-config was passed, so no n8n server: don't leave its capability or env behind.
+      if (n8nUnmounted) { integrationBroker.revokeN8n(opts.id); delete opts.env?.[N8N_BROKER_TOKEN_ENV]; }
     }
   }
   // Long-run guardrails + tiering (Lane A #6.4/#6.6). All additive to the args

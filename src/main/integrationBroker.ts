@@ -200,6 +200,9 @@ export class IntegrationBroker {
     return token;
   }
 
+  /** Drop only the n8n capability (a failed spawn that never mounted the server). */
+  revokeN8n(agentId: string): void { this.revokeKey(`n8n:${agentId}`); }
+
   /** Revoke a worker's capability (called on teardown). Idempotent. */
   revoke(workerId: string): void {
     this.revokeKey(workerId);
