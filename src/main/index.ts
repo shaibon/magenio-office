@@ -40,7 +40,8 @@ import { CircuitBreaker, type BreakerInput } from './breaker';
 import { CumulativeSampleGate, type UsageProvider } from './usage';
 import { MemoryManager } from './memory';
 import { KnowledgeManager } from './knowledge';
-import { n8nSecretRef, N8N_LEGACY_SECRET_REF, N8N_BROKER_TOKEN_ENV, isN8nProjectKey, resolveN8nProject, runN8nMigration, normalizeN8nUrl } from '../shared/mcpCatalog';
+import { n8nSpawnGrant } from './n8nGrant';
+import { n8nSecretRef, N8N_LEGACY_SECRET_REF, isN8nProjectKey, resolveN8nProject, runN8nMigration, normalizeN8nUrl } from '../shared/mcpCatalog';
 import { vaultScopesFor, type VaultMount } from '../shared/vaultMount';
 import { resolveProjectForCwd, runVaultSync, type VaultSyncResult } from './knowledgeVaultSync';
 import { MemoryReflector, type ReflectSettings } from './reflect';
@@ -440,10 +441,13 @@ interface WorkerRec {
  *  force-removed) when it holds unintegrated work — god is the sole integrator. */
 const liveWorkers = new Map<string, WorkerRec>();
 
-/** The broker route the n8n MCP is mounted on for `project`, or undefined while the
- *  broker is down or that project has no stored token (the mount then fails closed, loudly). */
-const n8nBrokerRoute = (project: string | undefined): string | undefined =>
-  isN8nProjectKey(project) && integrationBroker.running() && integrations.hasSecret(n8nSecretRef(project)) ? `${integrationBroker.url()}/n8n-mcp` : undefined;
+/** n8n MCP mount + capability env for this spawn, decided once (see n8nGrant.ts). */
+const n8nGrantFor = (project: string | undefined, agentId: string) => n8nSpawnGrant({
+  brokerRunning: () => integrationBroker.running(),
+  brokerUrl: () => integrationBroker.url(),
+  hasToken: (p) => integrations.hasSecret(n8nSecretRef(p)),
+  grant: (id, p) => integrationBroker.grantN8n(id, p)
+}, readConfig().mcpDefaults?.n8n, project, agentId);
 
 /** The loopback secret broker (Phase 2). Workers reach registered integrations through
  *  it without ever seeing a credential. getRecord/getSecret are injected so the broker
@@ -3284,6 +3288,10 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       const hiveMeta = { ...opts.hive, cwd: opts.cwd, provider };
       const project = await resolveAgentProject(hiveMeta, readConfig());
       if (project) hiveMeta.project = project;
+      // n8n: mount and capability env are one decision, made BEFORE anything below can
+      // throw, so a server written to mcp.json always has its token env.
+      const n8n = n8nGrantFor(project, opts.id);
+      if (n8n) opts.env = { ...(opts.env ?? {}), ...n8n.env };
       const inj = await hive.ensureAgent(
         hiveMeta,
         {
@@ -3304,7 +3312,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
             denyRead: magentoDeniedReadPaths(readConfig().jiraProjects)
           },
           vault: (await vaultMountForCwd(opts.cwd, opts.hive?.id)) ?? undefined,
-          n8nBrokerUrl: n8nBrokerRoute(project),
+          n8nBrokerUrl: n8n?.url,
           skillsDir: skillsResourceDir(),
           // The shared palace is mutated by the agent's own `mempalace` calls, so
           // the OS sandbox must let it through (empty when memory is off).
@@ -3347,12 +3355,6 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       // is read from the app-owned role ledger (HiveManager.isPrivilegedPm), NOT
       // from registry.json: that file sits in a directory agents can write, and an
       // agent promoting itself to PM there must grant it nothing.
-      // n8n MCP: an allow-listed agent gets a route-scoped broker capability (it can
-      // reach /n8n-mcp and nothing else); the n8n bearer itself stays in main.
-      // The capability is bound to the agent's project: it can only ever reach that project's n8n.
-      if (project && n8nBrokerRoute(project) && resolveN8nProject(readConfig().mcpDefaults?.n8n, project, opts.id)) {
-        opts.env = { ...(opts.env ?? {}), [N8N_BROKER_TOKEN_ENV]: integrationBroker.grantN8n(opts.id, project) };
-      }
       const isPm = hive.isPrivilegedPm(opts.id);
       if ((opts.hive?.isGod || isPm) && integrationBroker.running()) {
         const token = integrationBroker.grant(opts.id, integrations.enabledIds(), { readOnly: !opts.hive?.isGod });

@@ -503,3 +503,33 @@ test('checkN8nToken against a local MCP stand-in: valid / invalid / unreachable 
   } finally { server.closeAllConnections(); server.close(); }
   assert.equal(await checkN8nToken(base + '/json', 't', '0.0.0'), 'unreachable'); // refused
 });
+
+test('spawn grant: mount URL and token env come from one decision (restore path)', () => {
+  const { n8nSpawnGrant } = loadTs('src/main/n8nGrant.ts');
+  const consent = { enabled: true, projects: { BURD: { url: URL_OK, agents: ['dwight'] } } };
+  let granted = 0;
+  const deps = (over = {}) => ({
+    brokerRunning: () => true, brokerUrl: () => 'http://127.0.0.1:4555', hasToken: () => true,
+    grant: () => `cap-${++granted}`, ...over
+  });
+  // Eligible: url + env minted together, and buildDefaultMcpServers mounts exactly then.
+  const g = n8nSpawnGrant(deps(), consent, 'BURD', 'dwight');
+  assert.equal(g.url, BROKER_URL);
+  assert.equal(g.env.MD_N8N_MCP_TOKEN, 'cap-1');
+  assert.ok(build(cfg(consent), 'dwight', 'claude', g.url)['munder-n8n']);
+  // Every ineligible case yields NO url, so nothing is mounted and nothing is granted.
+  for (const [c, p, a, d] of [
+    [consent, 'BURD', 'other', {}],
+    [consent, 'VAI', 'dwight', {}],
+    [consent, undefined, 'dwight', {}],
+    [consent, 'BURD', 'dwight', { brokerRunning: () => false }],
+    [consent, 'BURD', 'dwight', { hasToken: () => false }],
+    [{ ...consent, enabled: false }, 'BURD', 'dwight', {}]
+  ]) {
+    granted = 0;
+    const r = n8nSpawnGrant(deps(d), c, p, a);
+    assert.equal(r, undefined);
+    assert.equal(granted, 0);
+    assert.equal(build(cfg(c), a, 'claude', r?.url ?? '', p)['munder-n8n'], undefined);
+  }
+});
