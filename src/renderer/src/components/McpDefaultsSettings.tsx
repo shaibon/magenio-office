@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
+import { useStore } from '@/store/store';
+import { jiraProjectsClient } from '@/jiraProjects/jiraProjectsClient';
 import { useTranslation } from 'react-i18next';
 import type { HarnessConfig } from '@/store/config';
 import { MCP_CATALOG, createConsentWriter, n8nProjectOps, removeN8nProjectFlow, isN8nProjectKey, type McpTier, type N8nProjectEntry } from '@shared/mcpCatalog';
@@ -103,6 +105,28 @@ function ConsentField({ value, onCommit, multiline, rows, placeholder, style }: 
   );
 }
 
+/** Multiselect of the ACTIVE agents of one project (agent.project === project). Saved ids that
+ *  are no longer active stay listed so they can still be unticked. Disabled until a project is picked. */
+function N8nAgentPicker({ project, value, onChange }: { project: string; value: string[]; onChange: (ids: string[]) => void }) {
+  const { t } = useTranslation();
+  const live = useStore((s) => s.agents);
+  const options = project ? live.filter((a) => a.project === project).map((a) => ({ id: a.id, label: `${a.name} · ${a.id}` })) : [];
+  const known = new Set(options.map((o) => o.id));
+  const rows = [...options, ...value.filter((id) => !known.has(id)).map((id) => ({ id, label: id }))];
+  return (
+    <div role="group" aria-label={t('mcpDefaults.agents')} style={{ display: 'flex', flexDirection: 'column', gap: 2, padding: '4px 8px', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)', opacity: project ? 1 : 0.5 }}>
+      {rows.length === 0 && <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{project ? t('mcpDefaults.n8nAgentsNone') : t('mcpDefaults.n8nAgentsPickProjectFirst')}</span>}
+      {rows.map((r) => (
+        <label key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--cth-ink-900)' }}>
+          <input type="checkbox" disabled={!project} checked={value.includes(r.id)}
+            onChange={(e) => onChange(e.target.checked ? [...value, r.id] : value.filter((x) => x !== r.id))} />
+          {r.label}
+        </label>
+      ))}
+    </div>
+  );
+}
+
 export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
   const { t } = useTranslation();
   const [note, setNote] = useState('');
@@ -174,6 +198,17 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
   const n8nKeys = Object.keys(n8nProjects).sort().join('\n');
   const [n8nHasToken, setN8nHasToken] = useState<Record<string, boolean>>({});
   const [n8nNewProject, setN8nNewProject] = useState('');
+  const [n8nNewAgents, setN8nNewAgents] = useState<string[]>([]);
+  // Existing projects: Jira binding keys + the project tag of the agents in the roster.
+  const liveAgents = useStore((s) => s.agents);
+  const [jiraKeys, setJiraKeys] = useState<string[]>([]);
+  useEffect(() => {
+    let alive = true;
+    jiraProjectsClient.list().then((l) => { if (alive) setJiraKeys(l.map((b) => b.key)); }).catch(() => undefined);
+    return () => { alive = false; };
+  }, []);
+  const n8nProjectChoices = [...new Set([...jiraKeys, ...liveAgents.map((a) => a.project ?? '')])]
+    .filter((k) => isN8nProjectKey(k) && !Object.prototype.hasOwnProperty.call(n8nProjects, k)).sort();
   // Rows are collapsed by default; only a just-added project opens. Saved flags the last token save.
   const [n8nOpen, setN8nOpen] = useState<Record<string, boolean>>({});
   const [n8nSaved, setN8nSaved] = useState('');
@@ -216,9 +251,11 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
   const addN8nProject = async () => {
     const project = n8nNewProject.trim();
     if (!isN8nProjectKey(project) || Object.prototype.hasOwnProperty.call(n8nProjects, project)) { fail(); return; }
+    const agents = n8nNewAgents;
     setN8nNewProject('');
+    setN8nNewAgents([]);
     setN8nOpen((o) => ({ ...o, [project]: true }));
-    await patchN8nProject(project, { url: '', agents: [] });
+    await patchN8nProject(project, { url: '', agents });
   };
 
   const onInstall = async (id: string) => {
@@ -437,12 +474,7 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
                               )}
 
                               <label style={labelStyle}>{t('mcpDefaults.agents')}</label>
-                              <ConsentField
-                                value={(pe.agents ?? []).join(', ')}
-                                onCommit={(v) => { void patchN8nProject(project, { agents: v.split(',').map((a) => a.trim()).filter(Boolean) }); }}
-                                placeholder={t('mcpDefaults.agentsPlaceholder')}
-                                style={{ width: '100%', padding: '6px 8px', background: 'var(--cth-paper-100)', border: 'none', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)', fontSize: 12, color: 'var(--cth-ink-900)' }}
-                              />
+                              <N8nAgentPicker project={project} value={pe.agents ?? []} onChange={(v) => { void patchN8nProject(project, { agents: v }); }} />
                               <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{t('mcpDefaults.n8nAgentsHint')}</span>
                               <button type="button" onClick={() => { void removeN8nProject(project); }} style={{ alignSelf: 'flex-start', padding: '3px 10px 1px', background: 'var(--cth-paper-100)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-700)', border: 'none', fontFamily: 'var(--cth-font-display)', fontSize: 8, lineHeight: '14px', color: 'var(--cth-ink-900)', cursor: 'pointer', textTransform: 'uppercase' }}>
                                 {t('mcpDefaults.n8nProjectRemove')}
@@ -450,15 +482,18 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
                               </>)}
                             </div>
                           ))}
-                          <div style={{ display: 'flex', gap: 6 }}>
-                            <input
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                            <select
                               value={n8nNewProject}
-                              onChange={(e) => setN8nNewProject(e.target.value)}
-                              onKeyDown={(e) => { if (e.key === 'Enter') void addN8nProject(); }}
-                              placeholder={t('mcpDefaults.n8nProjectPlaceholder')}
+                              aria-label={t('mcpDefaults.n8nProject')}
+                              onChange={(e) => { setN8nNewProject(e.target.value); setN8nNewAgents([]); }}
                               style={{ width: '100%', padding: '6px 8px', background: 'var(--cth-paper-100)', border: 'none', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)', fontSize: 12, color: 'var(--cth-ink-900)' }}
-                            />
-                            <button type="button" onClick={() => { void addN8nProject(); }} style={{ alignSelf: 'flex-start', padding: '3px 10px 1px', background: 'var(--cth-paper-100)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-700)', border: 'none', fontFamily: 'var(--cth-font-display)', fontSize: 8, lineHeight: '14px', color: 'var(--cth-ink-900)', cursor: 'pointer', textTransform: 'uppercase' }}>
+                            >
+                              <option value="">{t('mcpDefaults.n8nProjectPick')}</option>
+                              {n8nProjectChoices.map((k) => <option key={k} value={k}>{k}</option>)}
+                            </select>
+                            <N8nAgentPicker project={n8nNewProject} value={n8nNewAgents} onChange={setN8nNewAgents} />
+                            <button type="button" disabled={!n8nNewProject} onClick={() => { void addN8nProject(); }} style={{ alignSelf: 'flex-start', padding: '3px 10px 1px', background: 'var(--cth-paper-100)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-700)', border: 'none', fontFamily: 'var(--cth-font-display)', fontSize: 8, lineHeight: '14px', color: 'var(--cth-ink-900)', cursor: 'pointer', textTransform: 'uppercase' }}>
                               {t('mcpDefaults.n8nProjectAdd')}
                             </button>
                           </div>
