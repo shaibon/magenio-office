@@ -452,3 +452,44 @@ test('classifyN8nTokenCheck: valid only for a 2xx carrying an initialize result;
   for (const s of [401, 403]) assert.equal(classifyN8nTokenCheck(s), 'invalid');
   for (const s of [null, 301, 404, 429, 500, 503]) assert.equal(classifyN8nTokenCheck(s, ok), 'unreachable');
 });
+
+test('checkN8nToken against a local MCP stand-in: valid / invalid / unreachable per scenario', async () => {
+  const http = require('node:http');
+  const { checkN8nToken } = loadTs('src/main/n8nTokenCheck.ts');
+  const ok = JSON.stringify({ jsonrpc: '2.0', id: 1, result: { protocolVersion: '2025-03-26', serverInfo: { name: 'n8n' } } });
+  const seen = [];
+  const server = http.createServer((req, res) => {
+    seen.push(req.headers.authorization);
+    req.resume();
+    const send = (code, type, body, extra = {}) => { res.writeHead(code, { 'content-type': type, ...extra }); res.end(body); };
+    switch (req.url) {
+      case '/html': return send(200, 'text/html', '<html>login</html>');
+      case '/rpc-error': return send(200, 'application/json', JSON.stringify({ jsonrpc: '2.0', id: 1, error: { code: -32603, message: 'boom' } }));
+      case '/rpc-auth': return send(200, 'application/json', JSON.stringify({ jsonrpc: '2.0', id: 1, error: { code: -32001, message: 'Unauthorized' } }));
+      case '/json': return send(200, 'application/json', ok);
+      case '/sse': return send(200, 'text/event-stream', `event: message\ndata: ${ok}\n\n`);
+      case '/sse-hang': res.writeHead(200, { 'content-type': 'text/event-stream' }); res.write(`data: ${ok}\n\n`); return; // never ends
+      case '/sse-silent': res.writeHead(200, { 'content-type': 'text/event-stream' }); return; // no event, never ends
+      case '/401': return send(401, 'text/plain', 'no');
+      case '/500': return send(500, 'text/plain', 'x');
+      case '/302': return send(302, 'text/plain', '', { location: '/json' });
+    }
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const run = (p, ms) => checkN8nToken(base + p, 'secret-token', '0.0.0', ms);
+    assert.equal(await run('/json'), 'valid');
+    assert.equal(await run('/sse'), 'valid');
+    assert.equal(await run('/sse-hang'), 'valid'); // first event is enough
+    assert.equal(await run('/html'), 'unreachable');
+    assert.equal(await run('/rpc-error'), 'unreachable');
+    assert.equal(await run('/rpc-auth'), 'invalid');
+    assert.equal(await run('/401'), 'invalid');
+    assert.equal(await run('/500'), 'unreachable');
+    assert.equal(await run('/302'), 'unreachable');
+    assert.equal(await run('/sse-silent', 300), 'unreachable'); // time limit
+    assert.ok(seen.every((a) => a === 'Bearer secret-token'));
+  } finally { server.closeAllConnections(); server.close(); }
+  assert.equal(await checkN8nToken(base + '/json', 't', '0.0.0'), 'unreachable'); // refused
+});

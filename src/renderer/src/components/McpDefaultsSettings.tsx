@@ -458,7 +458,7 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
                               >
                                 <span aria-hidden style={{ width: 10, display: 'inline-block', transform: n8nOpen[project] ? 'rotate(90deg)' : undefined, color: 'var(--cth-ink-700)' }}>▸</span>
                                 <span style={{ ...labelStyle, flex: 1 }}>{project}</span>
-                                <span>{normalizeN8nUrl(pe.url) ? t('mcpDefaults.n8nUrlOk') : t('mcpDefaults.n8nUrlMissing')}</span>
+                                <span>{normalizeN8nUrl(pe.url) ? t('mcpDefaults.n8nUrlOk') : pe.url ? t('mcpDefaults.n8nUrlInvalid') : t('mcpDefaults.n8nUrlMissing')}</span>
                                 <span>{tokenBadge(project)}</span>
                                 <span>{t('mcpDefaults.n8nAgentsCount', { n: (pe.agents ?? []).length })}</span>
                               </button>
@@ -466,7 +466,7 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
                               <label style={labelStyle}>{t('mcpDefaults.n8nUrl')}</label>
                               <ConsentField
                                 value={pe.url ?? ''}
-                                onCommit={(v) => { void patchN8nProject(project, { url: v.trim() }).then(() => { if (n8nHasToken[project]) checkN8nToken(project); }); }}
+                                onCommit={(v) => { if (n8nHasToken[project]) setCheck(project, 'checking'); void patchN8nProject(project, { url: v.trim() }).then(() => { if (n8nHasToken[project]) checkN8nToken(project); }); }}
                                 placeholder={t('mcpDefaults.n8nUrlPlaceholder')}
                                 style={{ width: '100%', padding: '6px 8px', background: 'var(--cth-paper-100)', border: 'none', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)', fontSize: 12, color: 'var(--cth-ink-900)' }}
                               />

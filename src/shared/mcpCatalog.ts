@@ -101,18 +101,25 @@ export interface N8nProjectEntry {
 export const n8nSecretRef = (project: string): string => `mcp:n8n:${project}`;
 /** Outcome of a live token check against the project's n8n MCP endpoint. */
 export type N8nTokenCheck = 'valid' | 'invalid' | 'unreachable';
-/** True when `body` (JSON or an SSE stream) carries a successful JSON-RPC `initialize` reply. */
-const isMcpInitializeOk = (body: string | undefined): boolean => {
-  const frames = (body ?? '').trim().startsWith('{') ? [body!] : (body ?? '').split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5));
-  return frames.some((f) => {
-    try { const j = JSON.parse(f); return j?.jsonrpc === '2.0' && j.error === undefined && typeof j.result === 'object' && j.result !== null; } catch { return false; }
-  });
+/** The JSON-RPC 2.0 reply carried by `body` (plain JSON, or the first parsable SSE `data:` frame). */
+const jsonRpcReply = (body: string | undefined): { result?: unknown; error?: { code?: unknown; message?: unknown } } | undefined => {
+  const t = (body ?? '').trim();
+  for (const f of t.startsWith('{') ? [t] : t.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5))) {
+    try { const j = JSON.parse(f); if (j?.jsonrpc === '2.0') return j; } catch { /* next frame */ }
+  }
+  return undefined;
 };
 /** HTTP status + body of the MCP initialize probe (status null = network error / timeout) ->
- *  outcome: 2xx WITH a successful initialize reply valid, 401/403 invalid, anything else
- *  (incl. a 2xx that is not MCP, 5xx, redirects, other 4xx) unreachable. */
-export const classifyN8nTokenCheck = (status: number | null, body?: string): N8nTokenCheck =>
-  status !== null && status >= 200 && status < 300 ? (isMcpInitializeOk(body) ? 'valid' : 'unreachable') : status === 401 || status === 403 ? 'invalid' : 'unreachable';
+ *  outcome: 2xx WITH a successful initialize reply valid; 401/403, or a 2xx JSON-RPC error that
+ *  reads as an auth failure, invalid; anything else (a 2xx that is not MCP, other JSON-RPC
+ *  errors, 5xx, redirects, other 4xx) unreachable. */
+export const classifyN8nTokenCheck = (status: number | null, body?: string): N8nTokenCheck => {
+  if (status === 401 || status === 403) return 'invalid';
+  if (status === null || status < 200 || status >= 300) return 'unreachable';
+  const r = jsonRpcReply(body);
+  if (r?.error === undefined && typeof r?.result === 'object' && r.result !== null) return 'valid';
+  return r?.error && (r.error.code === 401 || r.error.code === 403 || /unauthori[sz]ed|forbidden|invalid.*token|authenticat/i.test(String(r.error.message ?? ''))) ? 'invalid' : 'unreachable';
+};
 
 /** Pre-per-project global handle; only read by the migration. */
 export const N8N_LEGACY_SECRET_REF = 'mcp:n8n';

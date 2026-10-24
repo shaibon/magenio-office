@@ -1,4 +1,5 @@
 import { magentoConfigForProject, magentoStageConfigForProject, magentoDeniedReadPaths } from './magentoMcp';
+import { checkN8nToken } from './n8nTokenCheck';
 import { shouldRetryWithoutResume } from '../shared/resumeFailure';
 import { alertChannelFor, isSlackChannelId } from '../shared/jiraProjects';
 import { withCodexSandboxMode, withCodexSandboxCommand } from '../shared/codexSandbox';
@@ -39,7 +40,7 @@ import { CircuitBreaker, type BreakerInput } from './breaker';
 import { CumulativeSampleGate, type UsageProvider } from './usage';
 import { MemoryManager } from './memory';
 import { KnowledgeManager } from './knowledge';
-import { n8nSecretRef, N8N_LEGACY_SECRET_REF, N8N_BROKER_TOKEN_ENV, isN8nProjectKey, resolveN8nProject, runN8nMigration, classifyN8nTokenCheck, normalizeN8nUrl } from '../shared/mcpCatalog';
+import { n8nSecretRef, N8N_LEGACY_SECRET_REF, N8N_BROKER_TOKEN_ENV, isN8nProjectKey, resolveN8nProject, runN8nMigration, normalizeN8nUrl } from '../shared/mcpCatalog';
 import { vaultScopesFor, type VaultMount } from '../shared/vaultMount';
 import { resolveProjectForCwd, runVaultSync, type VaultSyncResult } from './knowledgeVaultSync';
 import { MemoryReflector, type ReflectSettings } from './reflect';
@@ -3794,18 +3795,7 @@ ipcMain.handle('mcp:n8nTestToken', async (_evt, project: unknown): Promise<'miss
   const entry = readConfig().mcpDefaults?.n8n?.projects;
   const url = normalizeN8nUrl(Object.prototype.hasOwnProperty.call(entry ?? {}, project) ? entry![project].url : undefined);
   if (!url) return 'unreachable';
-  try {
-    const res = await fetch(url, {
-      method: 'POST',
-      redirect: 'manual',
-      signal: AbortSignal.timeout(5000),
-      headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', authorization: `Bearer ${token}` },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'munder-difflin', version: app.getVersion() } } })
-    });
-    // Only a 2xx needs its body (the reply must be a real initialize result); the timeout signal covers the read.
-    const body = res.status >= 200 && res.status < 300 ? (await res.text()).slice(0, 65536) : (void res.body?.cancel().catch(() => undefined), undefined);
-    return classifyN8nTokenCheck(res.status, body);
-  } catch { return classifyN8nTokenCheck(null); }
+  return checkN8nToken(url, token, app.getVersion());
 });
 
 /** Startup migration: the single global n8n endpoint becomes one entry per project
