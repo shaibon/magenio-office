@@ -102,10 +102,10 @@ export const n8nSecretRef = (project: string): string => `mcp:n8n:${project}`;
 /** Outcome of a live token check against the project's n8n MCP endpoint. */
 export type N8nTokenCheck = 'valid' | 'invalid' | 'unreachable';
 /** The JSON-RPC 2.0 reply carried by `body` (plain JSON, or the first parsable SSE `data:` frame). */
-const jsonRpcReply = (body: string | undefined): { result?: unknown; error?: { code?: unknown; message?: unknown } } | undefined => {
+export const jsonRpcReply = (body: string | undefined): { result?: unknown; error?: { code?: unknown; message?: unknown } } | undefined => {
   const t = (body ?? '').trim();
   for (const f of t.startsWith('{') ? [t] : t.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5))) {
-    try { const j = JSON.parse(f); if (j?.jsonrpc === '2.0') return j; } catch { /* next frame */ }
+    try { const j = JSON.parse(f); if (j?.jsonrpc === '2.0' && j.id === 1) return j; } catch { /* next frame */ }
   }
   return undefined;
 };
@@ -117,7 +117,7 @@ export const classifyN8nTokenCheck = (status: number | null, body?: string): N8n
   if (status === 401 || status === 403) return 'invalid';
   if (status === null || status < 200 || status >= 300) return 'unreachable';
   const r = jsonRpcReply(body);
-  if (r?.error === undefined && typeof r?.result === 'object' && r.result !== null) return 'valid';
+  if (r?.error === undefined && typeof (r?.result as { protocolVersion?: unknown } | undefined)?.protocolVersion === 'string') return 'valid';
   return r?.error && (r.error.code === 401 || r.error.code === 403 || /unauthori[sz]ed|forbidden|invalid.*token|authenticat/i.test(String(r.error.message ?? ''))) ? 'invalid' : 'unreachable';
 };
 

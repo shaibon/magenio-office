@@ -1,8 +1,8 @@
-import { classifyN8nTokenCheck, type N8nTokenCheck } from '../shared/mcpCatalog';
+import { classifyN8nTokenCheck, jsonRpcReply, type N8nTokenCheck } from '../shared/mcpCatalog';
 
 const MAX_BODY = 65536;
 
-/** Body text of a JSON reply, or the first complete SSE `data:` event, capped in size; the
+/** Body text of a JSON reply, or the first SSE event that is the reply to our request, capped in size; the
  *  caller's abort signal bounds the time. Any other content type yields no body. */
 async function readReply(res: Response): Promise<string | undefined> {
   const type = res.headers.get('content-type') ?? '';
@@ -15,7 +15,7 @@ async function readReply(res: Response): Promise<string | undefined> {
       const { done, value } = await reader.read();
       if (done) break;
       text += dec.decode(value, { stream: true });
-      if (text.length >= MAX_BODY || (/event-stream/i.test(type) && /^data:.*\n/m.test(text))) break;
+      if (text.length >= MAX_BODY || (/event-stream/i.test(type) && jsonRpcReply(text.slice(0, text.lastIndexOf('\n') + 1)))) break;
     }
   } finally { void reader.cancel().catch(() => undefined); }
   return text.slice(0, MAX_BODY);
