@@ -3,7 +3,7 @@ import { useStore } from '@/store/store';
 import { jiraProjectsClient } from '@/jiraProjects/jiraProjectsClient';
 import { useTranslation } from 'react-i18next';
 import type { HarnessConfig } from '@/store/config';
-import { MCP_CATALOG, createConsentWriter, n8nProjectOps, removeN8nProjectFlow, isN8nProjectKey, type McpTier, type N8nProjectEntry } from '@shared/mcpCatalog';
+import { MCP_CATALOG, createConsentWriter, n8nProjectOps, removeN8nProjectFlow, normalizeN8nUrl, isN8nProjectKey, type McpTier, type N8nProjectEntry } from '@shared/mcpCatalog';
 import { canInstallMcp } from './mcpInstallRule';
 
 export interface McpDefaultsSettingsProps {
@@ -216,15 +216,19 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
   const [n8nOpen, setN8nOpen] = useState<Record<string, boolean>>({});
   type TokenCheck = 'missing' | 'valid' | 'invalid' | 'unreachable' | 'checking';
   const [n8nCheck, setN8nCheck] = useState<Record<string, TokenCheck>>({});
+  // Latest check per project wins: a late answer (or one overtaken by Clear / a URL edit) is dropped.
+  const checkSeq = useRef<Record<string, number>>({});
+  const setCheck = (project: string, v: TokenCheck) => { checkSeq.current[project] = (checkSeq.current[project] ?? 0) + 1; setN8nCheck((c) => ({ ...c, [project]: v })); };
   const checkN8nToken = (project: string) => {
-    setN8nCheck((c) => ({ ...c, [project]: 'checking' }));
-    window.cth.mcpN8nTestToken(project).then(
-      (r) => setN8nCheck((c) => ({ ...c, [project]: r })), () => setN8nCheck((c) => ({ ...c, [project]: 'unreachable' })));
+    setCheck(project, 'checking');
+    const mine = checkSeq.current[project];
+    const land = (v: TokenCheck) => { if (checkSeq.current[project] === mine) setN8nCheck((c) => ({ ...c, [project]: v })); };
+    window.cth.mcpN8nTestToken(project).then(land, () => land('unreachable'));
   };
   useEffect(() => {
     const keys = n8nKeys ? n8nKeys.split('\n') : [];
     void Promise.all(keys.map((k) => window.cth.mcpN8nHasToken(k))).then(
-      (r) => { setN8nHasToken(Object.fromEntries(keys.map((k, i) => [k, r[i]]))); keys.forEach((k, i) => { if (r[i]) checkN8nToken(k); else setN8nCheck((c) => ({ ...c, [k]: 'missing' })); }); }, () => undefined);
+      (r) => { setN8nHasToken(Object.fromEntries(keys.map((k, i) => [k, r[i]]))); keys.forEach((k, i) => { if (r[i]) checkN8nToken(k); else setCheck(k, 'missing'); }); }, () => undefined);
   }, [n8nKeys]);
   const fail = () => { setNote(t('mcpDefaults.couldNotSave')); setTimeout(() => setNote(''), 2000); };
   // Rejects on a failed config write (unlike patchConsent, which reports and swallows).
@@ -246,7 +250,7 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
     try {
       if (!(await window.cth.mcpN8nClearToken(project)).ok) throw new Error('not cleared');
       setN8nHasToken((h) => ({ ...h, [project]: false }));
-      setN8nCheck((c) => ({ ...c, [project]: 'missing' }));
+      setCheck(project, 'missing');
       return true;
     } catch { fail(); return false; }
   };
@@ -454,7 +458,7 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
                               >
                                 <span aria-hidden style={{ width: 10, display: 'inline-block', transform: n8nOpen[project] ? 'rotate(90deg)' : undefined, color: 'var(--cth-ink-700)' }}>▸</span>
                                 <span style={{ ...labelStyle, flex: 1 }}>{project}</span>
-                                <span>{pe.url ? t('mcpDefaults.n8nUrlOk') : t('mcpDefaults.n8nUrlMissing')}</span>
+                                <span>{normalizeN8nUrl(pe.url) ? t('mcpDefaults.n8nUrlOk') : t('mcpDefaults.n8nUrlMissing')}</span>
                                 <span>{tokenBadge(project)}</span>
                                 <span>{t('mcpDefaults.n8nAgentsCount', { n: (pe.agents ?? []).length })}</span>
                               </button>
@@ -462,7 +466,7 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
                               <label style={labelStyle}>{t('mcpDefaults.n8nUrl')}</label>
                               <ConsentField
                                 value={pe.url ?? ''}
-                                onCommit={(v) => { void patchN8nProject(project, { url: v.trim() }); }}
+                                onCommit={(v) => { void patchN8nProject(project, { url: v.trim() }).then(() => { if (n8nHasToken[project]) checkN8nToken(project); }); }}
                                 placeholder={t('mcpDefaults.n8nUrlPlaceholder')}
                                 style={{ width: '100%', padding: '6px 8px', background: 'var(--cth-paper-100)', border: 'none', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)', fontSize: 12, color: 'var(--cth-ink-900)' }}
                               />

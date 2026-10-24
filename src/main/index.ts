@@ -3802,8 +3802,9 @@ ipcMain.handle('mcp:n8nTestToken', async (_evt, project: unknown): Promise<'miss
       headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', authorization: `Bearer ${token}` },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'munder-difflin', version: app.getVersion() } } })
     });
-    void res.body?.cancel().catch(() => undefined);
-    return classifyN8nTokenCheck(res.status);
+    // Only a 2xx needs its body (the reply must be a real initialize result); the timeout signal covers the read.
+    const body = res.status >= 200 && res.status < 300 ? (await res.text()).slice(0, 65536) : (void res.body?.cancel().catch(() => undefined), undefined);
+    return classifyN8nTokenCheck(res.status, body);
   } catch { return classifyN8nTokenCheck(null); }
 });
 

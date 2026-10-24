@@ -101,10 +101,18 @@ export interface N8nProjectEntry {
 export const n8nSecretRef = (project: string): string => `mcp:n8n:${project}`;
 /** Outcome of a live token check against the project's n8n MCP endpoint. */
 export type N8nTokenCheck = 'valid' | 'invalid' | 'unreachable';
-/** HTTP status of the MCP initialize probe (null = network error / timeout) -> outcome:
- *  2xx valid, 401/403 invalid, anything else (incl. 5xx, redirects, other 4xx) unreachable. */
-export const classifyN8nTokenCheck = (status: number | null): N8nTokenCheck =>
-  status !== null && status >= 200 && status < 300 ? 'valid' : status === 401 || status === 403 ? 'invalid' : 'unreachable';
+/** True when `body` (JSON or an SSE stream) carries a successful JSON-RPC `initialize` reply. */
+const isMcpInitializeOk = (body: string | undefined): boolean => {
+  const frames = (body ?? '').trim().startsWith('{') ? [body!] : (body ?? '').split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5));
+  return frames.some((f) => {
+    try { const j = JSON.parse(f); return j?.jsonrpc === '2.0' && j.error === undefined && typeof j.result === 'object' && j.result !== null; } catch { return false; }
+  });
+};
+/** HTTP status + body of the MCP initialize probe (status null = network error / timeout) ->
+ *  outcome: 2xx WITH a successful initialize reply valid, 401/403 invalid, anything else
+ *  (incl. a 2xx that is not MCP, 5xx, redirects, other 4xx) unreachable. */
+export const classifyN8nTokenCheck = (status: number | null, body?: string): N8nTokenCheck =>
+  status !== null && status >= 200 && status < 300 ? (isMcpInitializeOk(body) ? 'valid' : 'unreachable') : status === 401 || status === 403 ? 'invalid' : 'unreachable';
 
 /** Pre-per-project global handle; only read by the migration. */
 export const N8N_LEGACY_SECRET_REF = 'mcp:n8n';
