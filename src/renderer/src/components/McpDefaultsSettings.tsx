@@ -174,6 +174,9 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
   const n8nKeys = Object.keys(n8nProjects).sort().join('\n');
   const [n8nHasToken, setN8nHasToken] = useState<Record<string, boolean>>({});
   const [n8nNewProject, setN8nNewProject] = useState('');
+  // Rows are collapsed by default; only a just-added project opens. Saved flags the last token save.
+  const [n8nOpen, setN8nOpen] = useState<Record<string, boolean>>({});
+  const [n8nSaved, setN8nSaved] = useState('');
   useEffect(() => {
     const keys = n8nKeys ? n8nKeys.split('\n') : [];
     void Promise.all(keys.map((k) => window.cth.mcpN8nHasToken(k))).then(
@@ -191,6 +194,8 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
       const res = await window.cth.mcpN8nSetToken(project, token);
       if (!res.ok) throw new Error(res.error);
       setN8nHasToken((h) => ({ ...h, [project]: true }));
+      setN8nSaved(project);
+      setTimeout(() => setN8nSaved((p) => (p === project ? '' : p)), 2500);
     } catch { fail(); }
   };
   /** True only when main verified the secret is gone; the UI flips to "no token" only then. */
@@ -212,6 +217,7 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
     const project = n8nNewProject.trim();
     if (!isN8nProjectKey(project) || Object.prototype.hasOwnProperty.call(n8nProjects, project)) { fail(); return; }
     setN8nNewProject('');
+    setN8nOpen((o) => ({ ...o, [project]: true }));
     await patchN8nProject(project, { url: '', agents: [] });
   };
 
@@ -390,7 +396,19 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
                           <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{t('mcpDefaults.n8nProjectsHint')}</span>
                           {Object.entries(n8nProjects).sort(([a], [b]) => a.localeCompare(b)).map(([project, pe]) => (
                             <div key={project} style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: 8, boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)' }}>
-                              <label style={labelStyle}>{t('mcpDefaults.n8nProject')}: {project}</label>
+                              <button
+                                type="button"
+                                aria-expanded={!!n8nOpen[project]}
+                                onClick={() => setN8nOpen((o) => ({ ...o, [project]: !o[project] }))}
+                                style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 0, background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', fontSize: 11, color: 'var(--cth-ink-500)' }}
+                              >
+                                <span aria-hidden style={{ width: 10, display: 'inline-block', transform: n8nOpen[project] ? 'rotate(90deg)' : undefined, color: 'var(--cth-ink-700)' }}>▸</span>
+                                <span style={{ ...labelStyle, flex: 1 }}>{project}</span>
+                                <span>{pe.url ? t('mcpDefaults.n8nUrlOk') : t('mcpDefaults.n8nUrlMissing')}</span>
+                                <span>{n8nHasToken[project] ? t('mcpDefaults.n8nTokenBadgeSet') : t('mcpDefaults.n8nTokenBadgeMissing')}</span>
+                                <span>{t('mcpDefaults.n8nAgentsCount', { n: (pe.agents ?? []).length })}</span>
+                              </button>
+                              {n8nOpen[project] && (<>
                               <label style={labelStyle}>{t('mcpDefaults.n8nUrl')}</label>
                               <ConsentField
                                 value={pe.url ?? ''}
@@ -406,11 +424,11 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
                                 autoComplete="off"
                                 defaultValue=""
                                 onBlur={(e) => { const v = e.target.value; e.target.value = ''; void saveN8nToken(project, v); }}
-                                placeholder={t('mcpDefaults.n8nTokenPlaceholder')}
+                                placeholder={n8nHasToken[project] ? t('mcpDefaults.n8nTokenPlaceholderSet') : t('mcpDefaults.n8nTokenPlaceholder')}
                                 style={{ width: '100%', padding: '6px 8px', background: 'var(--cth-paper-100)', border: 'none', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)', fontSize: 12, color: 'var(--cth-ink-900)' }}
                               />
                               <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>
-                                {n8nHasToken[project] ? t('mcpDefaults.n8nTokenSet') : t('mcpDefaults.n8nTokenHint')}
+                                {n8nSaved === project ? t('mcpDefaults.n8nTokenJustSaved') : n8nHasToken[project] ? t('mcpDefaults.n8nTokenSet') : t('mcpDefaults.n8nTokenHint')}
                               </span>
                               {n8nHasToken[project] && (
                                 <button type="button" onClick={() => { void clearN8nToken(project); }} style={{ alignSelf: 'flex-start', padding: '3px 10px 1px', background: 'var(--cth-paper-100)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-700)', border: 'none', fontFamily: 'var(--cth-font-display)', fontSize: 8, lineHeight: '14px', color: 'var(--cth-ink-900)', cursor: 'pointer', textTransform: 'uppercase' }}>
@@ -429,6 +447,7 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
                               <button type="button" onClick={() => { void removeN8nProject(project); }} style={{ alignSelf: 'flex-start', padding: '3px 10px 1px', background: 'var(--cth-paper-100)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-700)', border: 'none', fontFamily: 'var(--cth-font-display)', fontSize: 8, lineHeight: '14px', color: 'var(--cth-ink-900)', cursor: 'pointer', textTransform: 'uppercase' }}>
                                 {t('mcpDefaults.n8nProjectRemove')}
                               </button>
+                              </>)}
                             </div>
                           ))}
                           <div style={{ display: 'flex', gap: 6 }}>
