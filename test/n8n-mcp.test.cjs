@@ -552,3 +552,16 @@ test('broker: revokeN8n kills only the n8n capability', () => {
   b.revokeN8n('a');
   assert.ok(!b.byToken.has(n) && b.byToken.has(gen));
 });
+
+test('ensureAgent: n8nMounted is true only when the provider really carries the server', async () => {
+  const consent = { enabled: true, projects: { BURD: { url: URL_OK, agents: ['dw-claude', 'dw-oc'] } } };
+  const h = new HiveManager(() => userData);
+  const run = (id, provider) => h.ensureAgent(
+    { id, name: id, provider, cwd: userData, project: 'BURD' },
+    { mcpDefaults: cfg(consent), n8nBrokerUrl: BROKER_URL }
+  );
+  await run('dw-claude', 'claude');
+  assert.equal(h.n8nMounted('dw-claude'), true);
+  await run('dw-oc', 'opencode'); // no MCP surface: nothing mounted, so no capability may be kept
+  assert.equal(h.n8nMounted('dw-oc'), false);
+});

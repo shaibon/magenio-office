@@ -453,6 +453,10 @@ export class HiveManager {
    *  PreToolUse hook (hooks.ts) consults it; that is what makes the tool block
    *  fail-closed instead of a list of names someone has to keep up to date. */
   private trelloWriteBlocked = new Set<string>();
+  /** Agents whose latest ensureAgent really delivered the n8n server (mcp.json written /
+   *  codex config.toml carries it). The caller mints the capability env only on this. */
+  private n8nMountedIds = new Set<string>();
+  n8nMounted(agentId: string): boolean { return this.n8nMountedIds.has(agentId); }
 
   /** agentId → the MCP servers we refused to mount because their own
    *  command line does not come up, with the reason. Kept per agent so the spawn
@@ -839,6 +843,7 @@ export class HiveManager {
     this.ensureHive();
     // These records describe one spawn; a later attempt must get a fresh verdict.
     this.mcpMountFailures.delete(meta.id);
+    this.n8nMountedIds.delete(meta.id);
     for (const key of this.mcpFailuresAnnounced) {
       if (key.startsWith(`${meta.id}\u0000`)) this.mcpFailuresAnnounced.delete(key);
     }
@@ -995,6 +1000,7 @@ export class HiveManager {
             else if (desc.shim === 'deepcode') this.installDeepcodeSettings(meta, opts.autoMode ?? true, opts.model);
             else if (desc.shim === 'codex') {
               env.CODEX_HOME = this.installCodexHooks(dir, meta.id, this.codexMcpTables(meta, opts), meta.cwd);
+              try { if (readFileSync(join(env.CODEX_HOME, 'config.toml'), 'utf8').includes('[mcp_servers.munder-n8n')) this.n8nMountedIds.add(meta.id); } catch { /* not delivered */ }
               // Codex refuses to run hooks from a config dir without persisted
               // "hook trust" (normally an interactive gate). Our hooks.json is
               // hive-authored inside an isolated CODEX_HOME, so we bypass that gate
@@ -1139,6 +1145,7 @@ export class HiveManager {
         const mcpConfigPath = join(dir, 'mcp.json');
         this.writeJson(mcpConfigPath, { mcpServers });
         args.push('--mcp-config', mcpConfigPath);
+        if (mcpServers['munder-n8n']) this.n8nMountedIds.add(meta.id);
       }
     }
     // A server we refused to mount is a degraded spawn, and the app already

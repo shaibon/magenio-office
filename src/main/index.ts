@@ -3325,6 +3325,9 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
         }
       );
       n8nUnmounted = false;
+      // The capability is only worth holding if THIS provider's spawn really carries the server
+      // (OpenCode/pi/etc. have no MCP surface; codex may fail to write its config).
+      if (n8n && !hive.n8nMounted(opts.id)) { integrationBroker.revokeN8n(opts.id); delete opts.env?.[N8N_BROKER_TOKEN_ENV]; }
       opts.args = [...(opts.args ?? []), ...inj.args];
       if (provider === 'codex') {
         const cs = readConfig().codexSandbox;
