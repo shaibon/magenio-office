@@ -318,4 +318,28 @@ test('t-258: a codex session owned by another agent home is never borrowed (wiri
   assert.match(src, /if \(!ownerHome \|\| ownerHome !== myHome\) \{/);
   assert.ok(!src.includes('CODEX_HOME: ownerHome'), 'CODEX_HOME is never switched to another agent home');
   assert.ok(!src.includes('stripSecretMcpTables'));
+  const use = src.indexOf('CODEX_HOME: ownerHome');
+  const strip = src.indexOf('stripSecretMcpTables(before)', use);
+  const fallback = src.indexOf('CODEX_HOME: myHome', strip);
+  assert.ok(use > 0 && strip > use && fallback > strip, 'sanitize right after borrowing; failure falls back to own home');
+// ─── t-257: GSC MCP — per-project, read-only, key never readable by agents ──────
+
+const { gscConfigForProject } = loadTs('src/main/magentoMcp.ts');
+const gscBuild = (cfg, key) => hive['buildDefaultMcpServers'](cwd, cfg, 'a1', undefined, undefined, undefined, undefined, undefined, key);
+
+test('gsc: an agent gets its own project key path in env; no key / no consent / disabled binding = not mounted', () => {
+  const { command, args } = installedMagento();
+  const cfg = { gsc: { enabled: true, command, args } };
+  const bs = [{ ...BINDINGS[0], gscMcpConfig: ' /cfg/burd-gsc.json ' }, BINDINGS[1], { ...BINDINGS[2], enabled: false, gscMcpConfig: '/cfg/risto-gsc.json' }];
+  const burd = gscBuild(cfg, gscConfigForProject('BURD', bs))['munder-gsc'];
+  assert.deepEqual(burd.args, args);
+  assert.deepEqual(burd.env, { GSC_CREDENTIALS_PATH: '/cfg/burd-gsc.json', GSC_SKIP_OAUTH: 'true' });
+  for (const p of ['BRAVI', 'RISTO', 'NOPE', undefined]) assert.equal(gscBuild(cfg, gscConfigForProject(p, bs))['munder-gsc'], undefined);
+  assert.equal(gscBuild({}, '/cfg/burd-gsc.json')['munder-gsc'], undefined, 'default off');
+});
+
+test('gsc: the key file and the config dir are in the agent read deny list', () => {
+  const deny = magentoDeniedReadPaths([{ ...BINDINGS[0], gscMcpConfig: '/elsewhere/burd-gsc.json' }]);
+  assert.ok(deny.includes('/elsewhere/burd-gsc.json'));
+  assert.ok(deny.includes(MAGENTO_CONFIG_DIR), '~/.config/magenio (incl. *-gsc.json) is denied wholesale');
 });

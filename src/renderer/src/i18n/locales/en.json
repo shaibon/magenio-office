@@ -1584,6 +1584,8 @@
     "magentoConfigHint": "Absolute path to this project's magento-mcp JSON. Only this project's agents get the production Magento server; empty = not mounted. Never readable by agents.",
     "magentoStageConfig": "Magento MCP stage config (optional)",
     "magentoStageConfigHint": "Absolute path to this project's STAGE magento-mcp JSON. Adds a second server, munder-magento-stage, next to the production one; empty = none. Never readable by agents.",
+    "gscConfig": "GSC MCP key (optional)",
+    "gscConfigHint": "Absolute path to this project's Search Console service-account JSON. Only this project's agents get the read-only munder-gsc server; empty = not mounted. Never readable by agents.",
     "slackAlertChannel": "Slack alert channel",
     "slackAlertChannelHint": "Channel id where god may open a NEW alarm message for this project (md-slack-reply --alert). Empty = none. All other Slack posts stay thread-only.",
     "slackChannels": "Slack channels",

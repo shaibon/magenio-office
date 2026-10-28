@@ -38,6 +38,10 @@ export interface JiraProjectBinding {
    *  agents also get a second server `munder-magento-stage` (same launcher). Needs
    *  `magentoMcpConfig`; absent = no stage server. */
   magentoMcpStageConfig?: string;
+  /** Absolute path to this project's Google Search Console service-account key (JSON).
+   *  Absent = the read-only GSC MCP (`munder-gsc`) is NOT mounted for this project's
+   *  agents (fail closed). The file is never readable by agents. */
+  gscMcpConfig?: string;
   /** Slack channel ids (e.g. "C03G9FGU2RE") whose messages belong to this project.
    *  The Slack trigger resolves channel -> project from here and tells god which
    *  project a request is about. Absent/empty = no channel; a channel maps to at

@@ -22,6 +22,7 @@ export interface Draft {
   magentoMcpConfig: string;
   /** Same for the stage store; '' = none. */
   magentoMcpStageConfig: string;
+  gscMcpConfig: string;
   /** Slack channel ids as typed (comma/space/newline separated); '' = none. */
   slackChannels: string;
   /** Slack alarm channel id for root posts by god; '' = none. */
@@ -43,6 +44,7 @@ export function draftFromBinding(b: JiraProjectBinding): Draft {
     isNew: false, key: b.key, repo: b.repo, baseBranch: b.baseBranch,
     magentoMcpConfig: b.magentoMcpConfig ?? '',
     magentoMcpStageConfig: b.magentoMcpStageConfig ?? '',
+    gscMcpConfig: b.gscMcpConfig ?? '',
     slackAlertChannel: b.slackAlertChannel ?? '',
     slackChannels: (b.slackChannels ?? []).join(', '),
     glitchtip: (b.glitchtip?.projects ?? []).join(', '),
@@ -54,7 +56,7 @@ export function draftFromBinding(b: JiraProjectBinding): Draft {
 }
 
 export function emptyDraft(): Draft {
-  return { isNew: true, key: '', repo: '', baseBranch: '', magentoMcpConfig: '', magentoMcpStageConfig: '', slackAlertChannel: '', slackChannels: '', glitchtip: '', glitchtipEnabled: true, agents: [], enabled: true, trelloUrl: '' };
+  return { isNew: true, key: '', repo: '', baseBranch: '', magentoMcpConfig: '', magentoMcpStageConfig: '', gscMcpConfig: '', slackAlertChannel: '', slackChannels: '', glitchtip: '', glitchtipEnabled: true, agents: [], enabled: true, trelloUrl: '' };
 }
 
 /**
@@ -86,6 +88,7 @@ export function bindingFromDraft(d: Draft): JiraProjectBinding {
     ...(d.magentoMcpConfig?.trim() ? { magentoMcpConfig: d.magentoMcpConfig.trim() } : {}),
     ...(d.slackAlertChannel?.trim() ? { slackAlertChannel: d.slackAlertChannel.trim() } : {}),
     ...(d.magentoMcpStageConfig?.trim() ? { magentoMcpStageConfig: d.magentoMcpStageConfig.trim() } : {}),
+    ...(d.gscMcpConfig?.trim() ? { gscMcpConfig: d.gscMcpConfig.trim() } : {}),
     ...(d.trello
       ? {
         trello: {

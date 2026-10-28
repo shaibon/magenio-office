@@ -107,7 +107,7 @@ export async function validateJiraProjectBinding(
   const glitchError = validateGlitchtip(binding.glitchtip, otherBindings);
   if (glitchError) return { ok: false, error: glitchError };
 
-  for (const [label, value] of [['Magento MCP config', binding.magentoMcpConfig], ['Magento MCP stage config', binding.magentoMcpStageConfig]] as const) {
+  for (const [label, value] of [['Magento MCP config', binding.magentoMcpConfig], ['Magento MCP stage config', binding.magentoMcpStageConfig], ['GSC MCP key', binding.gscMcpConfig]] as const) {
     const path = value?.trim();
     if (!path) continue;
     if (!isAbsolute(path)) return { ok: false, error: `${label} must be an absolute path: ${path}` };

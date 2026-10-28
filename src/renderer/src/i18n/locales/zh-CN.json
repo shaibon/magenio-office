@@ -1584,6 +1584,8 @@
     "magentoConfigHint": "此项目的 magento-mcp JSON 的绝对路径。只有该项目的代理能使用生产 Magento 服务器；留空 = 不挂载。代理无法读取该文件。",
     "magentoStageConfig": "Magento MCP 预发布配置（可选）",
     "magentoStageConfigHint": "此项目预发布（stage）环境 magento-mcp JSON 的绝对路径。在生产服务器之外再挂载第二个服务器 munder-magento-stage；留空 = 不挂载。代理无法读取该文件。",
+    "gscConfig": "GSC MCP 密钥（可选）",
+    "gscConfigHint": "此项目的 Search Console 服务账号 JSON 的绝对路径。只有该项目的代理能使用只读的 munder-gsc 服务器；留空 = 不挂载。代理无法读取该文件。",
     "slackAlertChannel": "Slack 告警频道",
     "slackAlertChannelHint": "god 可为此项目发起新告警消息的频道 ID（md-slack-reply --alert）。留空 = 无。其他 Slack 消息仍仅限话题内回复。",
     "slackChannels": "Slack 频道",

@@ -452,6 +452,17 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
     userConfigured: true
   },
   {
+    id: 'gsc',
+    label: 'Google Search Console (read-only)',
+    description: 'Read-only Search Console analytics (sites, search analytics, URL inspection, sitemaps) through the vendored mcp-gsc server with the webmasters.readonly scope. Scoped per project: each agent sees only its own project\'s property, set as the "GSC MCP key" (service-account JSON) on the Jira project binding. You supply the launcher: command = uv, args = run --directory <magenio-mcp>/gsc-mcp gsc_server.py.',
+    // Placeholder: userConfigured entries take command/args from the consent map; the
+    // per-agent GSC_CREDENTIALS_PATH is added at mount time.
+    spec: { command: '', args: [] },
+    tier: 'secret',
+    defaultEnabled: false,
+    userConfigured: true
+  },
+  {
     id: 'n8n',
     label: 'n8n (workflows)',
     description: 'Lets the listed agents search, inspect and run workflows on your n8n instance through its built-in MCP server (https://<domain>/mcp-server/http). Write-capable: only the agents named in the allow-list receive it. The bearer token is stored encrypted and is never shown to agents.',

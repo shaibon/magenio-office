@@ -26,6 +26,16 @@ export function magentoConfigForProject(
   return b?.magentoMcpConfig?.trim() || undefined;
 }
 
+/** The GSC service-account key path of the project this agent is bound to (fail closed). */
+export function gscConfigForProject(
+  project: string | undefined,
+  bindings: JiraProjectBinding[] | undefined
+): string | undefined {
+  if (!project) return undefined;
+  const b = (bindings ?? []).find((x) => x.enabled && x.key.toUpperCase() === project.toUpperCase());
+  return b?.gscMcpConfig?.trim() || undefined;
+}
+
 /** Optional stage config of the same project (second server `munder-magento-stage`). */
 export function magentoStageConfigForProject(
   project: string | undefined,
@@ -48,7 +58,7 @@ export function magentoDeniedReadPaths(
   // Configs not (yet) bound to a project still name keys worth denying.
   let unbound: string[] = [];
   try { unbound = readdirSync(MAGENTO_CONFIG_DIR).filter((f) => f.endsWith('.json')).map((f) => join(MAGENTO_CONFIG_DIR, f)); } catch { /* no dir */ }
-  const cfgs = [...(bindings ?? []).flatMap((b) => [b.magentoMcpConfig?.trim(), b.magentoMcpStageConfig?.trim()]), ...unbound];
+  const cfgs = [...(bindings ?? []).flatMap((b) => [b.magentoMcpConfig?.trim(), b.magentoMcpStageConfig?.trim(), b.gscMcpConfig?.trim()]), ...unbound];
   for (const cfg of cfgs) {
     if (!cfg) continue;
     out.add(cfg);

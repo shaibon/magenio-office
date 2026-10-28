@@ -1,4 +1,4 @@
-import { magentoConfigForProject, magentoStageConfigForProject, magentoDeniedReadPaths } from './magentoMcp';
+import { gscConfigForProject, magentoConfigForProject, magentoStageConfigForProject, magentoDeniedReadPaths } from './magentoMcp';
 import { checkN8nToken } from './n8nTokenCheck';
 import { shouldRetryWithoutResume } from '../shared/resumeFailure';
 import { alertChannelFor, isSlackChannelId } from '../shared/jiraProjects';
@@ -3317,6 +3317,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
           magento: {
             config: magentoConfigForProject(project, readConfig().jiraProjects),
             stageConfig: magentoStageConfigForProject(project, readConfig().jiraProjects),
+            gscConfig: gscConfigForProject(project, readConfig().jiraProjects),
             denyRead: magentoDeniedReadPaths(readConfig().jiraProjects)
           },
           vault: (await vaultMountForCwd(opts.cwd, opts.hive?.id)) ?? undefined,
