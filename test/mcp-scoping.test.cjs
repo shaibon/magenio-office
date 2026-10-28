@@ -318,10 +318,7 @@ test('t-258: a codex session owned by another agent home is never borrowed (wiri
   assert.match(src, /if \(!ownerHome \|\| ownerHome !== myHome\) \{/);
   assert.ok(!src.includes('CODEX_HOME: ownerHome'), 'CODEX_HOME is never switched to another agent home');
   assert.ok(!src.includes('stripSecretMcpTables'));
-  const use = src.indexOf('CODEX_HOME: ownerHome');
-  const strip = src.indexOf('stripSecretMcpTables(before)', use);
-  const fallback = src.indexOf('CODEX_HOME: myHome', strip);
-  assert.ok(use > 0 && strip > use && fallback > strip, 'sanitize right after borrowing; failure falls back to own home');
+});
 // ─── t-257: GSC MCP — per-project, read-only, key never readable by agents ──────
 
 const { gscConfigForProject } = loadTs('src/main/magentoMcp.ts');
