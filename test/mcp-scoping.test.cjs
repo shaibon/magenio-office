@@ -282,3 +282,33 @@ test('magento: deny list covers config dir, every config and referenced ssh keys
   const plain = hive['hookSettings']('shim.cjs', 'a1', cwd, {}, undefined, [], undefined, undefined);
   assert.equal(plain.sandbox, undefined, 'no magento bindings → settings unchanged');
 });
+
+// ─── t-258: magento (prod credentials) is never mounted for non-Claude engines ───
+
+test('magento: Claude mounts prod + stage; Codex/OpenCode/Pi get neither', () => {
+  const { command, args } = installedMagento();
+  const cfg = { magento: { enabled: true, command, args } };
+  const mount = (provider) => hive['buildDefaultMcpServers'](cwd, cfg, 'a1', { provider }, '/cfg/burd.json', undefined, '/cfg/burd-stage.json');
+  const c = mount('claude');
+  assert.ok(c['munder-magento'] && c['munder-magento-stage']);
+  for (const p of ['codex', 'opencode', 'pi', 'gemini']) {
+    const m = mount(p);
+    assert.equal(m['munder-magento'], undefined, p);
+    assert.equal(m['munder-magento-stage'], undefined, p);
+  }
+});
+
+test('magento: a regenerated codex config.toml carries no ~/.config/magenio path', async () => {
+  const { command, args } = installedMagento();
+  const dirs = fs.mkdtempSync(path.join(os.tmpdir(), 'md-mg-cx-'));
+  const h = new (loadTs('src/main/hive.ts').HiveManager)(() => dirs);
+  const cfgPath = path.join(os.homedir(), '.config', 'magenio', 'burd.json');
+  const opts = { mcpDefaults: { magento: { enabled: true, command, args } }, magento: { config: cfgPath, stageConfig: cfgPath + '.stage', denyRead: [] } };
+  const meta = { id: 'cx-mg', name: 'cx', provider: 'codex', cwd: dirs };
+  const first = await h.ensureAgent(meta, opts);
+  const tomlPath = path.join(first.env.CODEX_HOME, 'config.toml');
+  fs.appendFileSync(tomlPath, `\n[mcp_servers.munder-magento]\ncommand = "x"\nargs = ["--config", ${JSON.stringify(cfgPath)}]\n`); // stale file from an older build
+  await h.ensureAgent(meta, opts); // respawn regenerates it
+  const toml = fs.readFileSync(tomlPath, 'utf8');
+  assert.ok(!toml.includes('.config/magenio') && !toml.includes('munder-magento'));
+});

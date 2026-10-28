@@ -1622,6 +1622,9 @@ export class HiveManager {
       if (!idAllowed && !roleAllowed) continue;
       // Magento is opt-in per project; projects without a config are expected.
       if (e.id === 'magento' && !magentoConfig) continue;
+      // Claude only: the config path (prod DB/SSH credentials) would land in a Codex agent's readable
+      // config.toml, and only Claude's hookSettings carry the read deny for it.
+      if (e.id === 'magento' && (roleMeta?.provider ?? 'claude') !== 'claude') continue;
       // Remote (n8n): fail closed and PER PROJECT. The agent's project must have its own
       // entry that lists the agent (an empty list means nobody, and the role path never
       // applies: this server can run workflows). A missing/invalid URL or token mounts

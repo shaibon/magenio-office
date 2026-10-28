@@ -116,13 +116,12 @@ test('magento stays fail-closed for codex: consent without a project binding giv
   assert.equal(toml.includes('munder-magento'), false);
 });
 
-test('magento reaches a codex agent with --config when its project binding exists', () => {
+test('magento is NOT mounted for a codex agent (t-258: its config path would sit in a readable config.toml)', () => {
   const installed = installedServer();
   const cfg = { magento: { enabled: true, ...installed } };
   const toml = tables(cfg, 'jim-1', {}, '/tmp/project-burd.json');
-  assert.match(toml, /\[mcp_servers\.munder-magento\]/);
-  assert.ok(toml.includes('"--config"'), 'the project config is passed as its own argument');
-  assert.ok(toml.includes('"/tmp/project-burd.json"'), 'and it is the agent\'s OWN project file');
+  assert.equal(toml.includes('munder-magento'), false);
+  assert.equal(toml.includes('/tmp/project-burd.json'), false);
 });
 
 test('the write tier is withheld from a non-god codex agent (no hook-side block exists there)', () => {
@@ -134,8 +133,8 @@ test('the write tier is withheld from a non-god codex agent (no hook-side block 
 
 test('the secret tier is NOT withheld by the codex filter (only the write tier is)', () => {
   // codexMcpServers drops the `write` tier for a non-god agent and nothing else:
-  // Magento — a secret-tier, read-only, per-project server — still reaches codex
-  // (the tests above assert that end to end). `search-with-key` is a SEPARATE case:
+  // the filter itself keeps secret-tier servers (magento is withheld earlier, in
+  // buildDefaultMcpServers, t-258). `search-with-key` is a SEPARATE case:
   // it is a secret-tier server whose key is still the catalog's empty placeholder,
   // so t-067's empty-env rule skips it for both providers while it stays unset.
   const kept = codexMcpServers(
@@ -148,7 +147,7 @@ test('the secret tier is NOT withheld by the codex filter (only the write tier i
   const installed = installedServer();
   const toml = tables({ 'search-with-key': { enabled: true }, magento: { enabled: true, ...installed } }, 'jim-1', {}, '/tmp/p.json');
   assert.equal(toml.includes('munder-search-with-key'), false, 'empty key -> not mounted (t-067)');
-  assert.match(toml, /\[mcp_servers\.munder-magento\]/, 'a configured secret-tier server still reaches codex');
+  assert.equal(toml.includes('munder-magento'), false, 'magento specifically is Claude-only now (t-258)');
 });
 
 test('codexMcpServers keeps the sandboxed servers and drops the write tier for a non-god agent', () => {
