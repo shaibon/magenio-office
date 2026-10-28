@@ -215,3 +215,19 @@ test('gsc presence: python+script form checks args[0]; uv form checks --director
   const eq = { ...uv, args: ['run', '--directory=/g', '/g/gsc_server.py'] };
   assert.deepEqual(checkMcpPresence('gsc', eq, only('/opt/homebrew/bin/uv', '/g', '/g/gsc_server.py')), { ok: true });
 });
+
+test('presence messages name the real path checked; "build" advice only for a plain entry file', () => {
+  const only = (...present) => presenceDeps({ fileExists: (p) => present.includes(p) });
+  const uv = { enabled: true, command: '/opt/homebrew/bin/uv', args: ['run', '--frozen', '--no-sync', '--directory', '/g', 'gsc_server.py'] };
+  const dir = checkMcpPresence('gsc', uv, only('/opt/homebrew/bin/uv', '/g/gsc_server.py'));
+  assert.equal(dir.detail, 'Directory passed to uv (--directory/--project) not found: /g.');
+  const scr = checkMcpPresence('gsc', uv, only('/opt/homebrew/bin/uv', '/g'));
+  assert.equal(scr.detail, 'Script run by uv not found: /g/gsc_server.py.');
+  assert.ok(!/built/.test(dir.detail + scr.detail));
+  const plain = checkMcpPresence('x', { enabled: true, command: '/bin/node', args: ['/p/dist/index.js'] }, only('/bin/node'));
+  assert.equal(plain.detail, 'Entry file not found: /p/dist/index.js. It may need to be built.');
+  for (const l of ['en', 'ar', 'zh-CN']) {
+    const j = JSON.parse(require('node:fs').readFileSync(require('node:path').join(__dirname, `../src/renderer/src/i18n/locales/${l}.json`), 'utf8'));
+    assert.equal(j.mcpDefaults.presence.entry_missing, '{{detail}}', `${l}: Settings shows the main-process detail`);
+  }
+});

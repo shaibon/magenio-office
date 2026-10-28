@@ -967,7 +967,7 @@
     "presence": {
       "not_configured": "尚未配置——请在下方设置启动命令，或安装该服务器。",
       "command_missing": "启动命令不是可执行文件。",
-      "entry_missing": "服务器的入口文件缺失——可能需要先构建。",
+      "entry_missing": "{{detail}}",
       "credentials_missing": "该服务器尚无凭据。{{detail}}"
     }
   },

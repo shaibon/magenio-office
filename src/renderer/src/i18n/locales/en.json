@@ -967,7 +967,7 @@
     "presence": {
       "not_configured": "Not configured yet — set the launch command below, or install the server.",
       "command_missing": "The launch command is not an executable file.",
-      "entry_missing": "The server's entry file is missing — it may need to be built.",
+      "entry_missing": "{{detail}}",
       "credentials_missing": "The server has no credentials yet. {{detail}}"
     }
   },

@@ -967,7 +967,7 @@
     "presence": {
       "not_configured": "لم يُضبط بعد — حدّد أمر التشغيل أدناه، أو ثبّت الخادم.",
       "command_missing": "أمر التشغيل ليس ملفًا تنفيذيًا.",
-      "entry_missing": "ملف دخول الخادم مفقود — قد يحتاج إلى بنائه.",
+      "entry_missing": "{{detail}}",
       "credentials_missing": "لا تتوفّر لدى الخادم بيانات اعتماد بعد. {{detail}}"
     }
   },

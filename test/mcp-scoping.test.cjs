@@ -348,3 +348,15 @@ test('gsc: withheld from non-Claude providers (no enforceable read deny there)',
   assert.ok(mount('claude'));
   for (const p of ['codex', 'opencode', 'pi']) assert.equal(mount(p), undefined);
 });
+
+test('gsc: the Boss launch (uv + 6 one-per-line args) passes presence and mounts for a Claude agent', () => {
+  const dirx = fs.mkdtempSync(path.join(os.tmpdir(), 'md-gsc-uv-'));
+  fs.writeFileSync(path.join(dirx, 'gsc_server.py'), '#');
+  const uv = path.join(dirx, 'uv'); fs.writeFileSync(uv, '#!/bin/sh\n'); fs.chmodSync(uv, 0o755);
+  const args = ['run', '--frozen', '--no-sync', '--directory', dirx, 'gsc_server.py'];
+  const cfg = { gsc: { enabled: true, command: uv, args } };
+  const m = hive['buildDefaultMcpServers'](cwd, cfg, 'a1', { provider: 'claude' }, undefined, undefined, undefined, undefined, '/cfg/risto-gsc.json')['munder-gsc'];
+  assert.ok(m, 'mounted');
+  assert.deepEqual(m.args, args);
+  assert.equal(m.env.GSC_CREDENTIALS_PATH, '/cfg/risto-gsc.json');
+});
