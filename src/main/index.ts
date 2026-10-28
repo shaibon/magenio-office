@@ -2,7 +2,6 @@ import { magentoConfigForProject, magentoStageConfigForProject, magentoDeniedRea
 import { checkN8nToken } from './n8nTokenCheck';
 import { shouldRetryWithoutResume } from '../shared/resumeFailure';
 import { alertChannelFor, isSlackChannelId } from '../shared/jiraProjects';
-import { stripSecretMcpTables } from '../shared/codexMcp';
 import { withCodexSandboxMode, withCodexSandboxCommand } from '../shared/codexSandbox';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
 import { execFileSync, spawn } from 'node:child_process';
@@ -3486,25 +3485,13 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       const myHome = (opts.env ?? {}).CODEX_HOME;
       const agentsRoot = myHome ? dirname(dirname(myHome)) : '';
       const ownerHome = agentsRoot ? findCodexHomeForSession(sid, agentsRoot) : null;
-      if (!ownerHome) {
-        console.warn(`[resume] codex session "${sid}" not found in any agent CODEX_HOME - starting fresh`);
+      // A session owned by ANOTHER agent's home is never borrowed: that home's config.toml carries the
+      // owner's MCP servers (project credentials, vault writer, ...) and tables we cannot vouch for.
+      // Only this agent's own CODEX_HOME may resume; anything else starts fresh.
+      if (!ownerHome || ownerHome !== myHome) {
+        console.warn(`[resume] codex session "${sid}" ${ownerHome ? 'belongs to another agent\'s CODEX_HOME (not borrowed)' : 'not found in any agent CODEX_HOME'} - starting fresh`);
         if (typedSid) resumeNotFound = true;
       } else {
-        if (ownerHome !== myHome) {
-          opts.env = { ...(opts.env ?? {}), CODEX_HOME: ownerHome };
-          // The owner's home is reused as-is (not regenerated): drop any Magento/GSC table an older
-          // build left in its config.toml, or this agent would inherit another project's credential path.
-          try {
-            const cfgPath = join(ownerHome, 'config.toml');
-            const before = readFileSync(cfgPath, 'utf8');
-            const after = stripSecretMcpTables(before);
-            if (after !== before) writeFileSync(cfgPath, after, { encoding: 'utf8', mode: 0o600 });
-          } catch (e) {
-            // Unsanitizable => do not borrow it (fail closed); the resume then simply finds no session.
-            console.error('[resume] could not sanitize owner CODEX_HOME config.toml:', e);
-            opts.env = { ...(opts.env ?? {}), CODEX_HOME: myHome };
-          }
-        }
         const args = opts.args ?? [];
         // Positional order matters: `codex resume [OPTIONS] [SESSION_ID] [PROMPT]`.
         // The hive identity prompt rides in `args` as a POSITIONAL (codex has no
