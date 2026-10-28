@@ -105,6 +105,17 @@ function blankEnvAssignments(text: string, keys: readonly string[]): string {
  * launch has no entry at args[0] (it is `run`): check the `--directory`/`--project` dir and the `.py`
  * script (resolved against that dir when relative) instead.
  */
+const UV_VALUE_FLAGS = new Set(['--directory', '--project', '--python', '-p', '--with', '--env-file', '--extra', '--group', '--package', '--index', '--config-file']);
+/** First positional after `uv run` (the thing to run), skipping flags and their values. */
+function uvTarget(args: string[]): string | undefined {
+  for (let i = args[0] === 'run' ? 1 : 0; i < args.length; i++) {
+    const a = args[i];
+    if (a.startsWith('-')) { if (UV_VALUE_FLAGS.has(a)) i++; continue; }
+    return a;
+  }
+  return undefined;
+}
+
 function launchEntries(command: string, args: string[]): Array<{ path: string; what: string }> {
   if (basename(command) !== 'uv') return [{ path: args[0].trim(), what: 'Entry file' }];
   const flag = (n: string): string | undefined => {
@@ -117,6 +128,8 @@ function launchEntries(command: string, args: string[]): Array<{ path: string; w
   const out: Array<{ path: string; what: string }> = [];
   if (dir) out.push({ path: dir, what: 'Directory passed to uv (--directory/--project)' });
   if (script) out.push({ path: isAbsolute(script) || !dir ? script : join(dir, script), what: 'Script run by uv' });
+  // `uv run --directory /d` with nothing to run is not a launch: demand a script or a command name.
+  if (!script && !uvTarget(args)) out.push({ path: '', what: 'Nothing for `uv run` to run: add a script (e.g. gsc_server.py) or command after the flags' });
   return out.length ? out : [{ path: args[0].trim(), what: 'Entry file' }];
 }
 
@@ -139,11 +152,11 @@ export function checkMcpPresence(
   if (!deps.fileExists(command) || !deps.isExecutable(command)) {
     return { ok: false, reason: 'command_missing', detail: `Not an executable file: ${command}` };
   }
-  const missingEntry = launchEntries(command, consent!.args!).find((e) => !deps.fileExists(e.path));
+  const missingEntry = launchEntries(command, consent!.args!).find((e) => !e.path || !deps.fileExists(e.path));
   if (missingEntry) {
     // "May need to be built" only fits a plain entry file (a compiled dist/index.js); a uv directory or script is just missing.
     const hint = missingEntry.what === 'Entry file' ? ' It may need to be built.' : '';
-    return { ok: false, reason: 'entry_missing', detail: `${missingEntry.what} not found: ${missingEntry.path}.${hint}` };
+    return { ok: false, reason: 'entry_missing', detail: missingEntry.path ? `${missingEntry.what} not found: ${missingEntry.path}.${hint}` : `${missingEntry.what}.` };
   }
   if (entryId === 'trello') {
     // The server loads `join(__dirname, '../.env')` — mirror that exactly, so

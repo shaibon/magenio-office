@@ -231,3 +231,13 @@ test('presence messages name the real path checked; "build" advice only for a pl
     assert.equal(j.mcpDefaults.presence.entry_missing, '{{detail}}', `${l}: Settings shows the main-process detail`);
   }
 });
+
+test('uv launch with nothing to run is not ready (dir alone is not a launch); a command name is accepted', () => {
+  const only = (...present) => presenceDeps({ fileExists: (p) => present.includes(p) });
+  const bare = checkMcpPresence('gsc', { enabled: true, command: '/opt/homebrew/bin/uv', args: ['run', '--directory', '/g'] }, only('/opt/homebrew/bin/uv', '/g'));
+  assert.equal(bare.ok, false);
+  assert.equal(bare.reason, 'entry_missing');
+  assert.match(bare.detail, /Nothing for `uv run` to run/);
+  const named = checkMcpPresence('gsc', { enabled: true, command: '/opt/homebrew/bin/uv', args: ['run', '--directory', '/g', 'mcp-gsc'] }, only('/opt/homebrew/bin/uv', '/g'));
+  assert.deepEqual(named, { ok: true });
+});
