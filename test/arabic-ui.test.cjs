@@ -218,7 +218,8 @@ test('no Arabic string is left as its English source', () => {
     'mcpDefaults.argsPlaceholder',           // /Users/you/mcp/trello/build/index.js — same
     'mcpDefaults.n8nUrlPlaceholder',         // https://n8n.example.com/... — a URL the user types
     'mcpDefaults.toggleNote',                // "{{id}}: {{state}}" — pure interpolation
-    'webhooksSection.summary'                // "{{count}} · {{state}}" — same
+    'webhooksSection.summary',               // "{{count}} · {{state}}" — same
+    'mcpDefaults.presence.entry_missing'     // "{{detail}}" — the main-process message, verbatim
   ]);
   const e = pathsOf(en), a = pathsOf(ar);
   const untranslated = [];
