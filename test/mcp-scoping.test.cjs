@@ -343,3 +343,11 @@ test('gsc: the key file and the config dir are in the agent read deny list', () 
   assert.ok(deny.includes('/elsewhere/burd-gsc.json'));
   assert.ok(deny.includes(MAGENTO_CONFIG_DIR), '~/.config/magenio (incl. *-gsc.json) is denied wholesale');
 });
+
+test('gsc: withheld from non-Claude providers (no enforceable read deny there)', () => {
+  const { command, args } = installedMagento();
+  const cfg = { gsc: { enabled: true, command, args } };
+  const mount = (provider) => hive['buildDefaultMcpServers'](cwd, cfg, 'a1', { provider }, undefined, undefined, undefined, undefined, '/cfg/burd-gsc.json')['munder-gsc'];
+  assert.ok(mount('claude'));
+  for (const p of ['codex', 'opencode', 'pi']) assert.equal(mount(p), undefined);
+});

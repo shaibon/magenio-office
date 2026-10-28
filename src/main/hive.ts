@@ -1627,7 +1627,9 @@ export class HiveManager {
       // config.toml, and only Claude's hookSettings carry the read deny for it.
       if (e.id === 'magento' && (roleMeta?.provider ?? 'claude') !== 'claude') continue;
       // GSC is opt-in per project the same way: no key file bound, no server.
-      if (e.id === 'gsc' && !gscConfig) continue;
+      // Claude only: its hookSettings denyRead keeps the key file away from the agent. Codex has
+      // no read restriction, and the key path rides in its config.toml, so it never gets GSC.
+      if (e.id === 'gsc' && (!gscConfig || (roleMeta?.provider ?? 'claude') !== 'claude')) continue;
       // Remote (n8n): fail closed and PER PROJECT. The agent's project must have its own
       // entry that lists the agent (an empty list means nobody, and the role path never
       // applies: this server can run workflows). A missing/invalid URL or token mounts
