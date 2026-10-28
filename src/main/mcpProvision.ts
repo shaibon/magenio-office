@@ -17,7 +17,7 @@
  */
 import { existsSync, accessSync, constants, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { dirname, join } from 'node:path';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 import { TRELLO_MCP_REPO_URL, TRELLO_MCP_TAG } from '../shared/mcpCatalog';
 
 export type McpPresenceReason =
@@ -101,6 +101,26 @@ function blankEnvAssignments(text: string, keys: readonly string[]): string {
 }
 
 /**
+ * The file(s) a launch must find on disk. For a plain `node <entry> ...` that is args[0]. A `uv run`
+ * launch has no entry at args[0] (it is `run`): check the `--directory`/`--project` dir and the `.py`
+ * script (resolved against that dir when relative) instead.
+ */
+function launchEntries(command: string, args: string[]): string[] {
+  if (basename(command) !== 'uv') return [args[0].trim()];
+  const flag = (n: string): string | undefined => {
+    const i = args.findIndex((a) => a === n);
+    if (i >= 0) return args[i + 1];
+    return args.find((a) => a.startsWith(`${n}=`))?.slice(n.length + 1);
+  };
+  const dir = flag('--directory') ?? flag('--project');
+  const script = args.find((a) => a.endsWith('.py'));
+  const out: string[] = [];
+  if (dir) out.push(dir);
+  if (script) out.push(isAbsolute(script) || !dir ? script : join(dir, script));
+  return out.length ? out : [args[0].trim()];
+}
+
+/**
  * Can this user-configured MCP server actually run right now?
  *
  * Checks, in order: command + args filled in → binary present and executable →
@@ -119,8 +139,9 @@ export function checkMcpPresence(
   if (!deps.fileExists(command) || !deps.isExecutable(command)) {
     return { ok: false, reason: 'command_missing', detail: `Not an executable file: ${command}` };
   }
-  if (!deps.fileExists(entry)) {
-    return { ok: false, reason: 'entry_missing', detail: `Entry file not found: ${entry}. The server may need to be built.` };
+  const missingEntry = launchEntries(command, consent!.args!).find((e) => !deps.fileExists(e));
+  if (missingEntry) {
+    return { ok: false, reason: 'entry_missing', detail: `Entry file not found: ${missingEntry}. The server may need to be built.` };
   }
   if (entryId === 'trello') {
     // The server loads `join(__dirname, '../.env')` — mirror that exactly, so

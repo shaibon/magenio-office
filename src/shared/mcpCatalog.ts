@@ -454,7 +454,7 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
   {
     id: 'gsc',
     label: 'Google Search Console (read-only)',
-    description: 'Read-only Search Console analytics (sites, search analytics, URL inspection, sitemaps) through the vendored mcp-gsc server with the webmasters.readonly scope. Scoped per project: each agent sees only its own project\'s property, set as the "GSC MCP key" (service-account JSON) on the Jira project binding. You supply the launcher: command = uv, args = run --directory <magenio-mcp>/gsc-mcp gsc_server.py.',
+    description: 'Read-only Search Console analytics (sites, search analytics, URL inspection, sitemaps) through the vendored mcp-gsc server with the webmasters.readonly scope. Scoped per project: each agent sees only its own project\'s property, set as the "GSC MCP key" (service-account JSON) on the Jira project binding. You supply the launcher. Recommended: command = <magenio-mcp>/gsc-mcp/.venv/bin/python, args = <magenio-mcp>/gsc-mcp/gsc_server.py (checked as a plain entry file). `uv` also works: command = /opt/homebrew/bin/uv, args = run --frozen --no-sync --directory <magenio-mcp>/gsc-mcp gsc_server.py (the directory and the script are checked).',
     // Placeholder: userConfigured entries take command/args from the consent map; the
     // per-agent GSC_CREDENTIALS_PATH is added at mount time.
     spec: { command: '', args: [] },

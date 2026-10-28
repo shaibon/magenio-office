@@ -199,3 +199,19 @@ test('with no template present, install still writes a .env with both required k
   assert.equal(envAssignsNonEmpty(seeded, 'TRELLO_API_KEY'), false);
   assert.equal(envAssignsNonEmpty(seeded, 'TRELLO_TOKEN'), false);
 });
+
+test('gsc presence: python+script form checks args[0]; uv form checks --directory and the script, not "run"', () => {
+  const only = (...present) => presenceDeps({ fileExists: (p) => present.includes(p) });
+  const py = { enabled: true, command: '/g/.venv/bin/python', args: ['/g/gsc_server.py'] };
+  assert.deepEqual(checkMcpPresence('gsc', py, only('/g/.venv/bin/python', '/g/gsc_server.py')), { ok: true });
+  assert.equal(checkMcpPresence('gsc', py, only('/g/.venv/bin/python')).reason, 'entry_missing');
+
+  const uv = { enabled: true, command: '/opt/homebrew/bin/uv', args: ['run', '--frozen', '--no-sync', '--directory', '/g', 'gsc_server.py'] };
+  assert.deepEqual(checkMcpPresence('gsc', uv, only('/opt/homebrew/bin/uv', '/g', '/g/gsc_server.py')), { ok: true });
+  const noDir = checkMcpPresence('gsc', uv, only('/opt/homebrew/bin/uv', '/g/gsc_server.py'));
+  assert.equal(noDir.reason, 'entry_missing');
+  assert.match(noDir.detail, /\/g\b/);
+  assert.equal(checkMcpPresence('gsc', uv, only('/opt/homebrew/bin/uv', '/g')).reason, 'entry_missing', 'script missing');
+  const eq = { ...uv, args: ['run', '--directory=/g', '/g/gsc_server.py'] };
+  assert.deepEqual(checkMcpPresence('gsc', eq, only('/opt/homebrew/bin/uv', '/g', '/g/gsc_server.py')), { ok: true });
+});
