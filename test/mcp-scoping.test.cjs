@@ -312,3 +312,25 @@ test('magento: a regenerated codex config.toml carries no ~/.config/magenio path
   const toml = fs.readFileSync(tomlPath, 'utf8');
   assert.ok(!toml.includes('.config/magenio') && !toml.includes('munder-magento'));
 });
+
+test('t-258: stripSecretMcpTables drops stale magento/stage/gsc tables (and sub-tables), keeps the rest', () => {
+  const { stripSecretMcpTables } = loadTs('src/shared/codexMcp.ts');
+  const toml = [
+    'model = "x"', '', '[mcp_servers.munder-time]', 'command = "uvx"', '',
+    '[mcp_servers.munder-magento]', 'command = "node"', 'args = ["a.js", "--config", "/h/.config/magenio/burd.json"]', '',
+    '[mcp_servers.munder-magento.env]', 'K = "v"', '',
+    '[mcp_servers.munder-magento-stage]', 'args = ["--config", "/h/.config/magenio/burd-stage.json"]', '',
+    '[mcp_servers.munder-gsc]', 'command = "uv"', '', '[[hooks.Stop]]', 'x = 1', ''
+  ].join('\n');
+  const out = stripSecretMcpTables(toml);
+  assert.ok(!out.includes('magenio') && !out.includes('munder-magento') && !out.includes('munder-gsc'));
+  assert.ok(out.includes('[mcp_servers.munder-time]') && out.includes('[[hooks.Stop]]') && out.includes('model = "x"'));
+});
+
+test('t-258: cross-agent codex resume sanitizes the borrowed owner home before using it (wiring)', () => {
+  const src = fs.readFileSync(path.join(__dirname, '../src/main/index.ts'), 'utf8');
+  const use = src.indexOf('CODEX_HOME: ownerHome');
+  const strip = src.indexOf('stripSecretMcpTables(before)', use);
+  const fallback = src.indexOf('CODEX_HOME: myHome', strip);
+  assert.ok(use > 0 && strip > use && fallback > strip, 'sanitize right after borrowing; failure falls back to own home');
+});

@@ -178,3 +178,17 @@ export function codexMcpToml(servers: Record<string, CodexMcpServer>): string {
   }
   return out;
 }
+
+/** Remove the secret-tier project servers (Magento prod/stage, GSC) and their sub-tables from a
+ *  codex config.toml. Used on a cross-agent resume, where another agent's home (possibly written by
+ *  an older build) is reused without being regenerated. Everything else is kept byte for byte. */
+export function stripSecretMcpTables(toml: string): string {
+  const out: string[] = [];
+  let skipping = false;
+  for (const line of toml.split('\n')) {
+    const h = /^\s*\[\[?\s*([^\]]+?)\s*\]\]?\s*(#.*)?$/.exec(line);
+    if (h) skipping = /^mcp_servers\.["']?munder-(magento|gsc)(-stage)?["']?(\.|$)/.test(h[1]);
+    if (!skipping) out.push(line);
+  }
+  return out.join('\n');
+}

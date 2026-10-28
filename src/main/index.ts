@@ -2,6 +2,7 @@ import { magentoConfigForProject, magentoStageConfigForProject, magentoDeniedRea
 import { checkN8nToken } from './n8nTokenCheck';
 import { shouldRetryWithoutResume } from '../shared/resumeFailure';
 import { alertChannelFor, isSlackChannelId } from '../shared/jiraProjects';
+import { stripSecretMcpTables } from '../shared/codexMcp';
 import { withCodexSandboxMode, withCodexSandboxCommand } from '../shared/codexSandbox';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
 import { execFileSync, spawn } from 'node:child_process';
@@ -3489,7 +3490,21 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
         console.warn(`[resume] codex session "${sid}" not found in any agent CODEX_HOME - starting fresh`);
         if (typedSid) resumeNotFound = true;
       } else {
-        if (ownerHome !== myHome) opts.env = { ...(opts.env ?? {}), CODEX_HOME: ownerHome };
+        if (ownerHome !== myHome) {
+          opts.env = { ...(opts.env ?? {}), CODEX_HOME: ownerHome };
+          // The owner's home is reused as-is (not regenerated): drop any Magento/GSC table an older
+          // build left in its config.toml, or this agent would inherit another project's credential path.
+          try {
+            const cfgPath = join(ownerHome, 'config.toml');
+            const before = readFileSync(cfgPath, 'utf8');
+            const after = stripSecretMcpTables(before);
+            if (after !== before) writeFileSync(cfgPath, after, { encoding: 'utf8', mode: 0o600 });
+          } catch (e) {
+            // Unsanitizable => do not borrow it (fail closed); the resume then simply finds no session.
+            console.error('[resume] could not sanitize owner CODEX_HOME config.toml:', e);
+            opts.env = { ...(opts.env ?? {}), CODEX_HOME: myHome };
+          }
+        }
         const args = opts.args ?? [];
         // Positional order matters: `codex resume [OPTIONS] [SESSION_ID] [PROMPT]`.
         // The hive identity prompt rides in `args` as a POSITIONAL (codex has no
