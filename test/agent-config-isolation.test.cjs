@@ -1,0 +1,120 @@
+'use strict';
+
+/**
+ * Hook-bearing config lives outside every agent-writable root (t-279, Creed HIGH #2):
+ * Claude's --settings file and Codex's CODEX_HOME/config.toml name the command that runs in
+ * the agent's own process, so a peer able to rewrite them gets code execution there.
+ */
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const loadTs = require('./load-ts.cjs');
+const { HiveManager } = loadTs('src/main/hive.ts');
+
+function env(t) {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'md-acfg-'));
+  const home = path.join(base, 'home');
+  const harness = path.join(base, 'harness');
+  const appData = path.join(base, 'appdata');
+  for (const d of [home, harness, appData]) fs.mkdirSync(d, { recursive: true });
+  const prev = process.env.HOME;
+  process.env.HOME = home;
+  t.after(() => { process.env.HOME = prev; fs.rmSync(base, { recursive: true, force: true }); });
+  return { home, harness, appData, hive: path.join(harness, 'hive') };
+}
+
+function filesUnder(dir, out = []) {
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (e.name === '.git') continue;
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) filesUnder(p, out); else if (e.isFile()) out.push(p);
+  }
+  return out;
+}
+
+test('legacy hive-side .codex and settings.json migrate to the app-owned dir; sessions and index survive', (t) => {
+  const e = env(t);
+  const m = new HiveManager(() => e.harness, undefined, () => e.appData);
+  m.ensureHive();
+  m.writeJson(path.join(e.hive, 'registry.json'), { godId: null, agents: { a1: { id: 'a1', name: 'A1', provider: 'codex', cwd: e.harness } } });
+  const legacy = path.join(e.hive, 'agents', 'a1');
+  fs.mkdirSync(path.join(legacy, '.codex', 'sessions'), { recursive: true });
+  fs.writeFileSync(path.join(legacy, '.codex', 'config.toml'), '[[hooks.Stop]]\ncommand = "evil"\n');
+  fs.writeFileSync(path.join(legacy, '.codex', 'state_5.sqlite'), 'INDEX');
+  fs.writeFileSync(path.join(legacy, '.codex', 'sessions', 'rollout-x.jsonl'), 'ROLL');
+  fs.writeFileSync(path.join(legacy, 'settings.json'), '{"hooks":{}}');
+
+  m.ensureHive();
+
+  const cfg = m.agentConfigDir('a1');
+  assert.ok(cfg && !cfg.startsWith(e.harness), 'config dir is outside the hive');
+  assert.equal(fs.readFileSync(path.join(cfg, '.codex', 'state_5.sqlite'), 'utf8'), 'INDEX');
+  assert.ok(fs.existsSync(path.join(cfg, '.codex', 'sessions')) || fs.lstatSync(path.join(cfg, '.codex', 'sessions')).isSymbolicLink());
+  assert.equal(fs.existsSync(path.join(legacy, '.codex')), false, 'legacy codex home gone');
+  assert.equal(fs.existsSync(path.join(legacy, 'settings.json')), false, 'legacy claude settings gone');
+});
+
+test('migration is idempotent and never leaves a hook-bearing legacy config next to a migrated one', (t) => {
+  const e = env(t);
+  const m = new HiveManager(() => e.harness, undefined, () => e.appData);
+  m.ensureHive();
+  const cfg = m.agentConfigDir('a1');
+  fs.mkdirSync(path.join(cfg, '.codex'), { recursive: true });
+  fs.writeFileSync(path.join(cfg, '.codex', 'config.toml'), 'GOOD');
+  const legacy = path.join(e.hive, 'agents', 'a1', '.codex');
+  fs.mkdirSync(legacy, { recursive: true });
+  fs.writeFileSync(path.join(legacy, 'config.toml'), 'EVIL');
+  m.migrateAgentConfig('a1');
+  m.migrateAgentConfig('a1');
+  assert.equal(fs.readFileSync(path.join(cfg, '.codex', 'config.toml'), 'utf8'), 'GOOD');
+  assert.equal(fs.existsSync(path.join(legacy, 'config.toml')), false);
+});
+
+test('after a codex spawn no hook-bearing file exists anywhere under the hive', (t) => {
+  const e = env(t);
+  const m = new HiveManager(() => e.harness, undefined, () => e.appData);
+  m.codexHookLister = () => [];
+  m.ensureHive();
+  const agentDir = path.join(e.hive, 'agents', 'a1');
+  fs.mkdirSync(agentDir, { recursive: true });
+  const home = m.installCodexHooks(agentDir, 'a1');
+  assert.ok(home.startsWith(path.join(e.home, '.mdagents')), 'codex home is app-owned');
+  const toml = fs.readFileSync(path.join(home, 'config.toml'), 'utf8');
+  assert.match(toml, /hooks\.Stop/);
+  assert.match(toml, /hook-node/, 'hook runs under the app-owned launcher');
+  assert.ok(!toml.includes(e.hive), 'hook command never points into the hive');
+  for (const f of filesUnder(e.hive)) {
+    const txt = fs.readFileSync(f, 'utf8');
+    assert.ok(!/cth-hook|hook-node/.test(txt), `hook-bearing file under the hive: ${f}`);
+  }
+});
+
+test('headless (no app data dir): legacy location, no token', (t) => {
+  const e = env(t);
+  const m = new HiveManager(() => e.harness);
+  assert.equal(m.agentConfigDir('a1'), null);
+  assert.equal(m.spawnHookToken('a1'), undefined);
+});
+
+test('agent ids cannot escape the config root', (t) => {
+  const e = env(t);
+  const m = new HiveManager(() => e.harness, undefined, () => e.appData);
+  for (const bad of ['../x', 'a/b', '..', '.', '']) assert.equal(m.agentConfigDir(bad), null, bad);
+});
+
+test('claude --settings is written under the app-owned dir, never under the hive', async (t) => {
+  const e = env(t);
+  const m = new HiveManager(() => e.harness, undefined, () => e.appData);
+  const inj = await m.ensureAgent({ id: 'a1', name: 'A', provider: 'claude', cwd: e.harness });
+  const i = inj.args.indexOf('--settings');
+  assert.ok(i >= 0, '--settings passed');
+  const settings = inj.args[i + 1];
+  assert.ok(settings.startsWith(path.join(e.home, '.mdagents')), settings);
+  assert.ok(!fs.existsSync(path.join(e.hive, 'agents', 'a1', 'settings.json')));
+  assert.match(JSON.parse(fs.readFileSync(settings, 'utf8')).hooks.Stop[0].hooks[0].command, /hook-node/);
+  assert.ok(inj.env.HIVE_HOOK_TOKEN, 'token only because the shim is app-owned');
+  for (const f of filesUnder(e.hive)) assert.ok(!/cth-hook|hook-node/.test(fs.readFileSync(f, 'utf8')), f);
+});

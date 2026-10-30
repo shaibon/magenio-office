@@ -580,6 +580,50 @@ export class HiveManager {
     return quoted ? `"${l}" "${script}"` : `${l} ${script}`;
   }
 
+  /** App-owned per-agent config dir, outside every agent-writable root: holds the files that NAME a
+   *  hook command to run in the agent's own process — Claude's --settings file and Codex's
+   *  CODEX_HOME/config.toml. Anything a peer can rewrite there is code execution in that agent's
+   *  hook process (and the home of its HIVE_HOOK_TOKEN). Active only when the app supplies its
+   *  data dir (headless/tests fall back to the agent's hive dir and get no token).
+   *  Deliberately SHORT (`~/.mdagents/<hive>/<id>`, not userData): Codex binds its Remote Control
+   *  socket under the canonical CODEX_HOME and macOS caps a socket path at 104 bytes. */
+  agentConfigDir(agentId: string): string | null {
+    const root = this.root();
+    if (!root || !this.getAppDataDir() || !agentId || basename(agentId) !== agentId || agentId === '.' || agentId === '..') return null;
+    const hive = createHash('sha1').update(root).digest('hex').slice(0, 6);
+    return join(homedir(), '.mdagents', hive, agentId);
+  }
+
+  /** The directory the hook-bearing files live in for `agentId` (see agentConfigDir). */
+  private hookConfigDir(agentId: string, hiveAgentDir: string): string {
+    const c = this.agentConfigDir(agentId);
+    if (!c) return hiveAgentDir;
+    mkdirSync(c, { recursive: true, mode: 0o700 });
+    return c;
+  }
+
+  /** One-time, idempotent: move a legacy <hive>/agents/<id>/.codex (login links, sqlite index,
+   *  sessions link, config.toml) into the app-owned dir and delete the legacy Claude
+   *  settings.json (regenerated every spawn, so nothing custom lives in it). A legacy copy left
+   *  in the hive can never be executed: nothing points at it any more. */
+  migrateAgentConfig(agentId: string): void {
+    const root = this.root();
+    const cfg = this.agentConfigDir(agentId);
+    if (!root || !cfg) return;
+    const legacyDir = join(root, 'agents', agentId);
+    try {
+      rmSync(join(legacyDir, 'settings.json'), { force: true });
+      const legacy = join(legacyDir, '.codex');
+      let has = false;
+      try { lstatSync(legacy); has = true; } catch { /* none */ }
+      if (!has) return;
+      mkdirSync(cfg, { recursive: true, mode: 0o700 });
+      const target = join(cfg, '.codex');
+      if (!existsSync(target)) this.moveCodexDataDir(legacy, target);
+      else rmSync(join(legacy, 'config.toml'), { force: true }); // never leave a hook-bearing config behind
+    } catch (e) { console.error(`[hive] migrateAgentConfig(${agentId}) failed:`, e); }
+  }
+
   /** Per-spawn hook token, only when the shim that stamps it is app-owned. */
   private spawnHookToken(agentId: string): string | undefined {
     return this.hookBinDir() ? this.issueHookToken(agentId) : undefined;
@@ -744,7 +788,8 @@ export class HiveManager {
     }
     const userCodexHome = join(homedir(), '.codex');
     for (const [id, agent] of Object.entries(this.registry().agents)) {
-      const codexHome = join(root, 'agents', id, '.codex');
+      this.migrateAgentConfig(id);
+      const codexHome = join(this.agentConfigDir(id) ?? join(root, 'agents', id), '.codex');
       if (agent.provider === 'codex' && existsSync(codexHome)) {
         this.exposeCodexDataDirs(codexHome, userCodexHome, id);
       }
@@ -1176,7 +1221,8 @@ export class HiveManager {
     if (sock && shim) {
       env.HIVE_SOCK = sock;
       { const tok = this.spawnHookToken(meta.id); if (tok) env.HIVE_HOOK_TOKEN = tok; else delete env.HIVE_HOOK_TOKEN; }
-      const settingsPath = join(dir, 'settings.json');
+      this.migrateAgentConfig(meta.id);
+      const settingsPath = join(this.hookConfigDir(meta.id, dir), 'settings.json');
       this.writeJson(settingsPath, this.hookSettings(shim, meta.id, meta.cwd, opts.mcpDefaults, opts.theme, this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs), meta, opts.magento, opts.vault, opts.n8nBrokerUrl));
       args.push('--settings', settingsPath);
       // Claude Code ignores `mcpServers` inside --settings (see hookSettings) —
@@ -2852,7 +2898,8 @@ export class HiveManager {
    *  nothing is enabled, in which case the file is byte-identical to before.
    *  Returns the CODEX_HOME path for the caller to put in the worker's env. */
   private installCodexHooks(dir: string, agentId: string, mcpTables = '', cwd?: string): string {
-    const home = join(dir, '.codex');
+    this.migrateAgentConfig(agentId);
+    const home = join(this.hookConfigDir(agentId, dir), '.codex');
     try {
       mkdirSync(home, { recursive: true });
       const userHome = join(homedir(), '.codex');
@@ -3063,7 +3110,7 @@ export class HiveManager {
     for (const entry of readdirSync(agents, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
       for (const kind of ['sessions', 'archived_sessions'] as const) {
-        const source = join(agents, entry.name, '.codex', kind);
+        const source = join(this.agentConfigDir(entry.name) ?? join(agents, entry.name), '.codex', kind);
         try {
           if (!lstatSync(source).isSymbolicLink()) continue;
           const target = realpathSync(source);
