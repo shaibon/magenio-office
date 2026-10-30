@@ -64,7 +64,8 @@ test('legacy codex DATA migrates once (index, sessions, history); config/setting
   assert.equal(fs.readFileSync(path.join(target, 'sessions', '2026', `rollout-${OLDID}.jsonl`), 'utf8'), 'ROLL');
   assert.equal(fs.readFileSync(path.join(target, 'history.jsonl'), 'utf8'), 'H');
   assert.equal(fs.existsSync(path.join(target, 'config.toml')), false, 'legacy config.toml is never imported');
-  assert.ok(fs.existsSync(path.join(legacy, 'config.toml')), 'and never deleted from the peer-writable tree either');
+  assert.equal(fs.existsSync(legacy), false, 'legacy .codex was staged out of the peer-writable tree in one rename');
+  assert.deepEqual(fs.readdirSync(cfg).filter((n) => n.startsWith('.legacy-')), [], 'staging cleaned up');
   assert.ok(fs.existsSync(path.join(e.hive, 'agents', 'a1', 'settings.json')));
   assert.ok(fs.existsSync(path.join(cfg, '.migrated')));
   assert.equal(fs.statSync(cfg).mode & 0o777, 0o700);
@@ -125,7 +126,7 @@ test('F2: a symlinked agent dir is refused', (t) => {
   fs.symlinkSync(real, path.join(e.hive, 'agents', 'a1'), 'dir');
   m.migrateAgentConfig('a1');
   assert.equal(fs.readFileSync(path.join(real, '.codex', 'state_5.sqlite'), 'utf8'), 'USER-DB');
-  assert.match(log(), /legacy-agent-dir/);
+  assert.match(log(), /legacy-codex/);
 });
 
 test('F2: symlinks INSIDE sessions are never followed or moved; the exposure link must resolve under the munder scan root', (t) => {
@@ -242,13 +243,14 @@ test('two clashing sqlite indexes: legacy index becomes active, the target one i
 });
 
 test('a clashing plain data file is never overwritten, and is logged', (t) => {
-  const { m, legacy, target, log } = setup(t);
+  const { m, legacy, target, cfg, log } = setup(t);
   fs.mkdirSync(target, { recursive: true });
   fs.writeFileSync(path.join(target, 'history.jsonl'), 'NEW');
   fs.writeFileSync(path.join(legacy, 'history.jsonl'), 'OLD');
   m.migrateAgentConfig('a1');
   assert.equal(fs.readFileSync(path.join(target, 'history.jsonl'), 'utf8'), 'NEW');
-  assert.equal(fs.readFileSync(path.join(legacy, 'history.jsonl'), 'utf8'), 'OLD');
+  const kept = fs.readdirSync(cfg).find((n) => n.startsWith('.legacy-kept-'));
+  assert.equal(fs.readFileSync(path.join(cfg, kept, 'history.jsonl'), 'utf8'), 'OLD', 'clashing data kept, not deleted');
   assert.match(log(), /agent-config-migration-conflict/);
 });
 
@@ -295,4 +297,65 @@ test('legacy full family, target has none: moves intact as a unit', (t) => {
   const r = partial(t, {}, { 'state_5.sqlite': 'L-DB', 'state_5.sqlite-wal': 'L-WAL' });
   assert.equal(r.read('state_5.sqlite'), 'L-DB');
   assert.equal(r.read('state_5.sqlite-wal'), 'L-WAL');
+});
+
+// ── t-279 re-review N1/N2/N3 ────────────────────────────────────────────────
+test('N1: <hive>/agents replaced by a symlink to the user home + a matching registry id never reaches ~/.codex', (t) => {
+  const e = env(t);
+  const m = new HiveManager(() => e.harness, undefined, () => e.appData);
+  m.ensureHive();
+  const userId = path.basename(e.home);                                  // the victim path component: <home>/.codex
+  fs.mkdirSync(path.join(e.home, '.codex', 'sessions'), { recursive: true });
+  fs.writeFileSync(path.join(e.home, '.codex', 'state_5.sqlite'), 'USER-DB');
+  fs.writeFileSync(path.join(e.home, '.codex', 'history.jsonl'), 'USER-HIST');
+  fs.rmSync(path.join(e.hive, 'agents'), { recursive: true, force: true });
+  fs.symlinkSync(path.dirname(e.home), path.join(e.hive, 'agents'), 'dir');
+  assert.equal(m.migrateAgentConfig(userId), true);
+  assert.equal(fs.readFileSync(path.join(e.home, '.codex', 'state_5.sqlite'), 'utf8'), 'USER-DB');
+  assert.equal(fs.readFileSync(path.join(e.home, '.codex', 'history.jsonl'), 'utf8'), 'USER-HIST');
+  assert.ok(fs.existsSync(path.join(e.home, '.codex', 'sessions')));
+  assert.equal(fs.existsSync(path.join(m.agentConfigDir(userId), '.codex', 'state_5.sqlite')), false);
+  assert.match(fs.readFileSync(path.join(e.hive, 'log.jsonl'), 'utf8'), /agent-config-migration-refused/);
+});
+
+test('N2: the legacy home is staged out by one rename; merging never reads the peer-writable path again', (t) => {
+  const { e, m, legacy, cfg, target } = setup(t);
+  fs.mkdirSync(path.join(legacy, 'sessions', 'd'), { recursive: true });
+  fs.writeFileSync(path.join(legacy, 'sessions', 'd', 'r.jsonl'), 'R');
+  const real = fs.readdirSync;
+  const reads = [];
+  fs.readdirSync = (p, ...a) => { reads.push(String(p)); return real.call(fs, p, ...a); };
+  try { m.migrateAgentConfig('a1'); } finally { fs.readdirSync = real; }
+  assert.ok(reads.length > 0);
+  assert.ok(!reads.some((p) => p.startsWith(legacy)), 'no directory read under the legacy path after staging');
+  assert.equal(fs.readFileSync(path.join(target, 'sessions', 'd', 'r.jsonl'), 'utf8'), 'R');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src/main/hive.ts'), 'utf8');
+  assert.equal((src.match(/mergeLegacyCodexData\(agentId, (stage|join\(cfg, n\))/g) || []).length, 2, 'merge is only ever fed staged paths');
+});
+
+test('N3: a refused config dir is fail-closed: no token, no settings/hook config written', async (t) => {
+  const e = env(t);
+  const m = new HiveManager(() => e.harness, undefined, () => e.appData);
+  m.ensureHive();
+  fs.mkdirSync(path.join(e.home, 'attacker-dir'));
+  fs.symlinkSync(path.join(e.home, 'attacker-dir'), path.join(e.home, '.mdagents'), 'dir');   // ~/.mdagents is a link
+  assert.equal(m.migrateAgentConfig('a1'), false);
+  const claude = await m.ensureAgent({ id: 'a1', name: 'A', provider: 'claude', cwd: e.harness });
+  assert.equal(claude.args.includes('--settings'), false, 'no hook settings for a refused dir');
+  assert.equal(claude.env.HIVE_HOOK_TOKEN, undefined);
+  assert.throws(() => m.installCodexHooks(path.join(e.hive, 'agents', 'c1'), 'c1'), /refused/);
+  assert.deepEqual(fs.readdirSync(path.join(e.home, 'attacker-dir')), [], 'nothing written through the link');
+});
+
+test('N4: ~/.mdagents/<hash> as a symlink is refused too', (t) => {
+  const e = env(t);
+  const m = new HiveManager(() => e.harness, undefined, () => e.appData);
+  m.ensureHive();
+  const cfg = m.agentConfigDir('a1');
+  const top = path.dirname(cfg);
+  fs.mkdirSync(path.dirname(top), { recursive: true });
+  fs.mkdirSync(path.join(e.home, 'elsewhere'));
+  fs.symlinkSync(path.join(e.home, 'elsewhere'), top, 'dir');
+  assert.equal(m.migrateAgentConfig('a1'), false);
+  assert.deepEqual(fs.readdirSync(path.join(e.home, 'elsewhere')), []);
 });

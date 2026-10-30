@@ -639,39 +639,68 @@ export class HiveManager {
    *  recreated by installCodexHooks. Symlink children are never followed or moved (except the
    *  validated sessions link). The legacy Claude settings.json and config.toml are left alone (inert: nothing points at them), so
    *  this deletes nothing in the peer-writable tree. */
-  migrateAgentConfig(agentId: string): void {
+  migrateAgentConfig(agentId: string): boolean {
     const root = this.root();
     const cfg = this.agentConfigDir(agentId);
     const top = this.agentConfigRoot();
-    if (!root || !cfg || !top) return;
+    if (!root || !cfg || !top) return true; // legacy/headless layout: nothing to protect or migrate
     const refuse = (what: string, detail: string): void => {
       this.appendLog({ kind: 'agent-config-migration-refused', agentId, what, detail });
     };
+    const plainDir = (p: string): boolean => { try { const st = lstatSync(p); return st.isDirectory() && !st.isSymbolicLink(); } catch { return false; } };
     try {
-      mkdirSync(top, { recursive: true, mode: 0o700 }); chmodSync(top, 0o700);
-      mkdirSync(cfg, { recursive: true, mode: 0o700 }); chmodSync(cfg, 0o700);
-      // Every write below lands under the protected root, whatever the path looks like.
-      if (lstatSync(cfg).isSymbolicLink() || relative(realpathSync(top), realpathSync(cfg)) !== agentId) {
-        refuse('config-dir', 'not a plain directory under the protected root'); return;
+      const mdagents = dirname(top);
+      for (const d of [mdagents, top, cfg]) {
+        mkdirSync(d, { recursive: true, mode: 0o700 });
+        // Every component of the protected path must be a plain directory we own, not a link.
+        if (!plainDir(d)) { refuse('config-dir', `${basename(d)} is not a plain directory`); return false; }
+        chmodSync(d, 0o700);
       }
+      if (relative(realpathSync(top), realpathSync(cfg)) !== agentId) { refuse('config-dir', 'resolves outside the protected root'); return false; }
       const marker = join(cfg, '.migrated');
-      if (existsSync(marker)) return;
-      const legacyDir = join(root, 'agents', agentId);
-      const isRealDir = (p: string): boolean => { try { const st = lstatSync(p); return st.isDirectory() && !st.isSymbolicLink(); } catch { return false; } };
-      if (isRealDir(legacyDir)) {
-        const legacy = join(legacyDir, '.codex');
-        let present = true;
-        try { lstatSync(legacy); } catch { present = false; }
-        if (present && !isRealDir(legacy)) refuse('legacy-codex', 'not a real directory (symlink or file): ignored, nothing moved');
-        else if (present) this.mergeLegacyCodexData(agentId, legacy, join(cfg, '.codex'));
-      } else {
-        try { lstatSync(legacyDir); refuse('legacy-agent-dir', 'not a real directory: ignored'); } catch { /* no legacy at all */ }
+      if (existsSync(marker)) return true;
+      const target = join(cfg, '.codex');
+      // A crashed earlier run may have left staged data: finish it first (it is already inside the
+      // protected dir, so it is read in place).
+      for (const n of readdirSync(cfg)) {
+        if (n.startsWith('.legacy-staging-') && plainDir(join(cfg, n))) {
+          const left = this.mergeLegacyCodexData(agentId, join(cfg, n), target);
+          if (left) renameSync(join(cfg, n), join(cfg, n.replace('.legacy-staging-', '.legacy-kept-')));
+          else rmSync(join(cfg, n), { recursive: true, force: true });
+        }
+      }
+      // The legacy tree is peer-writable: every component from the hive root down must be a plain
+      // directory and the fully resolved path must be exactly where it should be, BEFORE we touch it.
+      const agentsDir = join(root, 'agents'), legacyDir = join(agentsDir, agentId), legacy = join(legacyDir, '.codex');
+      let legacyExists = true;
+      try { lstatSync(legacy); } catch { legacyExists = false; }
+      if (legacyExists) {
+        if (![root, agentsDir, legacyDir, legacy].every(plainDir)
+          || realpathSync(legacy) !== join(realpathSync(root), 'agents', agentId, '.codex')) {
+          refuse('legacy-codex', 'a path component is a symlink or not a directory, or it resolves elsewhere: ignored, nothing moved');
+        } else {
+          // ONE rename into the protected dir; all reading/merging happens from the staged copy, so
+          // a peer swapping directories or links in the legacy tree afterwards changes nothing.
+          const stage = join(cfg, `.legacy-staging-${Date.now()}`);
+          try { renameSync(legacy, stage); }
+          catch (e) {
+            if ((e as NodeJS.ErrnoException).code !== 'EXDEV') throw e;
+            cpSync(legacy, stage, { recursive: true, verbatimSymlinks: true }); // other volume: copy, legacy stays put
+          }
+          const left = plainDir(stage) ? this.mergeLegacyCodexData(agentId, stage, target) : 0;
+          if (!plainDir(stage)) refuse('legacy-codex', 'staged entry is not a plain directory: dropped');
+          // Inside the protected dir (rm never follows links). A clash keeps the leftovers beside
+          // the target, in a name nothing reads, instead of deleting someone's data.
+          if (left) renameSync(stage, join(cfg, `.legacy-kept-${Date.now()}`));
+          else rmSync(stage, { recursive: true, force: true });
+        }
       }
       writeFileSync(marker, new Date().toISOString(), { mode: 0o600 });
-    } catch (e) { console.error(`[hive] migrateAgentConfig(${agentId}) failed:`, e); }
+      return true;
+    } catch (e) { console.error(`[hive] migrateAgentConfig(${agentId}) failed:`, e); return false; }
   }
 
-  private mergeLegacyCodexData(agentId: string, legacy: string, target: string): void {
+  private mergeLegacyCodexData(agentId: string, legacy: string, target: string): number {
     mkdirSync(target, { recursive: true, mode: 0o700 });
     chmodSync(target, 0o700);
     const SFX = ['', '-wal', '-shm'];
@@ -734,6 +763,7 @@ export class HiveManager {
       }
     }
     if (conflicts.length) this.appendLog({ kind: 'agent-config-migration-conflict', agentId, kept: legacy, conflicts: conflicts.slice(0, 20), count: conflicts.length });
+    return conflicts.length;
   }
 
   /** Per-spawn hook token, only when the shim that stamps it is app-owned. */
@@ -900,7 +930,7 @@ export class HiveManager {
     }
     const userCodexHome = join(homedir(), '.codex');
     for (const [id, agent] of Object.entries(this.registry().agents)) {
-      this.migrateAgentConfig(id);
+      if (!this.migrateAgentConfig(id)) continue;
       const codexHome = join(this.agentConfigDir(id) ?? join(root, 'agents', id), '.codex');
       if (agent.provider === 'codex' && existsSync(codexHome)) {
         this.exposeCodexDataDirs(codexHome, userCodexHome, id);
@@ -1292,7 +1322,7 @@ export class HiveManager {
               this.emit?.('hive:degraded', { agentId: meta.id, name: meta.name, reason: 'proxy-bind', message: degraded });
             }
           }
-        } catch (e) { console.error(`[hive] install ${desc.kind} bridge failed:`, e); }
+        } catch (e) { delete env.HIVE_HOOK_TOKEN; console.error(`[hive] install ${desc.kind} bridge failed:`, e); }
       }
       // Inject the protocol text whichever way the CLI accepts it.
       // type-into-tui (Crush): the bare TUI reads a positional as a Cobra subcommand
@@ -1330,10 +1360,10 @@ export class HiveManager {
     // user's repo) so the agent reports activity and drains its inbox on Stop.
     const sock = this.sockPath();
     const shim = this.shimPath();
-    if (sock && shim) {
+    // Fail closed: a refused/unsafe config dir means no token and no hook/settings write at all.
+    if (sock && shim && this.migrateAgentConfig(meta.id)) {
       env.HIVE_SOCK = sock;
       { const tok = this.spawnHookToken(meta.id); if (tok) env.HIVE_HOOK_TOKEN = tok; else delete env.HIVE_HOOK_TOKEN; }
-      this.migrateAgentConfig(meta.id);
       const settingsPath = join(this.hookConfigDir(meta.id, dir), 'settings.json');
       this.writeJson(settingsPath, this.hookSettings(shim, meta.id, meta.cwd, opts.mcpDefaults, opts.theme, this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs), meta, opts.magento, opts.vault, opts.n8nBrokerUrl));
       args.push('--settings', settingsPath);
@@ -3024,7 +3054,7 @@ export class HiveManager {
    *  nothing is enabled, in which case the file is byte-identical to before.
    *  Returns the CODEX_HOME path for the caller to put in the worker's env. */
   private installCodexHooks(dir: string, agentId: string, mcpTables = '', cwd?: string): string {
-    this.migrateAgentConfig(agentId);
+    if (!this.migrateAgentConfig(agentId)) throw new Error('agent config dir refused: no hook config written');
     const home = join(this.hookConfigDir(agentId, dir), '.codex');
     try {
       mkdirSync(home, { recursive: true });
