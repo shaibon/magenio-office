@@ -554,7 +554,35 @@ export class HiveManager {
   }
   private shimPath(): string | null {
     const root = this.root();
-    return root ? join(root, 'bin', 'cth-hook.cjs') : null;
+    if (!root) return null;
+    const own = this.hookBinDir();
+    return join(own ?? join(root, 'bin'), 'cth-hook.cjs');
+  }
+
+  /** App-owned dir (Electron userData, outside every agent's writable set) holding the hook shim
+   *  and the node launcher it runs under. The shim is handed each agent's HIVE_HOOK_TOKEN, so
+   *  anything a peer can overwrite there could read it: with no app data dir (headless/tests)
+   *  the shim falls back to <hive>/bin and NO token is issued -> hooks never steer a kill. */
+  private hookBinDir(): string | null {
+    const d = this.getAppDataDir();
+    return d ? join(d, 'hook-bin') : null;
+  }
+
+  private hookLauncherPath(): string | null {
+    const d = this.hookBinDir();
+    return d ? join(d, process.platform === 'win32' ? 'hook-node.cmd' : 'hook-node') : null;
+  }
+
+  /** Hook command for `script` under the app-owned launcher (falls back to the hive launcher). */
+  private hookRun(script: string, quoted = true): string {
+    const l = this.hookLauncherPath();
+    if (!l || !existsSync(l)) return quoted ? this.nodeRun(script) : this.nodeRunUnquoted(script);
+    return quoted ? `"${l}" "${script}"` : `${l} ${script}`;
+  }
+
+  /** Per-spawn hook token, only when the shim that stamps it is app-owned. */
+  private spawnHookToken(agentId: string): string | undefined {
+    return this.hookBinDir() ? this.issueHookToken(agentId) : undefined;
   }
   /** The proxy-bridge sidecar (qwen). Pure-Node loopback reverse-proxy that
    *  observes a hookless CLI's LLM traffic and synthesizes the same HIVE_SOCK
@@ -746,7 +774,16 @@ export class HiveManager {
     // The hook shim: a dumb pipe between a `claude` hook and our UDS. Refreshed
     // on every bootstrap so it tracks code changes.
     mkdirSync(join(root, 'bin'), { recursive: true });
-    writeFileSync(this.shimPath()!, HOOK_SHIM, 'utf8');
+    const own = this.hookBinDir();
+    if (own) {
+      try {
+        mkdirSync(own, { recursive: true });
+        writeFileSync(this.shimPath()!, HOOK_SHIM, 'utf8');
+        const l = this.hookLauncherPath()!;
+        if (process.platform === 'win32') writeFileSync(l, `@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n"${process.execPath}" %*\r\n`, 'utf8');
+        else { writeFileSync(l, `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec "${process.execPath}" "$@"\n`, 'utf8'); chmodSync(l, 0o755); }
+      } catch (e) { console.error('[hive] writing app-owned hook shim failed:', e); }
+    } else writeFileSync(this.shimPath()!, HOOK_SHIM, 'utf8');
     // The proxy-bridge sidecar for hookless CLIs (qwen). Same refresh policy.
     writeFileSync(this.proxyShimPath()!, PROXY_BRIDGE_SHIM, 'utf8');
     // The bundled-node launcher every shim above is invoked through — MUST be
@@ -999,7 +1036,7 @@ export class HiveManager {
       const sock = this.sockPath();
       if (desc && sock) {
         env.HIVE_SOCK = sock;
-        env.HIVE_HOOK_TOKEN = this.issueHookToken(meta.id);
+        { const tok = this.spawnHookToken(meta.id); if (tok) env.HIVE_HOOK_TOKEN = tok; else delete env.HIVE_HOOK_TOKEN; }
         try {
           if (desc.kind === 'hooks') {
             if (desc.shim === 'agy') this.installAgyHooks();
@@ -1136,7 +1173,7 @@ export class HiveManager {
     const shim = this.shimPath();
     if (sock && shim) {
       env.HIVE_SOCK = sock;
-      env.HIVE_HOOK_TOKEN = this.issueHookToken(meta.id);
+      { const tok = this.spawnHookToken(meta.id); if (tok) env.HIVE_HOOK_TOKEN = tok; else delete env.HIVE_HOOK_TOKEN; }
       const settingsPath = join(dir, 'settings.json');
       this.writeJson(settingsPath, this.hookSettings(shim, meta.id, meta.cwd, opts.mcpDefaults, opts.theme, this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs), meta, opts.magento, opts.vault, opts.n8nBrokerUrl));
       args.push('--settings', settingsPath);
@@ -1531,7 +1568,7 @@ export class HiveManager {
   ): unknown {
     // Bundled node, NOT bare `node` — see nodeLauncherPath(). Claude runs each of
     // these through `sh -c` with a stripped PATH, where `node` is often absent.
-    const cmd = this.nodeRun(shim);
+    const cmd = this.hookRun(shim);
     const entry = (matcher?: string) => ({
       ...(matcher ? { matcher } : {}),
       hooks: [{ type: 'command', command: cmd }]
@@ -2876,8 +2913,8 @@ export class HiveManager {
         // through a different shell stack there (#350). The reported Codex bug
         // is POSIX, where ordinary shell quoting is both necessary and verified.
         const command = hookCommand = process.platform === 'win32'
-          ? this.nodeRunUnquoted(shim)
-          : this.nodeRun(shim);
+          ? this.hookRun(shim, false)
+          : this.hookRun(shim);
         config += '\n# --- munder-hive lifecycle hooks (auto-generated; do not edit) ---\n';
         for (const ev of events) {
           config += `\n[[hooks.${ev}]]\n[[hooks.${ev}.hooks]]\ntype = "command"\ncommand = ${JSON.stringify(command)}\ntimeout = 30\n`;

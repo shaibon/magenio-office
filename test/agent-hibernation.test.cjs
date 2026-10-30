@@ -348,6 +348,22 @@ test('wiring: handle() verifies the token, both env sites issue one, the cth shi
   const h = fs.readFileSync(path.join(__dirname, '..', 'src/main/hooks.ts'), 'utf8');
   assert.match(h, /verifyHookToken\(agentId, p\.hook_token\)/);
   const v = fs.readFileSync(path.join(__dirname, '..', 'src/main/hive.ts'), 'utf8');
-  assert.equal((v.match(/env\.HIVE_HOOK_TOKEN = this\.issueHookToken\(meta\.id\)/g) || []).length, 2);
+  assert.equal((v.match(/this\.spawnHookToken\(meta\.id\)/g) || []).length, 2);
   assert.match(v, /payload\.hook_token = process\.env\.HIVE_HOOK_TOKEN/);
+});
+
+// Creed HIGH #2: the shim that carries the token must live where no agent can overwrite it.
+test('hook shim + launcher are app-owned (outside the hive and every agent-writable dir); no app dir -> no token', async (t) => {
+  const { home } = await floor(t);
+  const appData = fs.mkdtempSync(path.join(os.tmpdir(), 'md-appdata-'));
+  t.after(() => fs.rmSync(appData, { recursive: true, force: true }));
+  const owned = new HiveManager(() => home, undefined, () => appData);
+  const shim = owned.shimPath();
+  assert.ok(shim.startsWith(appData + path.sep), 'shim under app data');
+  assert.ok(!shim.startsWith(home + path.sep), 'shim not under the shared hive');
+  assert.ok(owned.hookLauncherPath().startsWith(appData + path.sep));
+  assert.equal(typeof owned.spawnHookToken('pam'), 'string');
+  const headless = new HiveManager(() => home);
+  assert.ok(headless.shimPath().startsWith(home + path.sep));
+  assert.equal(headless.spawnHookToken('pam'), undefined);
 });
