@@ -24,7 +24,7 @@ import {
   readdirSync, statSync, lstatSync, realpathSync, rmSync, appendFileSync,
   symlinkSync, unlinkSync, copyFileSync, cpSync, chmodSync
 } from 'node:fs';
-import { join, dirname, basename, isAbsolute, relative } from 'node:path';
+import { join, dirname, basename, isAbsolute, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { spawnSync, spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
@@ -588,10 +588,35 @@ export class HiveManager {
    *  Deliberately SHORT (`~/.mdagents/<hive>/<id>`, not userData): Codex binds its Remote Control
    *  socket under the canonical CODEX_HOME and macOS caps a socket path at 104 bytes. */
   agentConfigDir(agentId: string): string | null {
+    const top = this.agentConfigRoot();
+    if (!top || !agentId || basename(agentId) !== agentId || agentId === '.' || agentId === '..') return null;
+    return join(top, agentId);
+  }
+
+  /** Delete an agent's app-owned config dir (worker scratch removal / purge). agentConfigDir
+   *  already rejects ids that are not a bare name; the resolved path is re-checked to sit directly
+   *  under this hive's config root before anything is removed. */
+  removeAgentConfig(agentId: string): void {
+    const dir = this.agentConfigDir(agentId);
+    const top = this.agentConfigRoot();
+    if (!dir || !top || resolve(dir) !== join(resolve(top), agentId)) return;
+    try { rmSync(dir, { recursive: true, force: true }); }
+    catch (e) { console.error(`[hive] removeAgentConfig(${agentId}) failed:`, e); }
+  }
+
+  /** `~/.mdagents/<hive hash>` — every agent's config dir for this hive (null without app data). */
+  private agentConfigRoot(): string | null {
     const root = this.root();
-    if (!root || !this.getAppDataDir() || !agentId || basename(agentId) !== agentId || agentId === '.' || agentId === '..') return null;
-    const hive = createHash('sha1').update(root).digest('hex').slice(0, 6);
-    return join(homedir(), '.mdagents', hive, agentId);
+    if (!root || !this.getAppDataDir()) return null;
+    return join(homedir(), '.mdagents', createHash('sha1').update(root).digest('hex').slice(0, 6));
+  }
+
+  /** Full hive reset: drop all of this hive's agent config with it. */
+  removeAllAgentConfig(): void {
+    const top = this.agentConfigRoot();
+    if (!top) return;
+    try { rmSync(top, { recursive: true, force: true }); }
+    catch (e) { console.error('[hive] removeAllAgentConfig failed:', e); }
   }
 
   /** The directory the hook-bearing files live in for `agentId` (see agentConfigDir). */

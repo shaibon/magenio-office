@@ -118,3 +118,18 @@ test('claude --settings is written under the app-owned dir, never under the hive
   assert.ok(inj.env.HIVE_HOOK_TOKEN, 'token only because the shim is app-owned');
   for (const f of filesUnder(e.hive)) assert.ok(!/cth-hook|hook-node/.test(fs.readFileSync(f, 'utf8')), f);
 });
+
+test('purge removes one agent\'s config dir (and only that), reset removes the hive\'s whole config root', (t) => {
+  const e = env(t);
+  const m = new HiveManager(() => e.harness, undefined, () => e.appData);
+  const a = m.agentConfigDir('a1'), b = m.agentConfigDir('b1');
+  for (const d of [a, b]) { fs.mkdirSync(d, { recursive: true }); fs.writeFileSync(path.join(d, 'settings.json'), '{}'); }
+  const other = path.join(e.home, '.mdagents', 'ffffff', 'a1');       // another hive's agent, same id
+  fs.mkdirSync(other, { recursive: true });
+  m.removeAgentConfig('../b1'); m.removeAgentConfig('..'); m.removeAgentConfig('');
+  assert.ok(fs.existsSync(a) && fs.existsSync(b), 'traversal ids remove nothing');
+  m.removeAgentConfig('a1');
+  assert.ok(!fs.existsSync(a) && fs.existsSync(b) && fs.existsSync(other));
+  m.removeAllAgentConfig();
+  assert.ok(!fs.existsSync(b) && fs.existsSync(other), 'only this hive\'s root goes');
+});
