@@ -256,6 +256,17 @@ test('forget() drops the sleeper so a later wake cannot respawn it', async () =>
   assert.equal(st.spawns.length, 0);
 });
 
+test('peer deletes a real sleeper\'s registry flag: the sleeper record still wakes it and repairs the flag', async () => {
+  const { h, st } = fakeApp();
+  h.hibernate('pam', 'idle');
+  st.hibernated = false; // registry.json is agent-writable
+  assert.equal(h.hibernate('pam', 'again'), false, 'not re-hibernated either');
+  assert.equal(await h.wake('pam', 'inbox'), true);
+  assert.equal(st.spawns.length, 1);
+  assert.deepEqual(st.flagWrites.map((w) => w[1]).includes('flag-repaired'), true);
+  assert.equal(h.isSleeper('pam'), false);
+});
+
 const SRC = fs.readFileSync(path.join(__dirname, '..', 'src/main/index.ts'), 'utf8');
 
 test('wiring (index.ts): the light teardown neither archives nor removes the worktree', () => {
@@ -266,7 +277,7 @@ test('wiring (index.ts): the light teardown neither archives nor removes the wor
 
 test('wiring (index.ts): terminal input to a sleeper wakes it; mail wakes it; spawn clears the flag', () => {
   assert.match(SRC, /hibernator\.sleeperOf\(id\)[\s\S]{0,120}wakeAgent\(sleeper, 'terminal-input'\)/);
-  assert.match(SRC, /a\?\.hibernated\) \{ if \(hive\.inbox\(agentId\)\.length > 0\) void wakeAgent\(agentId, 'inbox'\)/);
+  assert.match(SRC, /a\?\.hibernated \|\| hibernator\.isSleeper\(agentId\)\) \{ if \(hive\.inbox\(agentId\)\.length > 0\) void wakeAgent\(agentId, 'inbox'\)/);
   assert.match(SRC, /hive\.setHibernated\(opts\.hive\.id, false/);
   assert.match(SRC, /hibernated: !!a\.hibernated/, 'fleet.json must carry the flag');
 });

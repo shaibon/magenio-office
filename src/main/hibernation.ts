@@ -155,7 +155,7 @@ export class Hibernator<Recipe> {
   hibernate(agentId: string, reason: string): boolean {
     const ptyId = this.d.ptyFor(agentId);
     const recipe = this.d.recipeFor(agentId);
-    if (!ptyId || !recipe || this.d.isHibernated(agentId)) return false;
+    if (!ptyId || !recipe || this.d.isHibernated(agentId) || this.isSleeper(agentId)) return false;
     const sessionId = this.d.sessionFor(agentId);
     if (!sessionId) return false; // a wake would start blank — never trade context for memory
     // Flag first, then kill: the wake beat and the write guard see the sleeper from here on.
@@ -180,11 +180,14 @@ export class Hibernator<Recipe> {
    *  over from a previous run) never causes a respawn — it is cleared instead. */
   wake(agentId: string, reason: string): Promise<boolean> {
     return this.gate.run(agentId, async () => {
-      if (!this.d.isHibernated(agentId)) return false;
+      const flagged = this.d.isHibernated(agentId);
       if (!this.isSleeper(agentId) || this.d.ptyFor(agentId)) {
-        this.d.setHibernated(agentId, false, { reason: 'inconsistent-flag' });
+        if (flagged) this.d.setHibernated(agentId, false, { reason: 'inconsistent-flag' });
         return false;
       }
+      // A recorded sleeper with no live pty is the one authoritative case. The registry flag is
+      // peer-writable, so a MISSING flag is repaired here rather than allowed to strand the agent.
+      if (!flagged) this.d.setHibernated(agentId, true, { reason: 'flag-repaired' });
       const recipe = this.d.recipeFor(agentId);
       if (!recipe) { this.forget(agentId); this.d.setHibernated(agentId, false, { reason: 'no-recipe' }); return false; }
       const ok = await this.d.respawn(agentId, recipe, reason);

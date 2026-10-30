@@ -6333,7 +6333,7 @@ function runWorkerWakeBeat(): void {
   for (const [agentId, a] of Object.entries(reg.agents)) {
     if (agentId === reg.godId || a?.archived) continue;
     // A sleeper with mail wakes; the normal nudge below then delivers it once it has booted.
-    if (a?.hibernated) { if (hive.inbox(agentId).length > 0) void wakeAgent(agentId, 'inbox'); if (hibernator.isSleeper(agentId)) continue; }
+    if (a?.hibernated || hibernator.isSleeper(agentId)) { if (hive.inbox(agentId).length > 0) void wakeAgent(agentId, 'inbox'); if (hibernator.isSleeper(agentId)) continue; }
     const ptyId = ptyForAgent(agentId);
     if (!ptyId) continue;
     const snap = control.snapshot(agentId);
