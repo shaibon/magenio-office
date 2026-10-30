@@ -90,6 +90,7 @@ import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WORKER_WAKE_REPORT_MS, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
+import { holdReason, countDoingCards, WakeGate, Hibernator, type HibernateFacts } from './hibernation';
 import { inboxNudgeText } from '../shared/hiveNudge';
 import { resolveGodName } from '../shared/godIdentity';
 import { fetchHireManifest, readHireManifestFiles } from './hire';
@@ -358,6 +359,14 @@ function standingGoalFromRoster(agentId: string): string | null {
 // background window can't leave a worker parked on an unread inbox forever).
 // HookServer feeds it the hook stream so a permission/HITL prompt blocks nudges.
 const workerWake = new WorkerWakeWatchdog();
+// ── Agent hibernation (t-279) ────────────────────────────────────────────────
+/** Spawn recipe per hive agent id, captured at every successful spawn: a pristine copy of the
+ *  request (so a wake spawns exactly like the original) re-pointed at the worktree that actually
+ *  exists, with isolate off (never re-cut a worktree) and resume on. In memory only — a wake needs
+ *  the live app's owner window; an app restart respawns through the renderer's normal restore. */
+const hibernateRecipes = new Map<string, { opts: AgentSpawnOptions; owner: Electron.WebContents | null }>();
+/** One wake per agent however many events race, at most 3 spawning at once. */
+const wakeGate = new WakeGate(3);
 // HookServer needs BOTH: Oscar's control registry (HITL pause/gate/steer/halt via
 // hook returns) AND Jim's breaker (feed recordToolUse on each PostToolUse).
 const hookServer = new HookServer(
@@ -540,7 +549,7 @@ const preservedWorktrees = new Map<string, PreservedWorktree>();
  * step is wrapped so a teardown error can never crash the caller (an IPC
  * handler or node-pty's onExit).
  */
-function teardownPty(id: string): void {
+function teardownPty(id: string, opts: { hibernate?: boolean } = {}): void {
   // Ephemeral-worker flag, read BEFORE the cleanup below deletes the entry. All
   // worker deaths (done-release, idle/token reap, manual stop, crash) funnel
   // through here, so this is the one place their floor card gets archived
@@ -567,12 +576,13 @@ function teardownPty(id: string): void {
     // W1 — kill this agent's proxy-bridge sidecar (qwen), if any, so a dead
     // PTY never leaves an orphan loopback listener. No-op for non-proxy agents.
     try { hive.stopProxyBridge(agentId); } catch (e) { console.error('[hive] stopProxyBridge failed:', e); }
-    if (hive.enabled()) {
+    if (hive.enabled() && !opts.hibernate) {
       try { hive.setArchived(agentId, true); } catch (e) { console.error('[hive] setArchived failed:', e); }
     }
   }
   // 2) Remove the isolated worktree, if any. Non-blocking; errors are logged.
-  const wtPath = worktreePaths.get(id);
+  //    A hibernating agent KEEPS its worktree (and its uncommitted work): it is coming back.
+  const wtPath = opts.hibernate ? undefined : worktreePaths.get(id);
   if (wtPath) {
     const origCwd = worktreeOrigins.get(id) ?? wtPath;
     worktreePaths.delete(id);
@@ -1510,7 +1520,8 @@ function writeFleetSnapshot(): void {
           lastActiveSecAgo: u ? Math.round((now - u.ts) / 1000) : null,
           inboxBacklog: hive.inboxBacklog(id),
           onHold: !!a.onHold,
-          frozen: frozenIds.has(id)
+          frozen: frozenIds.has(id),
+          hibernated: !!a.hibernated
         };
       });
     // `hooks` is the control plane's own health (#277): god and the operator
@@ -3060,7 +3071,7 @@ function findCodexHomeForSession(sessionId: string, siblingsRoot: string): strin
 
 /** Spawn options shared by the `pty:spawn` IPC handler and the god-triggered
  *  ephemeral-worker watcher. */
-type AgentSpawnOptions = SpawnOptions & { hive?: AgentMeta; isolate?: boolean; resume?: boolean; requireResume?: boolean; resumeSessionId?: string; provider?: AgentProvider; noAutoInstall?: boolean; noResumeRetry?: boolean; model?: string };
+type AgentSpawnOptions = SpawnOptions & { wakeReason?: string; hive?: AgentMeta; isolate?: boolean; resume?: boolean; requireResume?: boolean; resumeSessionId?: string; provider?: AgentProvider; noAutoInstall?: boolean; noResumeRetry?: boolean; model?: string };
 
 /** Resolve the shared `project` label stamped into registry.json/fleet.json at
  *  spawn time so same-named agents are distinguishable OUTSIDE the renderer
@@ -3598,6 +3609,16 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   if (res.ok && didResume && !pristine.noResumeRetry) {
     pendingResumeRetry.set(opts.id, { opts: { ...pristine, resume: false, resumeSessionId: undefined, noResumeRetry: true }, owner, at: Date.now() });
   }
+  if (res.ok && opts.hive?.id) {
+    // Hibernation bookkeeping: remember how to bring this agent back, and drop a stale
+    // `hibernated` flag (an app-restart restore, or the wake itself, is a spawn).
+    const wt = worktreePaths.get(opts.id);
+    hibernateRecipes.set(opts.hive.id, {
+      opts: { ...pristine, cwd: wt ?? pristine.cwd, isolate: false, resume: true, resumeSessionId: undefined, wakeReason: undefined },
+      owner
+    });
+    try { if (hive.registry().agents[opts.hive.id]?.hibernated) hive.setHibernated(opts.hive.id, false, { reason: opts.wakeReason ?? 'respawn', resumeLost: !didResume }); } catch { /* best-effort */ }
+  }
   if (res.ok) analytics.track('agent_spawned', { provider });
   else analytics.track('agent_spawn_failed', { provider, reason: spawnFailReason(res.error) });
   syncKeepAwake(); // arm the power-save blocker while ≥1 agent PTY is alive (#18)
@@ -3612,8 +3633,16 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
 }
 ipcMain.handle('pty:write', (_evt, id: string, data: string) => {
   if (typeof id !== 'string' || typeof data !== 'string') return { ok: false, error: 'invalid args' };
+  // A keystroke (or a nudge/queue line) aimed at a hibernated agent's terminal wakes it instead of
+  // vanishing into a dead pty. The text itself is dropped: the wake re-delivers mail on its own.
+  const sleeper = hibernator.sleeperOf(id);
+  if (sleeper) { void wakeAgent(sleeper, 'terminal-input'); return { ok: false, error: 'hibernated — waking' }; }
   return ptyManager.write(id, data);
 });
+ipcMain.handle('agent:isHibernated', (_evt, agentId: unknown) =>
+  typeof agentId === 'string' && !!hive.registry().agents[agentId]?.hibernated);
+ipcMain.handle('agent:wake', (_evt, agentId: unknown, reason: unknown) =>
+  typeof agentId === 'string' ? wakeAgent(agentId, typeof reason === 'string' ? reason : 'ui') : false);
 ipcMain.handle('pty:resize', (_evt, id: string, cols: number, rows: number) => {
   if (typeof id !== 'string' || typeof cols !== 'number' || typeof rows !== 'number') return { ok: false, error: 'invalid args' };
   return ptyManager.resize(id, cols, rows);
@@ -6259,6 +6288,7 @@ const WORKER_WAKE_POLL_MS = 15_000;
 /** How often the beat verifies the hook socket is bound AND still ours (#277). */
 const HOOK_HEALTH_MS = 15_000;
 let workerWakeTimer: ReturnType<typeof setInterval> | null = null;
+let hibernateTimer: ReturnType<typeof setInterval> | null = null;
 let hookHealthTimer: ReturnType<typeof setInterval> | null = null;
 
 /** Type the renderer's guarded nudge into one worker's PTY — text first, Enter a
@@ -6296,6 +6326,8 @@ function runWorkerWakeBeat(): void {
   const facts: WorkerWakeFacts[] = [];
   for (const [agentId, a] of Object.entries(reg.agents)) {
     if (agentId === reg.godId || a?.archived) continue;
+    // A sleeper with mail wakes; the normal nudge below then delivers it once it has booted.
+    if (a?.hibernated) { if (hive.inbox(agentId).length > 0) void wakeAgent(agentId, 'inbox'); continue; }
     const ptyId = ptyForAgent(agentId);
     if (!ptyId) continue;
     const snap = control.snapshot(agentId);
@@ -6357,6 +6389,82 @@ function runWorkerWakeBeat(): void {
   }
 }
 
+/** Hibernation lifecycle (t-279): the logic lives in hibernation.ts; this wires the real app. */
+const hibernator = new Hibernator<{ opts: AgentSpawnOptions; owner: Electron.WebContents | null }>({
+  ptyFor: (id) => ptyForAgent(id),
+  recipeFor: (id) => hibernateRecipes.get(id),
+  sessionFor: (id) => {
+    const a = hive.registry().agents[id];
+    return hive.lastSession(id, a?.sessionProvider ?? hibernateRecipes.get(id)?.opts.provider);
+  },
+  isHibernated: (id) => !!hive.registry().agents[id]?.hibernated,
+  setHibernated: (id, on, info) => hive.setHibernated(id, on, info).ok,
+  // ptyManager.kill reaps the detached MCP servers and sweeps the process group (no leaked tree);
+  // it removes the session first, so no pty:exit reaches the renderer — it is not a death.
+  killPty: (ptyId) => { ptyManager.kill(ptyId); },
+  teardownLight: (ptyId) => teardownPty(ptyId, { hibernate: true }),
+  respawn: async (agentId, recipe, reason) => {
+    const ptyId = recipe.opts.id;
+    const wc = recipe.owner && !recipe.owner.isDestroyed() ? recipe.owner : liveWebContents();
+    try { wc?.send(`pty:relaunch:${ptyId}`); } catch { /* window gone */ }
+    const opts: AgentSpawnOptions = { ...recipe.opts, args: [...(recipe.opts.args ?? [])], env: { ...(recipe.opts.env ?? {}) }, resume: true, wakeReason: reason };
+    const res = await spawnAgentCore(opts, recipe.owner);
+    if (!res.ok) console.error(`[hibernate] wake of ${agentId} failed: ${res.error}`);
+    return res.ok;
+  },
+  notify: (agentId, ptyId, hibernated, recipe) => {
+    try {
+      if (hibernated) {
+        const wc = recipe?.owner && !recipe.owner.isDestroyed() ? recipe.owner : liveWebContents();
+        wc?.send(`pty:data:${ptyId}`, '\r\n\x1b[2m─ hibernated (idle) — wakes on mail, click or input ─\x1b[0m\r\n');
+      }
+      liveWebContents()?.send('hive:agentHibernation', { id: agentId, hibernated });
+    } catch { /* window gone */ }
+  },
+  inboxCount: (id) => hive.inbox(id).length
+}, wakeGate);
+const hibernateAgent = (agentId: string, reason: string): boolean => hibernator.hibernate(agentId, reason);
+const wakeAgent = (agentId: string, reason: string): Promise<boolean> => hibernator.wake(agentId, reason);
+
+/** Reaper: hibernate opted-in agents that have been genuinely idle. Pure decision in
+ *  hibernation.ts; this only gathers the facts. */
+function runHibernateBeat(): void {
+  if (!hive.enabled()) return;
+  const cfg = readConfig();
+  const minutes = cfg.agentHibernateMinutes ?? 0;
+  const optIn = cfg.hibernateOptInAgents ?? [];
+  if (!(minutes > 0) || optIn.length === 0) return;
+  const reg = hive.registry();
+  if (!reg?.agents) return;
+  const now = Date.now();
+  const ledger = hive.tasks();
+  for (const agentId of optIn) {
+    const a = reg.agents[agentId];
+    if (!a || a.archived || a.hibernated) continue;
+    const ptyId = ptyForAgent(agentId);
+    const snap = control.snapshot(agentId);
+    const facts: HibernateFacts = {
+      agentId,
+      isGod: agentId === reg.godId || !!a.isGod,
+      isWorker: !!ptyId && liveWorkers.has(ptyId),
+      onHold: !!a.onHold,
+      autoDeliveryPaused: snap.autoDeliveryPaused,
+      paused: snap.paused,
+      halted: snap.halted,
+      ptyId,
+      hasRecipe: hibernateRecipes.has(agentId),
+      hasSession: !!hive.lastSession(agentId, a.sessionProvider),
+      lastOutputAt: ptyId ? (ptyManager.lastOutputAt(ptyId) ?? 0) : 0,
+      spawnedAt: ptyId ? workerWake.spawnedAtFor(ptyId) : 0,
+      lastTurnWasStop: workerWake.lastTurnWasStop(agentId),
+      hitlRecently: workerWake.hitlRecently(agentId, now),
+      inboxCount: hive.inbox(agentId).length,
+      doingCards: countDoingCards(ledger, agentId)
+    };
+    if (holdReason(facts, { minutes, optIn }, now) === null) hibernateAgent(agentId, `idle>${minutes}m`);
+  }
+}
+
 /** (Re)arm the always-on beats (decoupled from the optional heartbeat): the live
  *  fleet snapshot Michael reads (~8s) + the breaker/cost-ledger beat (~30s).
  *  Guarded (clear-then-set) so a re-bootstrap (changeHome recovery) OR a
@@ -6370,6 +6478,8 @@ function armAlwaysOnBeats(): void {
   breakerBeatTimer = setInterval(() => { try { runBreakerBeat(300_000); } catch (e) { console.error('[breaker beat]', e); } }, 30_000);
   if (workerWakeTimer) clearInterval(workerWakeTimer);
   workerWakeTimer = setInterval(() => { try { runWorkerWakeBeat(); } catch (e) { console.error('[worker-wake beat]', e); } }, WORKER_WAKE_POLL_MS);
+  if (hibernateTimer) clearInterval(hibernateTimer);
+  hibernateTimer = setInterval(() => { try { runHibernateBeat(); } catch (e) { console.error('[hibernate beat]', e); } }, 60_000);
   runWorkerWakeBeat(); // catch-up on arm — power-resume re-arms and drains the backlog
   // The hook socket is the whole control plane; a session where it is silently
   // unbound looks exactly like "no workers have spawned yet" (#277). Verify it

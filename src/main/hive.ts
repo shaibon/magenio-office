@@ -185,6 +185,11 @@ export interface RegistryAgent extends AgentMeta {
    *  "do not dispatch to them", not "they are gone", which is why it is its own
    *  flag rather than a reuse of `archived` or a breaker level. */
   onHold?: boolean;
+  /** Hibernated (t-279): the CLI process and its MCP servers were closed for inactivity but the
+   *  agent is still here and AVAILABLE — not `archived` (gone), not frozen (alive, delivery
+   *  refused). Any direct event wakes it with its session resumed. `sessionId` is the resume key
+   *  captured at hibernation; `resumeLost` is set by a wake that had to start fresh. */
+  hibernated?: { at: number; sessionId?: string; resumeLost?: boolean };
   /** Most recent Claude Code session_id seen for this agent (Lane A #6.6a),
    *  captured from hook payloads. Doubles as the `--resume` key (idempotent
    *  resume after a crash/restart) AND the cost accounting/dedup key on every
@@ -1302,6 +1307,33 @@ export class HiveManager {
       }
       this.appendLog({ kind: 'agent-hold', id, onHold: hold });
       return { ok: true, onHold: hold };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  /** Mark an agent hibernated / awake. The registry is the record; fleet.json is patched in the
+   *  same operation (like setAgentHold) so god's next roster read is not up to 8s stale. */
+  setHibernated(id: string, on: boolean, info?: { sessionId?: string; resumeLost?: boolean; reason?: string }): { ok: boolean; error?: string } {
+    const root = this.root();
+    if (!root) return { ok: false, error: 'hive disabled (no harnessHome)' };
+    try {
+      const reg = this.registry();
+      const agent = reg.agents[id];
+      if (!agent) return { ok: false, error: 'Agent not found' };
+      if (on) agent.hibernated = { at: Date.now(), ...(info?.sessionId ? { sessionId: info.sessionId } : {}) };
+      else delete agent.hibernated;
+      this.writeJson(join(root, 'registry.json'), reg);
+      const fleetPath = join(root, 'fleet.json');
+      if (existsSync(fleetPath)) {
+        try {
+          const fleet = this.readJson<{ agents?: Array<{ id?: string; hibernated?: boolean }> }>(fleetPath, {});
+          const row = Array.isArray(fleet.agents) ? fleet.agents.find((c) => c.id === id) : undefined;
+          if (row) { row.hibernated = on; this.writeJson(fleetPath, fleet); }
+        } catch { /* fleet is a cache — the registry above is the record */ }
+      }
+      this.appendLog({ kind: on ? 'agent-hibernate' : 'agent-wake', id, ...(info?.reason ? { reason: info.reason } : {}), ...(info?.resumeLost ? { resumeLost: true } : {}) });
+      return { ok: true };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
@@ -3213,7 +3245,7 @@ export class HiveManager {
           project?: string;
           breaker?: string; tokens?: number; usd?: number;
           lastTool?: string | null; lastActiveSecAgo?: number | null; inboxBacklog?: number;
-          onHold?: boolean; frozen?: boolean;
+          onHold?: boolean; frozen?: boolean; hibernated?: boolean;
         }>;
       };
       const agents = Array.isArray(snap.agents) ? snap.agents : [];
@@ -3232,6 +3264,7 @@ export class HiveManager {
       let anyCtx = false;
       let anyHold = false;
       let anyFrozen = false;
+      let anyHibernated = false;
       const rows = shown.map((a) => {
         const bits = [a.role ?? 'agent',
           typeof a.lastActiveSecAgo === 'number' ? `active ${ago(a.lastActiveSecAgo)}` : 'no activity yet'];
@@ -3248,6 +3281,9 @@ export class HiveManager {
         // `no activity yet` / `active Nh ago`, same silence. Say so explicitly
         // or this reads as archived/killed and gets skipped or re-spawned.
         if (a.frozen) { bits.push('FROZEN — no auto-delivery'); anyFrozen = true; }
+        // Hibernated is the opposite of unavailable: the process is closed to save memory, the
+        // session is kept, and ANY message wakes it. Say so, or it reads as dead.
+        if (a.hibernated) { bits.push('HIBERNATED — wakes on mail'); anyHibernated = true; }
         // Live context-window occupancy from the statusLine shim — lets god see
         // which agents are near-full when routing, instead of guessing from the
         // cumulative token count. Clamp to 0-100; a fresh meter can briefly
@@ -3279,6 +3315,11 @@ export class HiveManager {
             + 'them when picking an owner. Route to someone else, or say the work is waiting. They '
             + 'are still running and their terminal is alive, so this is not a reason to archive '
             + 'them or spawn a replacement. The human flips it off when they are done. '
+          : '')
+        + (anyHibernated
+          ? 'An agent marked `HIBERNATED` is AVAILABLE: its process was closed after a quiet spell to save '
+            + 'memory, its session and inbox are kept, and any message (dispatch, mail, automation) wakes it '
+            + 'by itself within seconds. Dispatch to it normally; do NOT treat it as dead or spawn a replacement. '
           : '')
         + (anyFrozen
           ? 'An agent marked `FROZEN` was deliberately parked by an operator, not killed: it gets '

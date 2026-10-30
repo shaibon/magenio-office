@@ -805,6 +805,12 @@ export function useHive(config: HarnessConfig | null): void {
       const { messageQueues, removeQueuedMessage } = useStore.getState();
       const next = messageQueues[srcId]?.[0];
       if (!next || !target?.ptyId) return { sent: false };
+      // A hibernated agent has no process to type into: wake it and keep the message queued —
+      // the normal gates below deliver it once the resumed session is idle again.
+      if (await window.cth.isAgentHibernated?.(target.id)) {
+        void window.cth.wakeAgent?.(target.id, 'queued-message');
+        return { sent: false };
+      }
       const now = Date.now();
       // Idle, or breaker-pinned with a terminal that has genuinely gone quiet.
       // This gate is a don't-type-mid-stream safety check, so `manual` does NOT
@@ -1151,6 +1157,19 @@ export function useHive(config: HarnessConfig | null): void {
       if (e?.id) useStore.getState().archiveAgent(e.id);
     });
     return () => { offSpawn?.(); offArchive?.(); };
+  }, [config?.onboardingComplete]);
+
+  // 5b) Hibernation (t-279): opening a sleeping agent's tab is a direct event — wake it. Main
+  //     wakes on mail and on terminal input; this covers the plain "I clicked on it".
+  useEffect(() => {
+    if (!config?.onboardingComplete) return;
+    let last: string | null = null;
+    return useStore.subscribe((s) => {
+      const id = s.selectedId;
+      if (!id || id === last) return;
+      last = id;
+      void window.cth.isAgentHibernated?.(id).then((h) => { if (h) void window.cth.wakeAgent?.(id, 'select'); });
+    });
   }, [config?.onboardingComplete]);
 
   // 5c) v0.3.4 voice bridge: main stages queue insertions (clear_context) and

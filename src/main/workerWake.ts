@@ -229,6 +229,22 @@ export class WorkerWakeWatchdog {
     if (classifyHook(event, message) === 'needsHuman') this.lastHumanNeedsAt.set(agentId, at);
   }
 
+  /** When this pty was registered as spawned, or 0. */
+  spawnedAtFor(ptyId: string): number {
+    return this.spawnedAt.get(ptyId) ?? 0;
+  }
+
+  /** True when the agent's last turn hook was a Stop (parked at its prompt). */
+  lastTurnWasStop(agentId: string): boolean {
+    return this.lastTurnEvent.get(agentId) === 'Stop';
+  }
+
+  /** True when a permission/HITL prompt fired within the re-arm window. */
+  hitlRecently(agentId: string, now = Date.now()): boolean {
+    const t = this.lastHumanNeedsAt.get(agentId) ?? 0;
+    return t > 0 && now - t < WORKER_WAKE_HITL_REARM_MS;
+  }
+
   /** When the agent's hooks last proved a turn, or 0 when they never have. */
   turnHookAt(agentId: string): number {
     return this.lastTurnHookAt.get(agentId) ?? 0;

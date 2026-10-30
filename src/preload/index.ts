@@ -972,6 +972,16 @@ const api = {
     ipcRenderer.on('hive:agentSpawned', listener);
     return () => ipcRenderer.removeListener('hive:agentSpawned', listener);
   },
+  /** Hibernation (t-279). A hibernated agent is NOT dead: its card and terminal stay, its process is
+   *  closed, and any event wakes it. The renderer asks before typing into a terminal and wakes on
+   *  select; main also wakes on mail, and on any write to the sleeper's pty. */
+  isAgentHibernated: (agentId: string): Promise<boolean> => ipcRenderer.invoke('agent:isHibernated', agentId),
+  wakeAgent: (agentId: string, reason?: string): Promise<boolean> => ipcRenderer.invoke('agent:wake', agentId, reason),
+  onHiveAgentHibernation: (cb: (e: { id: string; hibernated: boolean }) => void): (() => void) => {
+    const listener = (_e: IpcRendererEvent, payload: { id: string; hibernated: boolean }) => cb(payload);
+    ipcRenderer.on('hive:agentHibernation', listener);
+    return () => ipcRenderer.removeListener('hive:agentHibernation', listener);
+  },
   /** A MAIN-initiated agent kill/archive (e.g. a voice kill via rt-5) — the renderer
    *  archives the floor card since it didn't initiate the kill itself. */
   onHiveAgentArchived: (cb: (e: { id: string }) => void): (() => void) => {
