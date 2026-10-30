@@ -32,6 +32,11 @@ export interface HibernateFacts {
   spawnedAt: number;
   /** Last turn hook was a Stop (the CLI is parked at its prompt, not mid-turn). */
   lastTurnWasStop: boolean;
+  /** Epoch ms of the last turn-proving hook (0 = the CLI has not taken a turn since it came up). */
+  lastTurnAt: number;
+  /** The CLI's hooks are alive (any hook event seen since spawn): a missing turn hook means
+   *  "no turn yet", not "no hook channel". */
+  hooksSeen: boolean;
   /** A permission/HITL prompt fired recently (a human may be deciding on it). */
   hitlRecently: boolean;
   /** Undrained inbox messages. */
@@ -51,7 +56,7 @@ export interface HibernateConfig {
 /** Why an agent is NOT hibernated right now (null from holdReason = go ahead). */
 export type HibernateHold =
   | 'off' | 'not-opted-in' | 'god' | 'worker' | 'on-hold' | 'frozen' | 'paused' | 'halted'
-  | 'no-pty' | 'no-recipe' | 'no-session' | 'booting' | 'recent-output' | 'mid-turn'
+  | 'no-pty' | 'no-recipe' | 'no-session' | 'booting' | 'recent-activity' | 'mid-turn'
   | 'hitl' | 'inbox' | 'doing-card';
 
 /** A PTY that has never printed is still booting; spawn time bounds that. */
@@ -73,9 +78,16 @@ export function holdReason(f: HibernateFacts, cfg: HibernateConfig, now = Date.n
   // Without a recorded session a wake would start blank: lose the context we exist to keep.
   if (!f.hasSession) return 'no-session';
   if (f.spawnedAt > 0 && now - f.spawnedAt < HIBERNATE_BOOT_GRACE_MS) return 'booting';
-  const last = Math.max(f.lastOutputAt, f.spawnedAt);
-  if (last <= 0 || now - last < cfg.minutes * 60_000) return 'recent-output';
-  if (!f.lastTurnWasStop) return 'mid-turn';
+  // The hooks are the authority on "parked at the prompt": a Stop (or a hooked CLI that has
+  // not taken a turn since it came up) is idle however much the TUI repaints, so PTY output
+  // only times agents without that evidence (no hook channel -> stay conservative).
+  const parked = f.lastTurnWasStop;
+  const untouched = !parked && f.hooksSeen && f.lastTurnAt <= 0;
+  const last = parked ? Math.max(f.lastTurnAt, f.spawnedAt)
+    : untouched ? f.spawnedAt
+    : Math.max(f.lastOutputAt, f.spawnedAt);
+  if (last <= 0 || now - last < cfg.minutes * 60_000) return 'recent-activity';
+  if (!parked && !untouched) return 'mid-turn';
   if (f.hitlRecently) return 'hitl';
   if (f.inboxCount > 0) return 'inbox';
   if (f.doingCards > 0) return 'doing-card';

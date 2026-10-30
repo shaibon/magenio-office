@@ -239,10 +239,16 @@ export class WorkerWakeWatchdog {
     return this.lastTurnEvent.get(agentId) === 'Stop';
   }
 
-  /** True when a permission/HITL prompt fired within the re-arm window. */
+  /** True when a permission/HITL prompt fired within the re-arm window and no turn hook
+   *  came after it (a later turn means the prompt was answered). */
   hitlRecently(agentId: string, now = Date.now()): boolean {
     const t = this.lastHumanNeedsAt.get(agentId) ?? 0;
-    return t > 0 && now - t < WORKER_WAKE_HITL_REARM_MS;
+    return t > 0 && now - t < WORKER_WAKE_HITL_REARM_MS && t >= this.turnHookAt(agentId);
+  }
+
+  /** True once any hook event arrived for this agent (its hook channel is alive). */
+  hooksSeen(agentId: string): boolean {
+    return this.hookSeenAt.has(agentId);
   }
 
   /** When the agent's hooks last proved a turn, or 0 when they never have. */

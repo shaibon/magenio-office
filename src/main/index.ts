@@ -6448,6 +6448,9 @@ const wakeAgent = (agentId: string, reason: string): Promise<boolean> => hiberna
 
 /** Reaper: hibernate opted-in agents that have been genuinely idle. Pure decision in
  *  hibernation.ts; this only gathers the facts. */
+/** agentId → last logged hold reason (log on change only). */
+const hibernateHoldLast = new Map<string, string>();
+
 function runHibernateBeat(): void {
   if (!hive.enabled()) return;
   const cfg = readConfig();
@@ -6477,11 +6480,19 @@ function runHibernateBeat(): void {
       lastOutputAt: ptyId ? (ptyManager.lastOutputAt(ptyId) ?? 0) : 0,
       spawnedAt: ptyId ? workerWake.spawnedAtFor(ptyId) : 0,
       lastTurnWasStop: workerWake.lastTurnWasStop(agentId),
+      lastTurnAt: workerWake.turnHookAt(agentId),
+      hooksSeen: workerWake.hooksSeen(agentId),
       hitlRecently: workerWake.hitlRecently(agentId, now),
       inboxCount: hive.inbox(agentId).length,
       doingCards: countDoingCards(ledger, agentId)
     };
-    if (holdReason(facts, { minutes, optIn }, now) === null) hibernateAgent(agentId, `idle>${minutes}m`);
+    const hold = holdReason(facts, { minutes, optIn }, now);
+    // One line per change of hold (not per beat) so a smoke run explains itself.
+    if (hibernateHoldLast.get(agentId) !== (hold ?? 'go')) {
+      hibernateHoldLast.set(agentId, hold ?? 'go');
+      hive.appendLog({ kind: 'hibernate-hold', agentId, hold: hold ?? 'go', lastOutputAgoS: facts.lastOutputAt ? Math.round((now - facts.lastOutputAt) / 1000) : null, lastTurnAgoS: facts.lastTurnAt ? Math.round((now - facts.lastTurnAt) / 1000) : null, stop: facts.lastTurnWasStop, hooks: facts.hooksSeen, inbox: facts.inboxCount, doing: facts.doingCards });
+    }
+    if (hold === null) hibernateAgent(agentId, `idle>${minutes}m`);
   }
 }
 

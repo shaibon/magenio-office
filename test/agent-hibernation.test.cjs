@@ -24,7 +24,7 @@ const ok = (o = {}) => ({
   agentId: 'pam', isGod: false, isWorker: false, onHold: false, autoDeliveryPaused: false, paused: false, halted: false,
   ptyId: 'pty-pam', hasRecipe: true, hasSession: true,
   lastOutputAt: NOW - 31 * 60_000, spawnedAt: NOW - 3 * 3600_000, lastTurnWasStop: true,
-  hitlRecently: false, inboxCount: 0, doingCards: 0, ...o
+  lastTurnAt: NOW - 31 * 60_000, hooksSeen: true, hitlRecently: false, inboxCount: 0, doingCards: 0, ...o
 });
 
 test('decider: an idle, opted-in, drained agent hibernates', () => {
@@ -37,8 +37,8 @@ test('decider: every hard stop keeps the agent awake', () => {
     [{ autoDeliveryPaused: true }, 'frozen'], [{ paused: true }, 'paused'], [{ halted: true }, 'halted'],
     [{ ptyId: undefined }, 'no-pty'], [{ hasRecipe: false }, 'no-recipe'], [{ hasSession: false }, 'no-session'],
     [{ spawnedAt: NOW - HIBERNATE_BOOT_GRACE_MS + 1000, lastOutputAt: 0 }, 'booting'],
-    [{ lastOutputAt: NOW - 29 * 60_000 }, 'recent-output'],
-    [{ lastTurnWasStop: false }, 'mid-turn'], [{ hitlRecently: true }, 'hitl'],
+    [{ lastTurnAt: NOW - 29 * 60_000 }, 'recent-activity'],
+    [{ lastTurnWasStop: false, lastOutputAt: NOW - 31 * 60_000 }, 'mid-turn'], [{ lastTurnWasStop: false, hooksSeen: false, lastTurnAt: 0 }, 'mid-turn'], [{ hitlRecently: true }, 'hitl'],
     [{ inboxCount: 1 }, 'inbox'], [{ doingCards: 1 }, 'doing-card']
   ];
   for (const [over, why] of cases) assert.equal(holdReason(ok(over), CFG, NOW), why, why);
@@ -51,8 +51,30 @@ test('decider: off and opt-in gates (phase 2a is opt-in, 0 = off)', () => {
 });
 
 test('decider: a never-printed pty is judged from its spawn time, not as infinitely idle', () => {
-  assert.equal(holdReason(ok({ lastOutputAt: 0, spawnedAt: NOW - 5 * 60_000 }), CFG, NOW), 'recent-output');
-  assert.equal(holdReason(ok({ lastOutputAt: 0, spawnedAt: 0 }), CFG, NOW), 'recent-output');
+  assert.equal(holdReason(ok({ lastOutputAt: 0, spawnedAt: NOW - 5 * 60_000 }), CFG, NOW), 'recent-activity');
+  assert.equal(holdReason(ok({ lastOutputAt: 0, spawnedAt: 0, lastTurnWasStop: false, hooksSeen: false, lastTurnAt: 0 }), CFG, NOW), 'recent-activity');
+});
+
+// t-279 smoke: the Claude TUI repaints, so PTY output must not hold a parked (Stop) agent.
+test('decider: Stop + idle hooks hibernate even while the TUI keeps repainting (Angela, claude)', () => {
+  assert.equal(holdReason(ok({ lastOutputAt: NOW - 5_000, lastTurnAt: NOW - 90_000 }), { minutes: 1, optIn: ['pam'] }, NOW), null);
+  assert.equal(holdReason(ok({ lastOutputAt: NOW - 5_000, lastTurnAt: NOW - 30_000 }), { minutes: 1, optIn: ['pam'] }, NOW), 'recent-activity');
+});
+
+// t-279 smoke: a hooked CLI that never took a turn is parked, not "mid-turn" (Phyllis/Toby, codex).
+test('decider: hooked but untouched since spawn hibernates after minutes from spawn', () => {
+  const f = { lastTurnWasStop: false, lastTurnAt: 0, lastOutputAt: NOW - 5_000, spawnedAt: NOW - 90_000 };
+  assert.equal(holdReason(ok(f), { minutes: 1, optIn: ['pam'] }, NOW), null);
+  assert.equal(holdReason(ok({ ...f, spawnedAt: NOW - 70_000 }), { minutes: 2, optIn: ['pam'] }, NOW), 'recent-activity');
+});
+
+test('hitl: a turn hook after the permission prompt clears the hold', () => {
+  const w = new WorkerWakeWatchdog();
+  w.noteHook('pam', 'Notification', 'Claude needs your permission to use Bash', NOW - 1000);
+  assert.equal(w.hitlRecently('pam', NOW), true);
+  w.noteHook('pam', 'PostToolUse', undefined, NOW - 500);
+  assert.equal(w.hitlRecently('pam', NOW), false);
+  assert.equal(w.hooksSeen('pam'), true);
 });
 
 test('doing cards block; blocked/review cards (waiting on a human) do not', () => {
