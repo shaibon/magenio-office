@@ -99,7 +99,7 @@ test('irreparable structural JSON is logged and quarantined', async (t) => {
   assert.equal(hive.routeOnce(), 0);
   assert.equal(hive.inbox('god-1').length, 0);
   assert.equal(fs.existsSync(path.join(outbox, filename)), false);
-  assert.equal(fs.existsSync(path.join(outbox, '.sent', `bad-${filename}`)), true);
+  assert.equal(fs.existsSync(path.join(outbox, '.failed', filename)), true);
 
   const events = eventsFor(hive, filename);
   assert.equal(events.filter((entry) => entry.kind === 'outbox-repair').length, 0);
@@ -129,7 +129,7 @@ test('an irreparable poison file does not block a valid file in the same pass', 
   assert.equal(hive.routeOnce(), 1);
   assert.equal(hive.inbox('god-1').length, 1);
   assert.equal(hive.inbox('god-1')[0].body, 'still routed');
-  assert.equal(fs.existsSync(path.join(outbox, '.sent', 'bad-a-poison.json')), true);
+  assert.equal(fs.existsSync(path.join(outbox, '.failed', 'a-poison.json')), true);
   assert.equal(fs.existsSync(path.join(outbox, '.sent', 'b-good.json')), true);
   assert.equal(eventsFor(hive, 'a-poison.json')[0].reason, 'malformed-json');
 });
