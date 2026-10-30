@@ -245,6 +245,9 @@ test('stale flag with a sleeper record but a live pty is also refused', async ()
   st.live.add('pty-pam'); // somehow alive again (e.g. renderer respawn) while the record lingers
   assert.equal(await h.wake('pam', 'inbox'), false);
   assert.equal(st.spawns.length, 0);
+  assert.equal(h.isSleeper('pam'), false, 'stale record dropped');
+  assert.equal(h.sleeperOf('pty-pam'), undefined, 'the live pty must not have its input intercepted');
+  assert.equal(st.hibernated, false);
 });
 
 test('forget() drops the sleeper so a later wake cannot respawn it', async () => {

@@ -182,6 +182,8 @@ export class Hibernator<Recipe> {
     return this.gate.run(agentId, async () => {
       const flagged = this.d.isHibernated(agentId);
       if (!this.isSleeper(agentId) || this.d.ptyFor(agentId)) {
+        // A live pty means the record is stale: drop it, or the write guard keeps swallowing input.
+        this.forget(agentId);
         if (flagged) this.d.setHibernated(agentId, false, { reason: 'inconsistent-flag' });
         return false;
       }
