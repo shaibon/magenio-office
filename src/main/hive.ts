@@ -658,15 +658,11 @@ export class HiveManager {
       }
       if (relative(realpathSync(top), realpathSync(cfg)) !== agentId) { refuse('config-dir', 'resolves outside the protected root'); return false; }
       const target = join(cfg, '.codex');
-      // A protected .codex that is a link (planted, or carried in by an older build's migration)
-      // would make CODEX_HOME resolve into a peer-writable tree: drop the link itself (never what
-      // it points at) and let installCodexHooks create a real directory. Checked on EVERY call.
+      // A protected .codex that is a link would make CODEX_HOME resolve into a peer-writable tree:
+      // fail closed (no repair logic; nothing is written, moved or removed). Checked on EVERY call.
       try {
         const st = lstatSync(target);
-        if (!st.isDirectory() || st.isSymbolicLink()) {
-          unlinkSync(target);
-          refuse('protected-codex', 'was a symlink or not a directory: link removed, a real home will be created');
-        }
+        if (!st.isDirectory() || st.isSymbolicLink()) { refuse('protected-codex', 'is a symlink or not a directory: refused'); return false; }
       } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
       const marker = join(cfg, '.migrated');
       if (existsSync(marker)) return true;
