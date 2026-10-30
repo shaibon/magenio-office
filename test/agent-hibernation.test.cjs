@@ -12,6 +12,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+// A HiveManager given an app-data dir migrates/creates agent config under ~/.mdagents: never the real one.
+process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'md-home-'));
 
 const { holdReason, countDoingCards, WakeGate, Hibernator, HIBERNATE_BOOT_GRACE_MS } = loadTs('src/main/hibernation.ts');
 const { WorkerWakeWatchdog } = loadTs('src/main/workerWake.ts');
