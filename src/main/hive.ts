@@ -665,6 +665,27 @@ export class HiveManager {
       // state_5.sqlite) is never overwritten and never deleted — it stays in the legacy dir and
       // is reported, so no session data is silently abandoned.
       const conflicts: string[] = [];
+      // Codex resumes only sessions its sqlite index knows, and the migrated legacy rollouts are
+      // indexed by the LEGACY db. So a clashing db family (`X.sqlite` + -wal/-shm, swapped as a
+      // set: a stale wal against another db corrupts it) swaps in the legacy copy, and the
+      // target's own is kept beside it as `*.superseded-<ts>` rather than deleted.
+      const dbFamily = (n: string): string | null => n.match(/^(.+\.sqlite)(-wal|-shm)?$/)?.[1] ?? null;
+      const swapped: string[] = [];
+      const clashing = new Set<string>();
+      for (const e of readdirSync(legacy, { withFileTypes: true })) {
+        const fam = e.isFile() ? dbFamily(e.name) : null;
+        if (fam && existsSync(join(target, e.name))) clashing.add(fam);
+      }
+      const stamp = Date.now();
+      for (const fam of clashing) {
+        for (const suffix of ['', '-wal', '-shm']) {
+          const t = join(target, fam + suffix), l = join(legacy, fam + suffix);
+          if (existsSync(t)) renameSync(t, `${t}.superseded-${stamp}`);
+          if (existsSync(l)) this.moveCodexDataDir(l, t);
+        }
+        swapped.push(fam);
+      }
+      if (swapped.length) this.appendLog({ kind: 'agent-config-db-swapped', agentId, dbs: swapped, kept: `*.superseded-${stamp}` });
       const merge = (from: string, to: string, rel: string): void => {
         for (const e of readdirSync(from, { withFileTypes: true })) {
           const f = join(from, e.name), t = join(to, e.name), r = rel ? `${rel}/${e.name}` : e.name;
