@@ -359,3 +359,24 @@ test('N4: ~/.mdagents/<hash> as a symlink is refused too', (t) => {
   assert.equal(m.migrateAgentConfig('a1'), false);
   assert.deepEqual(fs.readdirSync(path.join(e.home, 'elsewhere')), []);
 });
+
+test('upgrade: a protected .codex that is already a symlink (old-build migration of a planted link) is repaired, never written through', (t) => {
+  const { e, m, cfg, target, log } = setup(t);
+  const peerDir = path.join(e.hive, 'agents', 'peer');
+  fs.mkdirSync(peerDir, { recursive: true });
+  fs.mkdirSync(cfg, { recursive: true });
+  fs.symlinkSync(peerDir, target, 'dir');                                 // state left by da53cd73
+  fs.writeFileSync(path.join(cfg, '.migrated'), 'old');                   // even post-marker
+  const legacy = path.join(e.hive, 'agents', 'a1', '.codex');
+  fs.writeFileSync(path.join(legacy, 'state_5.sqlite'), 'DB');
+  m.codexHookLister = () => [];
+
+  assert.equal(m.migrateAgentConfig('a1'), true);
+  const home = m.installCodexHooks(path.join(e.hive, 'agents', 'a1'), 'a1');
+
+  assert.equal(home, target);
+  assert.equal(fs.lstatSync(target).isSymbolicLink(), false, 'protected home is a real directory again');
+  assert.ok(fs.existsSync(path.join(target, 'config.toml')));
+  assert.deepEqual(fs.readdirSync(peerDir), [], 'nothing was written into the peer-writable directory');
+  assert.match(log(), /protected-codex/);
+});
