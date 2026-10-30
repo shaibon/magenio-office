@@ -624,96 +624,116 @@ export class HiveManager {
     const c = this.agentConfigDir(agentId);
     if (!c) return hiveAgentDir;
     mkdirSync(c, { recursive: true, mode: 0o700 });
+    chmodSync(c, 0o700); // mode applies only on create
     return c;
   }
 
-  /** One-time, idempotent: move a legacy <hive>/agents/<id>/.codex (login links, sqlite index,
-   *  sessions link, config.toml) into the app-owned dir and delete the legacy Claude
-   *  settings.json (regenerated every spawn, so nothing custom lives in it). A legacy copy left
-   *  in the hive can never be executed: nothing points at it any more. */
+  /** The legacy hive tree is writable by every peer, so migrating out of it treats it as hostile
+   *  input. ONCE per agent (marker in the protected dir; a legacy tree recreated afterwards is
+   *  inert, nothing reads it), and only:
+   *   - from a real directory (never a symlink: that would move/delete files the link points at);
+   *   - an allowlist of Codex DATA (sqlite index families, history/session index, and the
+   *     sessions/archived_sessions dirs or the exposure link into ~/.codex/<kind>/munder-difflin).
+   *  Never config.toml, .hook-trust.json, skills, rules, AGENTS.md, auth/packages links or anything
+   *  else: they either carry hook commands/instructions that run in the agent's process or are
+   *  recreated by installCodexHooks. Symlink children are never followed or moved (except the
+   *  validated sessions link). The legacy Claude settings.json and config.toml are left alone (inert: nothing points at them), so
+   *  this deletes nothing in the peer-writable tree. */
   migrateAgentConfig(agentId: string): void {
     const root = this.root();
     const cfg = this.agentConfigDir(agentId);
-    if (!root || !cfg) return;
-    const legacyDir = join(root, 'agents', agentId);
+    const top = this.agentConfigRoot();
+    if (!root || !cfg || !top) return;
+    const refuse = (what: string, detail: string): void => {
+      this.appendLog({ kind: 'agent-config-migration-refused', agentId, what, detail });
+    };
     try {
-      rmSync(join(legacyDir, 'settings.json'), { force: true });
-      const legacy = join(legacyDir, '.codex');
-      let has = false;
-      try { lstatSync(legacy); has = true; } catch { /* none */ }
-      if (!has) return;
-      mkdirSync(cfg, { recursive: true, mode: 0o700 });
-      const target = join(cfg, '.codex');
-      // Hook-bearing config is regenerated at every spawn; never carry the legacy one over.
-      rmSync(join(legacy, 'config.toml'), { force: true });
-      if (!existsSync(target)) {
-        // Copy-then-rename so an interrupted cross-volume copy never leaves a partial target
-        // that a later run would mistake for a finished migration (legacy is removed last).
-        const stage = `${target}.migrating`;
-        rmSync(stage, { recursive: true, force: true });
-        try { renameSync(legacy, target); }
-        catch (e) {
-          if ((e as NodeJS.ErrnoException).code !== 'EXDEV') throw e;
-          cpSync(legacy, stage, { recursive: true, force: false, errorOnExist: true });
-          renameSync(stage, target);
-          rmSync(legacy, { recursive: true, force: true });
-        }
-        return;
+      mkdirSync(top, { recursive: true, mode: 0o700 }); chmodSync(top, 0o700);
+      mkdirSync(cfg, { recursive: true, mode: 0o700 }); chmodSync(cfg, 0o700);
+      // Every write below lands under the protected root, whatever the path looks like.
+      if (lstatSync(cfg).isSymbolicLink() || relative(realpathSync(top), realpathSync(cfg)) !== agentId) {
+        refuse('config-dir', 'not a plain directory under the protected root'); return;
       }
-      // Both homes exist (the app-owned one was created first, or a past run was interrupted):
-      // move across everything the target lacks. Anything present in BOTH (e.g. two
-      // state_5.sqlite) is never overwritten and never deleted — it stays in the legacy dir and
-      // is reported, so no session data is silently abandoned.
-      const conflicts: string[] = [];
-      // Codex resumes only sessions its sqlite index knows, and the migrated legacy rollouts are
-      // indexed by the LEGACY db. So a clashing db family (`X.sqlite` + -wal/-shm, swapped as a
-      // set: a stale wal against another db corrupts it) swaps in the legacy copy, and the
-      // target's own is kept beside it as `*.superseded-<ts>` rather than deleted.
-      const dbFamily = (n: string): string | null => n.match(/^(.+\.sqlite)(-wal|-shm)?$/)?.[1] ?? null;
-      const SFX = ['', '-wal', '-shm'];
-      const fams = new Set<string>();
-      for (const e of readdirSync(legacy, { withFileTypes: true })) {
-        const fam = e.isFile() ? dbFamily(e.name) : null;
-        if (fam) fams.add(fam);
-      }
-      const stamp = Date.now();
-      const swapped: string[] = [];
-      const orphans: string[] = [];
-      for (const fam of fams) {
-        const lHas = SFX.filter((x) => existsSync(join(legacy, fam + x)));
-        const tHas = SFX.filter((x) => existsSync(join(target, fam + x)));
-        if (!lHas.includes('')) {
-          // A -wal/-shm without its database is meaningless on its own and must never be paired
-          // with another db: park it beside the target's files, unpaired.
-          for (const x of lHas) this.moveCodexDataDir(join(legacy, fam + x), join(target, `${fam + x}.orphan-${stamp}`));
-          orphans.push(fam);
-        } else {
-          // Legacy db present: the family moves as a unit; a target family (any member) is kept aside.
-          for (const x of tHas) renameSync(join(target, fam + x), join(target, `${fam + x}.superseded-${stamp}`));
-          for (const x of lHas) this.moveCodexDataDir(join(legacy, fam + x), join(target, fam + x));
-          if (tHas.length) swapped.push(fam);
-        }
-      }
-      if (swapped.length) this.appendLog({ kind: 'agent-config-db-swapped', agentId, dbs: swapped, kept: `*.superseded-${stamp}` });
-      if (orphans.length) this.appendLog({ kind: 'agent-config-db-orphan', agentId, dbs: orphans, kept: `*.orphan-${stamp}` });
-      const merge = (from: string, to: string, rel: string): void => {
-        for (const e of readdirSync(from, { withFileTypes: true })) {
-          const f = join(from, e.name), t = join(to, e.name), r = rel ? `${rel}/${e.name}` : e.name;
-          let there = false;
-          try { lstatSync(t); there = true; } catch { /* absent */ }
-          if (!there) { this.moveCodexDataDir(f, t); continue; }
-          if (e.isDirectory() && lstatSync(t).isDirectory()) { merge(f, t, r); continue; }
-          conflicts.push(r);
-        }
-      };
-      merge(legacy, target, '');
-      if (conflicts.length) {
-        this.appendLog({ kind: 'agent-config-migration-conflict', agentId, kept: legacy, conflicts: conflicts.slice(0, 20), count: conflicts.length });
+      const marker = join(cfg, '.migrated');
+      if (existsSync(marker)) return;
+      const legacyDir = join(root, 'agents', agentId);
+      const isRealDir = (p: string): boolean => { try { const st = lstatSync(p); return st.isDirectory() && !st.isSymbolicLink(); } catch { return false; } };
+      if (isRealDir(legacyDir)) {
+        const legacy = join(legacyDir, '.codex');
+        let present = true;
+        try { lstatSync(legacy); } catch { present = false; }
+        if (present && !isRealDir(legacy)) refuse('legacy-codex', 'not a real directory (symlink or file): ignored, nothing moved');
+        else if (present) this.mergeLegacyCodexData(agentId, legacy, join(cfg, '.codex'));
       } else {
-        // Only empty directories can remain; this removes them (never a file we did not move).
-        try { rmSync(legacy, { recursive: true, force: true }); } catch { /* best effort */ }
+        try { lstatSync(legacyDir); refuse('legacy-agent-dir', 'not a real directory: ignored'); } catch { /* no legacy at all */ }
       }
+      writeFileSync(marker, new Date().toISOString(), { mode: 0o600 });
     } catch (e) { console.error(`[hive] migrateAgentConfig(${agentId}) failed:`, e); }
+  }
+
+  private mergeLegacyCodexData(agentId: string, legacy: string, target: string): void {
+    mkdirSync(target, { recursive: true, mode: 0o700 });
+    chmodSync(target, 0o700);
+    const SFX = ['', '-wal', '-shm'];
+    const stamp = Date.now();
+    const present = (p: string): boolean => { try { lstatSync(p); return true; } catch { return false; } };
+    const isFile = (p: string): boolean => { try { return lstatSync(p).isFile(); } catch { return false; } };
+    const entries = readdirSync(legacy, { withFileTypes: true });
+
+    // sqlite index families move as a unit; legacy wins on a clash (it indexes the migrated
+    // rollouts), the target's own is kept aside; wal/shm without their db are parked unpaired.
+    const fams = new Set<string>();
+    for (const e of entries) {
+      const m = e.isFile() ? e.name.match(/^((?:state|logs)_\d+\.sqlite)(-wal|-shm)?$/) : null;
+      if (m) fams.add(m[1]);
+    }
+    const swapped: string[] = [], orphans: string[] = [];
+    for (const fam of fams) {
+      const lHas = SFX.filter((x) => isFile(join(legacy, fam + x)));
+      const tHas = SFX.filter((x) => present(join(target, fam + x)));
+      if (!lHas.includes('')) {
+        for (const x of lHas) this.moveCodexDataDir(join(legacy, fam + x), join(target, `${fam + x}.orphan-${stamp}`));
+        orphans.push(fam);
+      } else {
+        for (const x of tHas) renameSync(join(target, fam + x), join(target, `${fam + x}.superseded-${stamp}`));
+        for (const x of lHas) this.moveCodexDataDir(join(legacy, fam + x), join(target, fam + x));
+        if (tHas.length) swapped.push(fam);
+      }
+    }
+    if (swapped.length) this.appendLog({ kind: 'agent-config-db-swapped', agentId, dbs: swapped, kept: `*.superseded-${stamp}` });
+    if (orphans.length) this.appendLog({ kind: 'agent-config-db-orphan', agentId, dbs: orphans, kept: `*.orphan-${stamp}` });
+
+    const conflicts: string[] = [];
+    // Plain data files: moved only when the target lacks them.
+    for (const name of ['history.jsonl', 'session_index.jsonl']) {
+      const from = join(legacy, name), to = join(target, name);
+      if (!isFile(from)) continue;
+      if (present(to)) conflicts.push(name); else this.moveCodexDataDir(from, to);
+    }
+    // Rollout dirs: real dirs merge (no symlink is ever followed or moved from inside them); the
+    // exposure link moves only if it resolves into this user's munder-difflin scan root.
+    for (const kind of ['sessions', 'archived_sessions'] as const) {
+      const from = join(legacy, kind), to = join(target, kind);
+      let st; try { st = lstatSync(from); } catch { continue; }
+      if (st.isSymbolicLink()) {
+        let ok = false;
+        try { ok = !relative(realpathSync(join(homedir(), '.codex', kind, 'munder-difflin')), realpathSync(from)).startsWith('..'); } catch { /* dangling or absent */ }
+        if (ok && !present(to)) this.moveCodexDataDir(from, to);
+        else if (!ok) this.appendLog({ kind: 'agent-config-migration-refused', agentId, what: kind, detail: 'symlink outside the Munder scan root: ignored' });
+      } else if (st.isDirectory()) {
+        const merge = (f: string, t: string, rel: string): void => {
+          if (!present(t)) { mkdirSync(t, { recursive: true, mode: 0o700 }); }
+          for (const e of readdirSync(f, { withFileTypes: true })) {
+            const ff = join(f, e.name), tt = join(t, e.name), r = `${rel}/${e.name}`;
+            if (e.isDirectory()) merge(ff, tt, r);
+            else if (e.isFile()) { if (present(tt)) conflicts.push(r); else this.moveCodexDataDir(ff, tt); }
+            // symlinks and specials: never followed, never moved
+          }
+        };
+        if (present(to) && !lstatSync(to).isDirectory()) conflicts.push(kind); else merge(from, to, kind);
+      }
+    }
+    if (conflicts.length) this.appendLog({ kind: 'agent-config-migration-conflict', agentId, kept: legacy, conflicts: conflicts.slice(0, 20), count: conflicts.length });
   }
 
   /** Per-spawn hook token, only when the shim that stamps it is app-owned. */
