@@ -1078,6 +1078,7 @@ function archiveOrphanedAgents(): void {
       if (a.archived) continue;
       if (id === reg.godId) continue;        // god is never archived
       if (ptyForAgent(id)) continue;         // has a live PTY → genuinely active
+      if (a.crashed) continue;               // died abnormally: stays in the roster, restartable
       hive.setArchived(id, true);            // stale archived:false orphan → archive
       console.log('[migration] archived orphaned agent (no live PTY):', id);
     }

@@ -125,3 +125,14 @@ test('recordAgentExit reports whether the exit was abnormal (the caller keeps su
   assert.equal(hive.recordAgentExit('a1', { exitCode: 0 }), false);
   assert.equal(hive.recordAgentExit('a1', {}), false);
 });
+
+test('an abnormal exit marks the registry entry crashed; the next spawn clears it', async (t) => {
+  const { home, hive } = await freshHive(t);
+  hive.recordAgentExit('a1', { exitCode: 1, tail: 'boom' });
+  assert.equal(hive.registry().agents.a1.crashed, true);
+  await hive.ensureAgent({ id: 'a1', name: 'A', provider: 'claude', cwd: home });
+  assert.equal(hive.registry().agents.a1.crashed, undefined);
+  hive.recordAgentExit('a1', { exitCode: 0 });
+  assert.equal(hive.registry().agents.a1.crashed, undefined);
+  assert.match(fs.readFileSync(path.join(__dirname, '..', 'src/main/index.ts'), 'utf8'), /if \(a\.crashed\) continue;/);
+});

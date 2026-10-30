@@ -190,6 +190,9 @@ export interface RegistryAgent extends AgentMeta {
    *  refused). Any direct event wakes it with its session resumed. `sessionId` is the resume key
    *  captured at hibernation; `resumeLost` is set by a wake that had to start fresh. */
   hibernated?: { at: number; sessionId?: string; resumeLost?: boolean };
+  /** Last process exit was abnormal (crash / non-zero / signal): the agent stays in the roster,
+   *  restartable — startup's orphan archiving skips it. Cleared by the next spawn. */
+  crashed?: boolean;
   /** Most recent Claude Code session_id seen for this agent (Lane A #6.6a),
    *  captured from hook payloads. Doubles as the `--resume` key (idempotent
    *  resume after a crash/restart) AND the cost accounting/dedup key on every
@@ -1150,6 +1153,7 @@ export class HiveManager {
       cwdValid: cwd.valid,
       // A (re)spawn always means a live terminal — clear any prior archived flag.
       archived: false,
+      crashed: undefined,
       lastSeen: Date.now(),
       // The provider changed since the session was recorded (or, for a legacy entry,
       // since the last spawn): its session id means nothing to the new CLI and made
@@ -3656,6 +3660,10 @@ export class HiveManager {
     const abnormal = (typeof signal === 'number' && signal !== 0) || (typeof exitCode === 'number' && exitCode !== 0);
     const root = this.root();
     if (!abnormal || !root) return abnormal;
+    try {
+      const reg = this.registry();
+      if (reg.agents[agentId]) { reg.agents[agentId].crashed = true; this.atomicWriteJson(join(root, 'registry.json'), reg); }
+    } catch { /* a diagnostic must never break teardown */ }
 
     let tailPath: string | null = null;
     if (tail && tail.length) {
