@@ -357,11 +357,15 @@ test('hook shim + launcher are app-owned (outside the hive and every agent-writa
   const { home } = await floor(t);
   const appData = fs.mkdtempSync(path.join(os.tmpdir(), 'md-appdata-'));
   t.after(() => fs.rmSync(appData, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(home, 'hive', 'bin'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'hive', 'bin', 'cth-hook.cjs'), '// stale');
   const owned = new HiveManager(() => home, undefined, () => appData);
+  owned.ensureHive?.();
   const shim = owned.shimPath();
   assert.ok(shim.startsWith(appData + path.sep), 'shim under app data');
   assert.ok(!shim.startsWith(home + path.sep), 'shim not under the shared hive');
   assert.ok(owned.hookLauncherPath().startsWith(appData + path.sep));
+  if (owned.ensureHive) { assert.ok(fs.existsSync(shim)); assert.ok(!fs.existsSync(path.join(home, 'hive', 'bin', 'cth-hook.cjs')), 'old copy removed'); }
   assert.equal(typeof owned.spawnHookToken('pam'), 'string');
   const headless = new HiveManager(() => home);
   assert.ok(headless.shimPath().startsWith(home + path.sep));

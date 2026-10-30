@@ -779,6 +779,8 @@ export class HiveManager {
       try {
         mkdirSync(own, { recursive: true });
         writeFileSync(this.shimPath()!, HOOK_SHIM, 'utf8');
+        // The old peer-writable copy is dead weight now: remove it so nothing can be pointed at it.
+        try { rmSync(join(root, 'bin', 'cth-hook.cjs'), { force: true }); } catch { /* best effort */ }
         const l = this.hookLauncherPath()!;
         if (process.platform === 'win32') writeFileSync(l, `@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n"${process.execPath}" %*\r\n`, 'utf8');
         else { writeFileSync(l, `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec "${process.execPath}" "$@"\n`, 'utf8'); chmodSync(l, 0o755); }
