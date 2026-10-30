@@ -117,3 +117,11 @@ test('a death is still recorded when there is no output to dump', async (t) => {
   assert.equal(rows[0].signal, 9);
   assert.equal(rows[0].tailPath, null);
 });
+
+test('recordAgentExit reports whether the exit was abnormal (the caller keeps such an agent in the roster)', async (t) => {
+  const { hive } = await freshHive(t);
+  assert.equal(hive.recordAgentExit('a1', { exitCode: 1, tail: 'x' }), true);
+  assert.equal(hive.recordAgentExit('a1', { exitCode: 0, signal: 9 }), true);
+  assert.equal(hive.recordAgentExit('a1', { exitCode: 0 }), false);
+  assert.equal(hive.recordAgentExit('a1', {}), false);
+});

@@ -299,7 +299,7 @@ const SRC = fs.readFileSync(path.join(__dirname, '..', 'src/main/index.ts'), 'ut
 test('wiring (index.ts): the light teardown neither archives nor removes the worktree', () => {
   const body = SRC.slice(SRC.indexOf('function teardownPty('), SRC.indexOf('/** Send an inform to the god agent'));
   assert.match(body, /hive\.enabled\(\) && !opts\.hibernate/, 'setArchived must be skipped when hibernating');
-  assert.match(body, /opts\.hibernate \|\| opts\.keepWorktree \? undefined : worktreePaths\.get\(id\)/, 'worktree removal must be skipped');
+  assert.match(body, /opts\.hibernate \|\| opts\.keepWorktree \|\| opts\.keepRoster \? undefined : worktreePaths\.get\(id\)/, 'worktree removal must be skipped');
 });
 
 test('wiring (index.ts): terminal input to a sleeper wakes it; mail wakes it; spawn clears the flag', () => {
@@ -402,4 +402,11 @@ test('wiring: token commits/discards and noteSpawn happen only after ptyManager.
   assert.match(after, /discardHookToken\(hookTok\)/);
   assert.match(after, /workerWake\.noteSpawn\(opts\.id\)/);
   assert.equal((x.match(/workerWake\.noteSpawn\(/g) || []).length, 1);
+});
+
+test('wiring (index.ts): an abnormal PTY exit keeps the agent in the roster (no archive), a clean one archives', () => {
+  const body = SRC.slice(SRC.indexOf('function teardownPty('), SRC.indexOf('/** Send an inform to the god agent'));
+  assert.match(body, /!opts\.hibernate && !opts\.keepRoster\) \{\s*try \{ hive\.setArchived/);
+  assert.match(SRC, /abnormal = hive\.recordAgentExit\(/);
+  assert.match(SRC, /teardownPty\(id, \{ keepRoster: abnormal && !liveWorkers\.has\(id\) \}\)/);
 });

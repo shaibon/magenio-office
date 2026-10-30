@@ -551,7 +551,7 @@ const preservedWorktrees = new Map<string, PreservedWorktree>();
  * step is wrapped so a teardown error can never crash the caller (an IPC
  * handler or node-pty's onExit).
  */
-function teardownPty(id: string, opts: { hibernate?: boolean; keepWorktree?: boolean } = {}): void {
+function teardownPty(id: string, opts: { hibernate?: boolean; keepWorktree?: boolean; keepRoster?: boolean } = {}): void {
   // Ephemeral-worker flag, read BEFORE the cleanup below deletes the entry. All
   // worker deaths (done-release, idle/token reap, manual stop, crash) funnel
   // through here, so this is the one place their floor card gets archived
@@ -578,13 +578,14 @@ function teardownPty(id: string, opts: { hibernate?: boolean; keepWorktree?: boo
     // W1 — kill this agent's proxy-bridge sidecar (qwen), if any, so a dead
     // PTY never leaves an orphan loopback listener. No-op for non-proxy agents.
     try { hive.stopProxyBridge(agentId); } catch (e) { console.error('[hive] stopProxyBridge failed:', e); }
-    if (hive.enabled() && !opts.hibernate) {
+    // A crash stays in the roster (restartable, crash log kept); only a deliberate exit archives.
+    if (hive.enabled() && !opts.hibernate && !opts.keepRoster) {
       try { hive.setArchived(agentId, true); } catch (e) { console.error('[hive] setArchived failed:', e); }
     }
   }
   // 2) Remove the isolated worktree, if any. Non-blocking; errors are logged.
   //    A hibernating agent KEEPS its worktree (and its uncommitted work): it is coming back.
-  const wtPath = opts.hibernate || opts.keepWorktree ? undefined : worktreePaths.get(id);
+  const wtPath = opts.hibernate || opts.keepWorktree || opts.keepRoster ? undefined : worktreePaths.get(id);
   if (wtPath) {
     const origCwd = worktreeOrigins.get(id) ?? wtPath;
     worktreePaths.delete(id);
@@ -731,10 +732,11 @@ ptyManager.setExitHandler((id, exitCode, info) => {
   // pty->agent mapping, so after it runs we can no longer say WHOSE process
   // died. Only abnormal exits are recorded (recordAgentExit returns early on a
   // clean one), so this adds no noise to a normal archive.
+  let abnormal = false;
   try {
     const dyingAgent = ptyToAgent.get(id);
     if (dyingAgent) {
-      hive.recordAgentExit(dyingAgent, {
+      abnormal = hive.recordAgentExit(dyingAgent, {
         exitCode,
         signal: info?.signal,
         tail: info?.tail,
@@ -773,7 +775,7 @@ ptyManager.setExitHandler((id, exitCode, info) => {
     // Non-zero exit = install failed; leave its honest manual-fix message on screen.
     analytics.track('agent_install_finished', { provider, rung: pending.rung, outcome: 'install_failed' });
   }
-  teardownPty(id);
+  teardownPty(id, { keepRoster: abnormal && !liveWorkers.has(id) });
 });
 
 /** Keep the system from suspending the harness while agents are running.

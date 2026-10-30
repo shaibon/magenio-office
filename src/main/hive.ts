@@ -3644,18 +3644,18 @@ export class HiveManager {
    * A normal exit writes nothing at all; this is a diagnostic, not an audit log.
    * The tail file is written 0600 and the directory is capped at
    * MAX_CRASH_LOGS files, oldest dropped first.
+   * Returns whether the exit was abnormal (the caller keeps such an agent in the roster).
    */
   recordAgentExit(
     agentId: string,
     info: { exitCode?: number; signal?: number; tail?: string; command?: string }
-  ): void {
-    const root = this.root();
-    if (!root) return;
+  ): boolean {
     const { exitCode, signal, tail, command } = info;
     // A signal means killed (SIGILL/SIGSEGV/SIGKILL); node-pty reports exitCode 0
     // in that case, so signal must be checked independently of the code.
     const abnormal = (typeof signal === 'number' && signal !== 0) || (typeof exitCode === 'number' && exitCode !== 0);
-    if (!abnormal) return;
+    const root = this.root();
+    if (!abnormal || !root) return abnormal;
 
     let tailPath: string | null = null;
     if (tail && tail.length) {
@@ -3696,6 +3696,7 @@ export class HiveManager {
       abnormal: true,
       tailPath
     });
+    return true;
   }
 
   // — log —

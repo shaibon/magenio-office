@@ -63,7 +63,7 @@ test('retry without --resume only for a quick non-zero exit that names an unknow
 test('wiring: the exit handler relaunches before teardown, and spawn arms the retry only when it resumed', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'src/main/index.ts'), 'utf8');
   const a = src.indexOf('pendingResumeRetry.get(id)');
-  assert.ok(a > 0 && a < src.indexOf('teardownPty(id);\n});', a));
+  assert.ok(a > 0 && a < src.indexOf('teardownPty(id, { keepRoster', a));
   assert.match(src, /res\.ok && didResume && !pristine\.noResumeRetry/);
   assert.match(src, /hive\.lastSession\(opts\.hive\.id, provider\)/);
 });
