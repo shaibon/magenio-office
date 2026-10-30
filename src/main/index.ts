@@ -113,6 +113,7 @@ import { loadHero } from './hero';
 import { loadModelCatalog } from './modelCatalog';
 import {
   CODEX_REMOTE_SOCKET_RELATIVE,
+  codexArgsAllowRemote,
   codexRemoteAliasPath,
   codexRemoteEndpoint,
   codexRemoteSocketFits,
@@ -205,6 +206,7 @@ async function enableCodexRemoteForSpawn(
   agentId: string
 ): Promise<boolean> {
   if (process.platform === 'win32') return false;
+  if (!codexArgsAllowRemote(opts.args ?? [])) return false;
   const realHome = opts.env?.CODEX_HOME;
   if (!realHome) return false;
   try {

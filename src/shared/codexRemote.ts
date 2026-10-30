@@ -43,8 +43,15 @@ export function codexRemoteEndpoint(shortHome: string): string {
 }
 
 /** Global options must precede `resume`, so prepend the endpoint in all cases. */
+/** codex-cli rejects `--add-dir` together with `--remote` ("configure additional
+ *  workspace roots on the server"); our sandbox roots are passed as --add-dir, so
+ *  those spawns must stay a local TUI. */
+export function codexArgsAllowRemote(args: string[]): boolean {
+  return !args.includes('--add-dir');
+}
+
 export function withCodexRemoteArgs(args: string[], endpoint: string): string[] {
-  if (args.includes('--remote')) return args;
+  if (args.includes('--remote') || !codexArgsAllowRemote(args)) return args;
   return ['--remote', endpoint, ...args];
 }
 
