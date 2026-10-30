@@ -76,3 +76,14 @@ test('unknown recipient still lands (bounced to god), is logged, and is archived
   assert.ok(inbox('god').some((m) => /undeliverable/.test(m.subject)));
   assert.ok(drops().some((d) => d.reason === 'no-inbox'));
 });
+
+test('no bounce destination (god inbox gone) is reported as such, not as hop-cap', async (t) => {
+  const { hive, out, drops, put, ls } = await floor(t);
+  fs.rmSync(path.join(hive.root(), 'agents', 'god', 'inbox'), { recursive: true });
+  put('u.json', { to: 'nobody', body: 'x' });
+  hive.routeOnce();
+  assert.ok(ls(path.join(out('creed'), '.failed')).includes('u.json'));
+  assert.match(fs.readFileSync(path.join(out('creed'), '.failed', 'u.json.reason.txt'), 'utf8'), /no-god-inbox/);
+  assert.ok(drops().some((d) => d.reason === 'no-god-inbox'));
+  assert.ok(!drops().some((d) => d.reason === 'hop-cap'));
+});

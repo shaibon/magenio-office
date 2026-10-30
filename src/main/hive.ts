@@ -2128,15 +2128,15 @@ export class HiveManager {
    *  move hops past the cap themselves (normalize clamps what they wrote), so
    *  this fuse can only fire on a REAL relay loop — a bounced mail that keeps
    *  coming back undeliverable — and never on an agent-authored number. */
-  private bounceToGod(msg: HiveMessage, godId: string, subject: string): boolean {
+  private bounceToGod(msg: HiveMessage, godId: string, subject: string): 'ok' | 'hop-cap' | 'no-god-inbox' {
     const hops = msg.hops + 1;
     if (hops > HOP_CAP) {
       // loop guard — drop a runaway message rather than let agents ping-pong.
       // There's no human queue to fall back on; the god agent owns conflicts.
       this.appendLog({ kind: 'drop', reason: 'hop-cap', from: msg.from, to: msg.to, id: msg.id });
-      return false;
+      return 'hop-cap';
     }
-    return this.deliver({ ...msg, hops, to: godId, subject }, godId);
+    return this.deliver({ ...msg, hops, to: godId, subject }, godId) ? 'ok' : 'no-god-inbox';
   }
 
   /** Inject a message directly (used by the orchestrator / UI / tests). */
@@ -2169,8 +2169,8 @@ export class HiveManager {
     // A bounce to god is a landing too (the sender's intent surfaces); only a message that ended
     // up nowhere at all is a failure the outbox router must not archive as sent.
     let bounced = false;
-    let hopCapped = false;
-    const bounce = (m: HiveMessage, g: string, subject: string): void => { if (this.bounceToGod(m, g, subject)) bounced = true; else hopCapped = true; };
+    let bounceFailure: 'hop-cap' | 'no-god-inbox' | null = null;
+    const bounce = (m: HiveMessage, g: string, subject: string): void => { const r = this.bounceToGod(m, g, subject); if (r === 'ok') bounced = true; else bounceFailure = r; };
     for (const t of targets) {
       // The send-only prep assistant must never be a delivery target: it doesn't
       // drain an inbox, so direct mail to it would rot unread (observed live: a
@@ -2254,7 +2254,7 @@ export class HiveManager {
     // team's ACKs and the god's COMPLETE). Best-effort, never breaks routing.
     try { this.routedObserver?.(msg, targets); } catch { /* observer error */ }
     if (delivered.length > 0 || bounced) return { landed: true };
-    if (hopCapped) return { landed: false, reason: 'hop-cap' };
+    if (bounceFailure) return { landed: false, reason: bounceFailure };
     if (targets.length === 0) return { landed: false, reason: msg.to === 'broadcast' ? 'no-broadcast-recipients' : 'self-addressed' };
     return { landed: false, reason: 'not-delivered' };
   }
