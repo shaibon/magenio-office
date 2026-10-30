@@ -3146,14 +3146,13 @@ export class HiveManager {
         try { dirs.push(realpathSync(cwd)); } catch { /* folder not created yet */ }
         config += projectTrustToml(config, dirs);
       }
-      writeFileSync(join(home, 'config.toml'), config, { encoding: 'utf8', mode: 0o600 });
-      chmodSync(join(home, 'config.toml'), 0o600);
+      this.writeFresh(join(home, 'config.toml'), config);
       // Hooks Codex does not trust are skipped in silence — and the session runs in
       // a daemon that never saw our bypass flag. Record trust for OUR hooks in the
       // config itself (see codexHookTrust.ts); say so loudly if that is not possible.
       if (shim) {
         const trust = this.codexHookTrustFor(home, config, hookCommand);
-        if (trust) writeFileSync(join(home, 'config.toml'), config + trust, { encoding: 'utf8', mode: 0o600 });
+        if (trust) this.writeFresh(join(home, 'config.toml'), config + trust);
         else this.appendLog({ kind: 'codex-hooks-untrusted', agentId, detail: 'could not record hook trust; the agent may report no status and never drain its inbox' });
       }
 
@@ -3163,6 +3162,14 @@ export class HiveManager {
       this.exposeCodexDataDirs(home, userHome, agentId);
     } catch (e) { console.error('[hive] installCodexHooks failed:', e); }
     return home;
+  }
+
+  /** (Re)create a generated file without ever writing through a link: the old entry (file, link or
+   *  anything else) is unlinked itself, then the new one is created exclusively ('wx' fails on any
+   *  existing entry, links included). Everything here is regenerated each spawn, so nothing is lost. */
+  private writeFresh(p: string, data: string): void {
+    try { unlinkSync(p); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
+    writeFileSync(p, data, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
   }
 
   /** Test seam: how to learn Codex's own hash for each hook (default: ask codex). */
@@ -3175,12 +3182,14 @@ export class HiveManager {
     const cacheFile = join(home, '.hook-trust.json');
     const sig = createHash('sha1').update(config).update('\0').update(command).digest('hex');
     try {
+      // Only a regular file is ever read: a link here would feed peer-chosen TOML into config.toml.
+      if (!lstatSync(cacheFile).isFile()) throw new Error('not a regular file');
       const c = JSON.parse(readFileSync(cacheFile, 'utf8')) as { sig?: string; toml?: string };
       if (c.sig === sig && typeof c.toml === 'string' && c.toml) return c.toml;
     } catch { /* no usable cache */ }
     try {
       const toml = hookTrustToml(this.codexHookLister(home, home), command);
-      if (toml) writeFileSync(cacheFile, JSON.stringify({ sig, toml }), 'utf8');
+      if (toml) this.writeFresh(cacheFile, JSON.stringify({ sig, toml }));
       return toml;
     } catch (e) {
       console.error('[hive] codex hook trust probe failed:', e instanceof Error ? e.message : e);

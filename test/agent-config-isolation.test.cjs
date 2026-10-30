@@ -397,3 +397,54 @@ test('a protected settings.json that is a symlink is refused: no token, no --set
   fs.mkdirSync(path.join(cfg, 'settings.json'));                         // a directory is refused too
   assert.equal(m.migrateAgentConfig('a1'), false);
 });
+
+function codexSpawn(t, plant) {
+  const e = env(t);
+  const m = new HiveManager(() => e.harness, undefined, () => e.appData);
+  m.codexHookLister = () => [];
+  m.ensureHive();
+  const home = path.join(m.agentConfigDir('a1'), '.codex');
+  fs.mkdirSync(home, { recursive: true });
+  const victim = path.join(e.hive, 'agents', 'victim.txt');
+  fs.writeFileSync(victim, 'PEER');
+  plant(home, victim);
+  const out = m.installCodexHooks(path.join(e.hive, 'agents', 'a1'), 'a1');
+  return { home: out, victim };
+}
+
+test('config.toml planted as a symlink is replaced, never written through', (t) => {
+  const r = codexSpawn(t, (home, victim) => fs.symlinkSync(victim, path.join(home, 'config.toml')));
+  assert.equal(fs.readFileSync(r.victim, 'utf8'), 'PEER');
+  const st = fs.lstatSync(path.join(r.home, 'config.toml'));
+  assert.ok(st.isFile() && !st.isSymbolicLink());
+  assert.match(fs.readFileSync(path.join(r.home, 'config.toml'), 'utf8'), /hooks\.Stop/);
+});
+
+test('.hook-trust.json planted as a symlink is not read and not written through', (t) => {
+  const TRUST = '[hooks.state."evil"]\ntrusted_hash = "sha256:' + 'a'.repeat(64) + '"\n';
+  const r = codexSpawn(t, (home, victim) => {
+    fs.writeFileSync(victim, JSON.stringify({ sig: 'x', toml: TRUST }));
+    fs.symlinkSync(victim, path.join(home, '.hook-trust.json'));
+  });
+  assert.ok(!fs.readFileSync(path.join(r.home, 'config.toml'), 'utf8').includes('evil'), 'peer TOML never reaches config.toml');
+  assert.equal(JSON.parse(fs.readFileSync(r.victim, 'utf8')).toml, TRUST, 'victim file untouched');
+});
+
+test('.hook-trust.json: a symlink is replaced by our own cache when codex can name the hooks', (t) => {
+  const e = env(t);
+  const m = new HiveManager(() => e.harness, undefined, () => e.appData);
+  m.ensureHive();
+  m.codexHookLister = (home) => {
+    const cmd = fs.readFileSync(path.join(home, 'config.toml'), 'utf8').match(/command = (".*")/)[1];
+    return [{ key: 'k1', command: JSON.parse(cmd), currentHash: 'sha256:' + 'b'.repeat(64) }];
+  };
+  const home = path.join(m.agentConfigDir('a1'), '.codex');
+  fs.mkdirSync(home, { recursive: true });
+  const victim = path.join(e.hive, 'agents', 'victim.json');
+  fs.writeFileSync(victim, 'PEER');
+  fs.symlinkSync(victim, path.join(home, '.hook-trust.json'));
+  m.installCodexHooks(path.join(e.hive, 'agents', 'a1'), 'a1');
+  assert.equal(fs.readFileSync(victim, 'utf8'), 'PEER');
+  const st = fs.lstatSync(path.join(home, '.hook-trust.json'));
+  assert.ok(st.isFile() && !st.isSymbolicLink());
+});
