@@ -549,7 +549,7 @@ const preservedWorktrees = new Map<string, PreservedWorktree>();
  * step is wrapped so a teardown error can never crash the caller (an IPC
  * handler or node-pty's onExit).
  */
-function teardownPty(id: string, opts: { hibernate?: boolean } = {}): void {
+function teardownPty(id: string, opts: { hibernate?: boolean; keepWorktree?: boolean } = {}): void {
   // Ephemeral-worker flag, read BEFORE the cleanup below deletes the entry. All
   // worker deaths (done-release, idle/token reap, manual stop, crash) funnel
   // through here, so this is the one place their floor card gets archived
@@ -582,7 +582,7 @@ function teardownPty(id: string, opts: { hibernate?: boolean } = {}): void {
   }
   // 2) Remove the isolated worktree, if any. Non-blocking; errors are logged.
   //    A hibernating agent KEEPS its worktree (and its uncommitted work): it is coming back.
-  const wtPath = opts.hibernate ? undefined : worktreePaths.get(id);
+  const wtPath = opts.hibernate || opts.keepWorktree ? undefined : worktreePaths.get(id);
   if (wtPath) {
     const origCwd = worktreeOrigins.get(id) ?? wtPath;
     worktreePaths.delete(id);
@@ -3617,6 +3617,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       opts: { ...pristine, cwd: wt ?? pristine.cwd, isolate: false, resume: true, resumeSessionId: undefined, wakeReason: undefined },
       owner
     });
+    if (!opts.wakeReason) hibernator.forget(opts.hive.id); // a respawn that is not our wake supersedes the sleeper
     try { if (hive.registry().agents[opts.hive.id]?.hibernated) hive.setHibernated(opts.hive.id, false, { reason: opts.wakeReason ?? 'respawn', resumeLost: !didResume }); } catch { /* best-effort */ }
   }
   if (res.ok) analytics.track('agent_spawned', { provider });
@@ -3640,7 +3641,7 @@ ipcMain.handle('pty:write', (_evt, id: string, data: string) => {
   return ptyManager.write(id, data);
 });
 ipcMain.handle('agent:isHibernated', (_evt, agentId: unknown) =>
-  typeof agentId === 'string' && !!hive.registry().agents[agentId]?.hibernated);
+  typeof agentId === 'string' && hibernator.isSleeper(agentId));
 ipcMain.handle('agent:wake', (_evt, agentId: unknown, reason: unknown) =>
   typeof agentId === 'string' ? wakeAgent(agentId, typeof reason === 'string' ? reason : 'ui') : false);
 ipcMain.handle('pty:resize', (_evt, id: string, cols: number, rows: number) => {
@@ -3653,6 +3654,7 @@ ipcMain.handle('pty:redraw', (_evt, id: string) => {
 });
 ipcMain.handle('pty:kill', (_evt, id: string) => {
   if (typeof id !== 'string') return { ok: false, error: 'invalid id' };
+  if (closeSleeper(id)) return { ok: true };
   // Kill the process, then run the shared lifecycle teardown (archive the agent,
   // remove its isolated worktree, drop the maps). teardownPty is idempotent, so
   // node-pty firing onExit once the child actually dies is a harmless no-op.
@@ -5519,6 +5521,10 @@ registerRealtimeActionIpc({
   controlHalt: (id) => control.halt(id),
   controlSnapshot: (id) => control.snapshot(id),
   killAgent: (id) => {
+    if (closeSleeper(id)) {
+      try { liveWebContents()?.send('hive:agentArchived', { id }); } catch { /* window torn down */ }
+      return { ok: true };
+    }
     const r = ptyManager.kill(id);
     teardownPty(id);
     // A voice (MAIN-initiated) kill: the renderer never removed the card itself
@@ -6327,7 +6333,7 @@ function runWorkerWakeBeat(): void {
   for (const [agentId, a] of Object.entries(reg.agents)) {
     if (agentId === reg.godId || a?.archived) continue;
     // A sleeper with mail wakes; the normal nudge below then delivers it once it has booted.
-    if (a?.hibernated) { if (hive.inbox(agentId).length > 0) void wakeAgent(agentId, 'inbox'); continue; }
+    if (a?.hibernated) { if (hive.inbox(agentId).length > 0) void wakeAgent(agentId, 'inbox'); if (hibernator.isSleeper(agentId)) continue; }
     const ptyId = ptyForAgent(agentId);
     if (!ptyId) continue;
     const snap = control.snapshot(agentId);
@@ -6423,6 +6429,20 @@ const hibernator = new Hibernator<{ opts: AgentSpawnOptions; owner: Electron.Web
   },
   inboxCount: (id) => hive.inbox(id).length
 }, wakeGate);
+/** Closing a SLEEPER's pty (Restart & Continue, close tab, voice kill). The process is already
+ *  gone, so the normal teardown has nothing to reap and everything to lose: it would force-remove
+ *  the retained worktree (and its uncommitted work). Drop the sleeper record, archive the row like
+ *  any close, and keep the worktree on disk — a restart re-enters it, a real close leaves it for
+ *  the operator. Returns false when `ptyId` is not a sleeper. */
+function closeSleeper(ptyId: string): boolean {
+  const agentId = hibernator.sleeperOf(ptyId);
+  if (!agentId) return false;
+  hibernator.forget(agentId);
+  try { hive.setHibernated(agentId, false, { reason: 'closed-while-asleep' }); } catch { /* best-effort */ }
+  try { hive.setArchived(agentId, true); } catch { /* best-effort */ }
+  return true;
+}
+
 const hibernateAgent = (agentId: string, reason: string): boolean => hibernator.hibernate(agentId, reason);
 const wakeAgent = (agentId: string, reason: string): Promise<boolean> => hibernator.wake(agentId, reason);
 

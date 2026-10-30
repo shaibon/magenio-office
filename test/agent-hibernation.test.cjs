@@ -230,12 +230,38 @@ test('a failed PTY kill rolls everything back: still awake, no light teardown, n
   assert.equal(st.spawns.length, 0, 'no duplicate-PTY spawn');
 });
 
+test('forged registry flag on a LIVE agent: no respawn, no grant rotation, flag cleared', async () => {
+  const { h, st } = fakeApp();
+  st.hibernated = true; // a peer wrote registry.json; the agent still has its pty and there is no sleeper record
+  assert.equal(await h.wake('pam', 'inbox'), false);
+  assert.equal(st.spawns.length, 0, 'respawn is what rotates the n8n token / fails on a duplicate pty');
+  assert.equal(st.hibernated, false, 'inconsistent flag is cleared');
+  assert.ok(st.live.has('pty-pam'));
+});
+
+test('stale flag with a sleeper record but a live pty is also refused', async () => {
+  const { h, st } = fakeApp();
+  h.hibernate('pam', 'idle');
+  st.live.add('pty-pam'); // somehow alive again (e.g. renderer respawn) while the record lingers
+  assert.equal(await h.wake('pam', 'inbox'), false);
+  assert.equal(st.spawns.length, 0);
+});
+
+test('forget() drops the sleeper so a later wake cannot respawn it', async () => {
+  const { h, st } = fakeApp();
+  h.hibernate('pam', 'idle');
+  h.forget('pam');
+  assert.equal(h.isSleeper('pam'), false);
+  assert.equal(await h.wake('pam', 'inbox'), false);
+  assert.equal(st.spawns.length, 0);
+});
+
 const SRC = fs.readFileSync(path.join(__dirname, '..', 'src/main/index.ts'), 'utf8');
 
 test('wiring (index.ts): the light teardown neither archives nor removes the worktree', () => {
   const body = SRC.slice(SRC.indexOf('function teardownPty('), SRC.indexOf('/** Send an inform to the god agent'));
   assert.match(body, /hive\.enabled\(\) && !opts\.hibernate/, 'setArchived must be skipped when hibernating');
-  assert.match(body, /opts\.hibernate \? undefined : worktreePaths\.get\(id\)/, 'worktree removal must be skipped');
+  assert.match(body, /opts\.hibernate \|\| opts\.keepWorktree \? undefined : worktreePaths\.get\(id\)/, 'worktree removal must be skipped');
 });
 
 test('wiring (index.ts): terminal input to a sleeper wakes it; mail wakes it; spawn clears the flag', () => {
@@ -243,4 +269,16 @@ test('wiring (index.ts): terminal input to a sleeper wakes it; mail wakes it; sp
   assert.match(SRC, /a\?\.hibernated\) \{ if \(hive\.inbox\(agentId\)\.length > 0\) void wakeAgent\(agentId, 'inbox'\)/);
   assert.match(SRC, /hive\.setHibernated\(opts\.hive\.id, false/);
   assert.match(SRC, /hibernated: !!a\.hibernated/, 'fleet.json must carry the flag');
+});
+
+test('wiring (index.ts): closing a sleeper never runs the worktree-removing teardown', () => {
+  const i = SRC.indexOf('function closeSleeper(');
+  const body = SRC.slice(i, SRC.indexOf('const hibernateAgent', i));
+  assert.doesNotMatch(body, /teardownPty|removeWorktree/, 'closeSleeper must not tear down');
+  assert.match(body, /hibernator\.forget/);
+  const kill = SRC.slice(SRC.indexOf("ipcMain.handle('pty:kill'"), SRC.indexOf("ipcMain.handle('pty:list'"));
+  assert.ok(kill.indexOf('closeSleeper(id)') !== -1 && kill.indexOf('closeSleeper(id)') < kill.indexOf('teardownPty(id)'), 'pty:kill checks the sleeper first');
+  const voice = SRC.slice(SRC.indexOf('killAgent: (id) =>'), SRC.indexOf('spawnAgent: async'));
+  assert.match(voice, /closeSleeper\(id\)/);
+  assert.match(SRC, /agent:isHibernated[\s\S]{0,160}hibernator\.isSleeper/, 'UI state follows the in-process record, not the registry flag');
 });

@@ -175,19 +175,35 @@ export class Hibernator<Recipe> {
     return true;
   }
 
-  /** Idempotent, rate-limited wake. */
+  /** Idempotent, rate-limited wake. Authority is the in-process sleeper record, NOT the registry
+   *  flag: agents can write registry.json, so a flag on its own (forged for a live peer, or left
+   *  over from a previous run) never causes a respawn — it is cleared instead. */
   wake(agentId: string, reason: string): Promise<boolean> {
     return this.gate.run(agentId, async () => {
       if (!this.d.isHibernated(agentId)) return false;
+      if (!this.isSleeper(agentId) || this.d.ptyFor(agentId)) {
+        this.d.setHibernated(agentId, false, { reason: 'inconsistent-flag' });
+        return false;
+      }
       const recipe = this.d.recipeFor(agentId);
-      if (!recipe) { this.d.setHibernated(agentId, false, { reason: 'no-recipe' }); return false; }
+      if (!recipe) { this.forget(agentId); this.d.setHibernated(agentId, false, { reason: 'no-recipe' }); return false; }
       const ok = await this.d.respawn(agentId, recipe, reason);
       if (ok) {
-        for (const [pty, a] of this.sleepers) if (a === agentId) this.sleepers.delete(pty);
+        this.forget(agentId);
         this.d.notify(agentId, '', false, recipe);
       }
       return ok;
     });
+  }
+
+  /** Drop the sleeper record (the agent was woken, respawned, or closed for good). */
+  forget(agentId: string): void {
+    for (const [pty, a] of this.sleepers) if (a === agentId) this.sleepers.delete(pty);
+  }
+
+  isSleeper(agentId: string): boolean {
+    for (const a of this.sleepers.values()) if (a === agentId) return true;
+    return false;
   }
 
   /** Agent that owns a sleeping pty id, if any (the terminal-input guard). */
