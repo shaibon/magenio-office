@@ -670,22 +670,32 @@ export class HiveManager {
       // set: a stale wal against another db corrupts it) swaps in the legacy copy, and the
       // target's own is kept beside it as `*.superseded-<ts>` rather than deleted.
       const dbFamily = (n: string): string | null => n.match(/^(.+\.sqlite)(-wal|-shm)?$/)?.[1] ?? null;
-      const swapped: string[] = [];
-      const clashing = new Set<string>();
+      const SFX = ['', '-wal', '-shm'];
+      const fams = new Set<string>();
       for (const e of readdirSync(legacy, { withFileTypes: true })) {
         const fam = e.isFile() ? dbFamily(e.name) : null;
-        if (fam && existsSync(join(target, e.name))) clashing.add(fam);
+        if (fam) fams.add(fam);
       }
       const stamp = Date.now();
-      for (const fam of clashing) {
-        for (const suffix of ['', '-wal', '-shm']) {
-          const t = join(target, fam + suffix), l = join(legacy, fam + suffix);
-          if (existsSync(t)) renameSync(t, `${t}.superseded-${stamp}`);
-          if (existsSync(l)) this.moveCodexDataDir(l, t);
+      const swapped: string[] = [];
+      const orphans: string[] = [];
+      for (const fam of fams) {
+        const lHas = SFX.filter((x) => existsSync(join(legacy, fam + x)));
+        const tHas = SFX.filter((x) => existsSync(join(target, fam + x)));
+        if (!lHas.includes('')) {
+          // A -wal/-shm without its database is meaningless on its own and must never be paired
+          // with another db: park it beside the target's files, unpaired.
+          for (const x of lHas) this.moveCodexDataDir(join(legacy, fam + x), join(target, `${fam + x}.orphan-${stamp}`));
+          orphans.push(fam);
+        } else {
+          // Legacy db present: the family moves as a unit; a target family (any member) is kept aside.
+          for (const x of tHas) renameSync(join(target, fam + x), join(target, `${fam + x}.superseded-${stamp}`));
+          for (const x of lHas) this.moveCodexDataDir(join(legacy, fam + x), join(target, fam + x));
+          if (tHas.length) swapped.push(fam);
         }
-        swapped.push(fam);
       }
       if (swapped.length) this.appendLog({ kind: 'agent-config-db-swapped', agentId, dbs: swapped, kept: `*.superseded-${stamp}` });
+      if (orphans.length) this.appendLog({ kind: 'agent-config-db-orphan', agentId, dbs: orphans, kept: `*.orphan-${stamp}` });
       const merge = (from: string, to: string, rel: string): void => {
         for (const e of readdirSync(from, { withFileTypes: true })) {
           const f = join(from, e.name), t = join(to, e.name), r = rel ? `${rel}/${e.name}` : e.name;

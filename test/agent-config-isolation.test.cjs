@@ -212,3 +212,49 @@ test('an interrupted staged copy is discarded; the intact legacy home migrates o
   assert.equal(fs.readFileSync(path.join(cfg, '.codex', 'state_5.sqlite'), 'utf8'), 'INDEX');
   assert.equal(fs.existsSync(path.join(cfg, '.codex.migrating')), false);
 });
+
+// QA P1: partial sqlite families must never mix a database with a foreign WAL.
+function partial(t, tFiles, lFiles) {
+  const e = env(t);
+  const m = new HiveManager(() => e.harness, undefined, () => e.appData);
+  m.ensureHive();
+  const target = path.join(m.agentConfigDir('a1'), '.codex');
+  const legacy = path.join(e.hive, 'agents', 'a1', '.codex');
+  fs.mkdirSync(target, { recursive: true });
+  fs.mkdirSync(legacy, { recursive: true });
+  for (const [n, c] of Object.entries(tFiles)) fs.writeFileSync(path.join(target, n), c);
+  for (const [n, c] of Object.entries(lFiles)) fs.writeFileSync(path.join(legacy, n), c);
+  m.migrateAgentConfig('a1');
+  const read = (n) => (fs.existsSync(path.join(target, n)) ? fs.readFileSync(path.join(target, n), 'utf8') : null);
+  const names = fs.readdirSync(target);
+  return { e, target, legacy, read, names, log: fs.readFileSync(path.join(e.hive, 'log.jsonl'), 'utf8') };
+}
+
+test('target db + legacy-only wal: the orphan wal is parked unpaired, never attached to the target db', (t) => {
+  const r = partial(t, { 'state_5.sqlite': 'TARGET-DB' }, { 'state_5.sqlite-wal': 'LEGACY-WAL' });
+  assert.equal(r.read('state_5.sqlite'), 'TARGET-DB');
+  assert.equal(r.read('state_5.sqlite-wal'), null, 'no live wal next to the target db');
+  assert.ok(r.names.some((n) => n.startsWith('state_5.sqlite-wal.orphan-')));
+  assert.match(r.log, /agent-config-db-orphan/);
+  assert.equal(fs.existsSync(r.legacy), false);
+});
+
+test('legacy db only (no wal) vs target db + wal: the family swaps as a unit', (t) => {
+  const r = partial(t, { 'state_5.sqlite': 'T-DB', 'state_5.sqlite-wal': 'T-WAL' }, { 'state_5.sqlite': 'L-DB' });
+  assert.equal(r.read('state_5.sqlite'), 'L-DB');
+  assert.equal(r.read('state_5.sqlite-wal'), null, 'target wal not left against the legacy db');
+  assert.equal(r.names.filter((n) => n.includes('.superseded-')).length, 2);
+  assert.match(r.log, /agent-config-db-swapped/);
+});
+
+test('legacy wal-only with no target db: parked as orphan, not moved in as a live wal', (t) => {
+  const r = partial(t, {}, { 'state_5.sqlite-wal': 'LEGACY-WAL' });
+  assert.equal(r.read('state_5.sqlite-wal'), null);
+  assert.ok(r.names.some((n) => n.includes('.orphan-')));
+});
+
+test('legacy full family, target has none: moves intact as a unit', (t) => {
+  const r = partial(t, {}, { 'state_5.sqlite': 'L-DB', 'state_5.sqlite-wal': 'L-WAL' });
+  assert.equal(r.read('state_5.sqlite'), 'L-DB');
+  assert.equal(r.read('state_5.sqlite-wal'), 'L-WAL');
+});
