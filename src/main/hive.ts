@@ -1424,16 +1424,30 @@ export class HiveManager {
     }
   }
 
-  /** agentId -> per-spawn secret handed to that CLI's hook shims through its env (never written
-   *  under the shared hive root). A respawn issues a new one, so a replayed frame from an earlier
-   *  session no longer verifies. In memory only. */
+  /** agentId -> the hook token of its LIVE spawn (the only one that verifies). In memory only. */
   private hookTokens = new Map<string, string>();
+  /** Minted by ensureAgent but not yet backed by a running PTY: token -> agentId. Promoted by
+   *  commitHookToken after ptyManager.spawn succeeds, dropped by discardHookToken when it fails,
+   *  so a refused duplicate spawn can never invalidate the live process's token. Keyed by token
+   *  so two racing spawn attempts for one agent cannot swap each other's. */
+  private pendingHookTokens = new Map<string, string>();
 
   issueHookToken(agentId: string): string {
     const t = randomBytes(24).toString('hex');
-    this.hookTokens.set(agentId, t);
+    if (this.pendingHookTokens.size > 256) this.pendingHookTokens.clear();
+    this.pendingHookTokens.set(t, agentId);
     return t;
   }
+
+  /** The spawn that was handed `token` is running: it supersedes the agent's previous token. */
+  commitHookToken(token: string): void {
+    const agentId = this.pendingHookTokens.get(token);
+    if (!agentId) return;
+    this.pendingHookTokens.delete(token);
+    this.hookTokens.set(agentId, token);
+  }
+
+  discardHookToken(token: string): void { this.pendingHookTokens.delete(token); }
 
   /** True when `token` is the one issued to this agent's live spawn (constant-time compare). */
   verifyHookToken(agentId: string | undefined | null, token: unknown): boolean {

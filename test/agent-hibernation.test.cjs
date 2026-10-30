@@ -335,11 +335,14 @@ test('forged (unauthenticated) hook frames never feed hibernation state', () => 
 test('hook token: per spawn, constant-shape verify, replay from an earlier spawn fails', async (t) => {
   const { hive } = await floor(t);
   const t1 = hive.issueHookToken('pam');
+  assert.equal(hive.verifyHookToken('pam', t1), false, 'not live until the spawn succeeded');
+  hive.commitHookToken(t1);
   assert.equal(hive.verifyHookToken('pam', t1), true);
   assert.equal(hive.verifyHookToken('dwight', t1), false);            // cross-agent
   assert.equal(hive.verifyHookToken('pam', undefined), false);
   assert.equal(hive.verifyHookToken('pam', t1.slice(1) + 'x'), false);
   const t2 = hive.issueHookToken('pam');                              // respawn / wake
+  hive.commitHookToken(t2);
   assert.equal(hive.verifyHookToken('pam', t1), false);               // replayed old-session frame
   assert.equal(hive.verifyHookToken('pam', t2), true);
 });
@@ -370,4 +373,31 @@ test('hook shim + launcher are app-owned (outside the hive and every agent-writa
   const headless = new HiveManager(() => home);
   assert.ok(headless.shimPath().startsWith(home + path.sep));
   assert.equal(headless.spawnHookToken('pam'), undefined);
+});
+
+// QA P1: a refused duplicate spawn must not invalidate the live process's token.
+test('failed duplicate spawn keeps the live token; the genuine active turn still authenticates', async (t) => {
+  const { hive } = await floor(t);
+  const live = hive.issueHookToken('pam'); hive.commitHookToken(live);
+  const dup = hive.issueHookToken('pam');                             // ensureAgent of the refused spawn
+  hive.discardHookToken(dup);                                         // ptyManager.spawn -> already_running
+  hive.commitHookToken(dup);                                          // a late/double commit of a discarded token is a no-op
+  assert.equal(hive.verifyHookToken('pam', live), true);
+  assert.equal(hive.verifyHookToken('pam', dup), false);
+  const w = new WorkerWakeWatchdog();
+  w.noteHook('pam', 'Stop', undefined, NOW - 90_000, hive.verifyHookToken('pam', live));
+  w.noteHook('pam', 'PreToolUse', undefined, NOW - 1_000, hive.verifyHookToken('pam', live)); // active turn, original token
+  assert.equal(w.lastTurnWasStop('pam'), false);
+  assert.equal(holdReason(ok({ lastTurnWasStop: false, lastTurnAt: NOW - 1_000, lastOutputAt: NOW - 1_000 }), { minutes: 1, optIn: ['pam'] }, NOW), 'recent-activity', 'active turn is held, not hibernated');
+});
+
+test('wiring: token commits/discards and noteSpawn happen only after ptyManager.spawn', () => {
+  const x = fs.readFileSync(path.join(__dirname, '..', 'src/main/index.ts'), 'utf8');
+  const i = x.indexOf('const res = ptyManager.spawn(opts, owner);');
+  assert.ok(i > 0);
+  const after = x.slice(i, i + 700);
+  assert.match(after, /commitHookToken\(hookTok\)/);
+  assert.match(after, /discardHookToken\(hookTok\)/);
+  assert.match(after, /workerWake\.noteSpawn\(opts\.id\)/);
+  assert.equal((x.match(/workerWake\.noteSpawn\(/g) || []).length, 1);
 });

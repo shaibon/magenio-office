@@ -3527,9 +3527,6 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   // live terminal means active — ensureAgent above already cleared `archived`.
   if (opts.hive?.id) {
     ptyToAgent.set(opts.id, opts.hive.id);
-    // Worker inbox-wake watchdog (#151): boot grace starts at spawn so the
-    // initial orientation prompt is never mistaken for an idle agent.
-    workerWake.noteSpawn(opts.id);
   }
   // Pre-accept Claude Code's bypass-mode warning + folder-trust dialog so the
   // agent (spawned with --permission-mode bypassPermissions) doesn't stall on an
@@ -3607,6 +3604,15 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     if (!remote) opts.args = withCodexNoDaemonArgs(opts.args ?? [], codexSupportsNoDaemon(resolveCliCommand(opts.command)));
   }
   const res = ptyManager.spawn(opts, owner);
+  // Spawn-scoped state moves ONLY on success: a refused duplicate (already_running) must not
+  // rotate the live process's hook token or reset its boot grace.
+  const hookTok = opts.env?.HIVE_HOOK_TOKEN;
+  if (res.ok) {
+    if (hookTok) hive.commitHookToken(hookTok);
+    // Worker inbox-wake watchdog (#151): boot grace starts at spawn so the
+    // initial orientation prompt is never mistaken for an idle agent.
+    if (opts.hive?.id) workerWake.noteSpawn(opts.id);
+  } else if (hookTok) hive.discardHookToken(hookTok);
   if (res.ok && didResume && !pristine.noResumeRetry) {
     pendingResumeRetry.set(opts.id, { opts: { ...pristine, resume: false, resumeSessionId: undefined, noResumeRetry: true }, owner, at: Date.now() });
   }
