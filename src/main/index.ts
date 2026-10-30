@@ -3632,6 +3632,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     if (!opts.wakeReason) hibernator.forget(opts.hive.id); // a respawn that is not our wake supersedes the sleeper
     try { if (hive.registry().agents[opts.hive.id]?.hibernated) hive.setHibernated(opts.hive.id, false, { reason: opts.wakeReason ?? 'respawn', resumeLost: !didResume }); } catch { /* best-effort */ }
   }
+  if (res.ok && opts.hive?.id) hive.clearCrashed(opts.hive.id);
   if (res.ok) analytics.track('agent_spawned', { provider });
   else analytics.track('agent_spawn_failed', { provider, reason: spawnFailReason(res.error) });
   syncKeepAwake(); // arm the power-save blocker while ≥1 agent PTY is alive (#18)

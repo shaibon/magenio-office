@@ -130,8 +130,12 @@ test('an abnormal exit marks the registry entry crashed; the next spawn clears i
   const { home, hive } = await freshHive(t);
   hive.recordAgentExit('a1', { exitCode: 1, tail: 'boom' });
   assert.equal(hive.registry().agents.a1.crashed, true);
+  // a relaunch whose spawn then fails must keep the flag (ensureAgent alone does not clear it)
   await hive.ensureAgent({ id: 'a1', name: 'A', provider: 'claude', cwd: home });
+  assert.equal(hive.registry().agents.a1.crashed, true);
+  hive.clearCrashed('a1'); // only after ptyManager.spawn returned ok
   assert.equal(hive.registry().agents.a1.crashed, undefined);
+  assert.match(fs.readFileSync(path.join(__dirname, '..', 'src/main/index.ts'), 'utf8'), /if \(res\.ok && opts\.hive\?\.id\) hive\.clearCrashed/);
   hive.recordAgentExit('a1', { exitCode: 0 });
   assert.equal(hive.registry().agents.a1.crashed, undefined);
   assert.match(fs.readFileSync(path.join(__dirname, '..', 'src/main/index.ts'), 'utf8'), /if \(a\.crashed\) continue;/);

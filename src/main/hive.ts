@@ -1153,7 +1153,6 @@ export class HiveManager {
       cwdValid: cwd.valid,
       // A (re)spawn always means a live terminal — clear any prior archived flag.
       archived: false,
-      crashed: undefined,
       lastSeen: Date.now(),
       // The provider changed since the session was recorded (or, for a legacy entry,
       // since the last spawn): its session id means nothing to the new CLI and made
@@ -1434,6 +1433,19 @@ export class HiveManager {
    * it. No-op if the agent isn't registered or the flag is already set the way
    * asked. Best-effort — never throws, so a dying PTY/kill handler can't crash.
    */
+  /** A spawn actually succeeded: the agent is no longer "crashed". Kept out of ensureAgent so a
+   *  failed relaunch leaves the flag (and thus the roster entry) in place. */
+  clearCrashed(id: string): void {
+    const root = this.root();
+    if (!root) return;
+    try {
+      const reg = this.registry();
+      if (!reg.agents[id]?.crashed) return;
+      delete reg.agents[id].crashed;
+      this.atomicWriteJson(join(root, 'registry.json'), reg);
+    } catch { /* best-effort */ }
+  }
+
   setArchived(id: string, archived: boolean): void {
     const root = this.root();
     if (!root) return;
