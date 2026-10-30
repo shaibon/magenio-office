@@ -151,7 +151,7 @@ test('hibernated: fleet.json row is patched and the roster says AVAILABLE, not d
 });
 
 /** A fake app: ptys are strings, spawn is a counter, and every effect is recorded. */
-function fakeApp({ session = 'sess-1', spawnOk = true, mail = 0 } = {}) {
+function fakeApp({ session = 'sess-1', spawnOk = true, mail = 0, killFails = false } = {}) {
   const st = { hibernated: false, live: new Set(['pty-pam']), killed: [], torn: [], notes: [], spawns: [], flagWrites: [], mail, session, archived: false, worktreeRemoved: false };
   const recipe = { opts: { id: 'pty-pam', cwd: '/wt/pam', isolate: false, resume: true } };
   const h = new Hibernator({
@@ -160,7 +160,7 @@ function fakeApp({ session = 'sess-1', spawnOk = true, mail = 0 } = {}) {
     sessionFor: () => st.session || undefined,
     isHibernated: () => st.hibernated,
     setHibernated: (id, on, info) => { st.flagWrites.push([on, info?.reason]); st.hibernated = on; return true; },
-    killPty: (p) => { st.killed.push(p); st.live.delete(p); },
+    killPty: (p) => { st.killed.push(p); if (killFails) return false; st.live.delete(p); return true; },
     teardownLight: (p) => { st.torn.push(p); /* the light teardown must not archive or remove the worktree */ },
     respawn: async (id, r, reason) => { st.spawns.push([r.opts.resume, reason]); await new Promise((x) => setTimeout(x, 5)); if (spawnOk) { st.live.add('pty-pam'); st.hibernated = false; /* spawnAgentCore clears the flag */ } return spawnOk; },
     notify: (id, pty, hib) => st.notes.push(hib),
@@ -216,6 +216,18 @@ test('a failed wake leaves the agent hibernated (still available, retried by the
   assert.equal(await h.wake('pam', 'inbox'), false);
   assert.equal(st.hibernated, true);
   assert.equal(h.sleeperOf('pty-pam'), 'pam');
+});
+
+test('a failed PTY kill rolls everything back: still awake, no light teardown, no sleeper, flag cleared', async () => {
+  const { h, st } = fakeApp({ killFails: true });
+  assert.equal(h.hibernate('pam', 'idle'), false);
+  assert.deepEqual(st.killed, ['pty-pam']);
+  assert.deepEqual(st.torn, [], 'light teardown (broker revoke, ptyToAgent) must not run for a live process');
+  assert.equal(st.hibernated, false);
+  assert.equal(h.sleeperOf('pty-pam'), undefined, 'input to the live pty must not be swallowed');
+  assert.deepEqual(st.flagWrites.map((w) => w[0]), [true, false]);
+  assert.equal(await h.wake('pam', 'inbox'), false, 'nothing to wake');
+  assert.equal(st.spawns.length, 0, 'no duplicate-PTY spawn');
 });
 
 const SRC = fs.readFileSync(path.join(__dirname, '..', 'src/main/index.ts'), 'utf8');

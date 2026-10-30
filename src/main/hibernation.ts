@@ -135,7 +135,7 @@ export interface HibernatorDeps<Recipe> {
   /** Registry/fleet/log write; must report failure so we never kill without the flag. */
   setHibernated(agentId: string, on: boolean, info?: { sessionId?: string; reason?: string }): boolean;
   /** Kill the pty AND its MCP tree (no archive, no worktree removal). */
-  killPty(ptyId: string): void;
+  killPty(ptyId: string): boolean;
   /** Light teardown: revoke capabilities, forget watchdog state. NOT archive, NOT worktree. */
   teardownLight(ptyId: string): void;
   /** Re-spawn from the recipe with the session resumed; true when the process started. */
@@ -161,7 +161,13 @@ export class Hibernator<Recipe> {
     // Flag first, then kill: the wake beat and the write guard see the sleeper from here on.
     if (!this.d.setHibernated(agentId, true, { sessionId, reason })) return false;
     this.sleepers.set(ptyId, agentId);
-    this.d.killPty(ptyId);
+    // A kill that failed leaves the process (and the pty session) alive: undo everything so the
+    // agent is simply still awake — no light teardown, no stale flag, no phantom sleeper.
+    if (!this.d.killPty(ptyId)) {
+      this.sleepers.delete(ptyId);
+      this.d.setHibernated(agentId, false, { reason: 'kill-failed' });
+      return false;
+    }
     this.d.teardownLight(ptyId);
     this.d.notify(agentId, ptyId, true, recipe);
     // Race: mail that landed while we were closing must not wait for the next beat.

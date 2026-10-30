@@ -6401,7 +6401,7 @@ const hibernator = new Hibernator<{ opts: AgentSpawnOptions; owner: Electron.Web
   setHibernated: (id, on, info) => hive.setHibernated(id, on, info).ok,
   // ptyManager.kill reaps the detached MCP servers and sweeps the process group (no leaked tree);
   // it removes the session first, so no pty:exit reaches the renderer — it is not a death.
-  killPty: (ptyId) => { ptyManager.kill(ptyId); },
+  killPty: (ptyId) => ptyManager.kill(ptyId).ok,
   teardownLight: (ptyId) => teardownPty(ptyId, { hibernate: true }),
   respawn: async (agentId, recipe, reason) => {
     const ptyId = recipe.opts.id;
