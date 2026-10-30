@@ -27,7 +27,7 @@ import {
 import { join, dirname, basename, isAbsolute, relative } from 'node:path';
 import { homedir } from 'node:os';
 import { spawnSync, spawn, type ChildProcess } from 'node:child_process';
-import { randomBytes, createHash } from 'node:crypto';
+import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import type { AgentUsageSample } from './usage';
 import { COMMAND_GROUPS } from '../shared/claudeCommands';
 import {
@@ -999,6 +999,7 @@ export class HiveManager {
       const sock = this.sockPath();
       if (desc && sock) {
         env.HIVE_SOCK = sock;
+        env.HIVE_HOOK_TOKEN = this.issueHookToken(meta.id);
         try {
           if (desc.kind === 'hooks') {
             if (desc.shim === 'agy') this.installAgyHooks();
@@ -1135,6 +1136,7 @@ export class HiveManager {
     const shim = this.shimPath();
     if (sock && shim) {
       env.HIVE_SOCK = sock;
+      env.HIVE_HOOK_TOKEN = this.issueHookToken(meta.id);
       const settingsPath = join(dir, 'settings.json');
       this.writeJson(settingsPath, this.hookSettings(shim, meta.id, meta.cwd, opts.mcpDefaults, opts.theme, this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs), meta, opts.magento, opts.vault, opts.n8nBrokerUrl));
       args.push('--settings', settingsPath);
@@ -1310,6 +1312,24 @@ export class HiveManager {
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
+  }
+
+  /** agentId -> per-spawn secret handed to that CLI's hook shims through its env (never written
+   *  under the shared hive root). A respawn issues a new one, so a replayed frame from an earlier
+   *  session no longer verifies. In memory only. */
+  private hookTokens = new Map<string, string>();
+
+  issueHookToken(agentId: string): string {
+    const t = randomBytes(24).toString('hex');
+    this.hookTokens.set(agentId, t);
+    return t;
+  }
+
+  /** True when `token` is the one issued to this agent's live spawn (constant-time compare). */
+  verifyHookToken(agentId: string | undefined | null, token: unknown): boolean {
+    const want = agentId ? this.hookTokens.get(agentId) : undefined;
+    if (!want || typeof token !== 'string' || token.length !== want.length) return false;
+    return timingSafeEqual(Buffer.from(token), Buffer.from(want));
   }
 
   /** Mark an agent hibernated / awake. The registry is the record; fleet.json is patched in the
@@ -3819,6 +3839,7 @@ process.stdin.on('end', () => {
   let payload = {};
   try { payload = JSON.parse(data || '{}'); } catch (_) {}
   if (!payload.agent_id) payload.agent_id = process.env.AGENT_ID || null;
+  payload.hook_token = process.env.HIVE_HOOK_TOKEN || undefined;
   const sock = process.env.HIVE_SOCK;
   if (isStatus) {
     // Status-line mode: Claude Code pipes the session status JSON (incl.
@@ -3936,6 +3957,7 @@ if (!agentId || !sock) process.exit(0); // not a hive worker → no-op
 const payload = {
   hook_event_name: 'Stop',
   agent_id: agentId,
+  hook_token: process.env.HIVE_HOOK_TOKEN || undefined,
   status: process.env.STATUS || null,
   fail_reason: process.env.FAIL_REASON || null
 };

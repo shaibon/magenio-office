@@ -376,7 +376,7 @@ const hookServer = new HookServer(
   control,
   breaker,
   standingGoalFromRoster,
-  (agentId, event, message) => workerWake.noteHook(agentId, event, message)
+  (agentId, event, message, authentic) => workerWake.noteHook(agentId, event, message, Date.now(), authentic)
 );
 const memory = new MemoryManager(
   () => readConfig().harnessHome,
@@ -6480,7 +6480,7 @@ function runHibernateBeat(): void {
       lastOutputAt: ptyId ? (ptyManager.lastOutputAt(ptyId) ?? 0) : 0,
       spawnedAt: ptyId ? workerWake.spawnedAtFor(ptyId) : 0,
       lastTurnWasStop: workerWake.lastTurnWasStop(agentId),
-      lastTurnAt: workerWake.turnHookAt(agentId),
+      lastTurnAt: workerWake.authTurnHookAt(agentId),
       hooksSeen: workerWake.hooksSeen(agentId),
       hitlRecently: workerWake.hitlRecently(agentId, now),
       inboxCount: hive.inbox(agentId).length,

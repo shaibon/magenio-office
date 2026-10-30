@@ -70,9 +70,9 @@ test('decider: hooked but untouched since spawn hibernates after minutes from sp
 
 test('hitl: a turn hook after the permission prompt clears the hold', () => {
   const w = new WorkerWakeWatchdog();
-  w.noteHook('pam', 'Notification', 'Claude needs your permission to use Bash', NOW - 1000);
+  w.noteHook('pam', 'Notification', 'Claude needs your permission to use Bash', NOW - 1000, true);
   assert.equal(w.hitlRecently('pam', NOW), true);
-  w.noteHook('pam', 'PostToolUse', undefined, NOW - 500);
+  w.noteHook('pam', 'PostToolUse', undefined, NOW - 500, true);
   assert.equal(w.hitlRecently('pam', NOW), false);
   assert.equal(w.hooksSeen('pam'), true);
 });
@@ -317,4 +317,37 @@ test('wiring (index.ts): closing a sleeper never runs the worktree-removing tear
   const voice = SRC.slice(SRC.indexOf('killAgent: (id) =>'), SRC.indexOf('spawnAgent: async'));
   assert.match(voice, /closeSleeper\(id\)/);
   assert.match(SRC, /agent:isHibernated[\s\S]{0,160}hibernator\.isSleeper/, 'UI state follows the in-process record, not the registry flag');
+});
+
+// Creed HIGH: hooks.sock is peer-reachable, so only frames carrying the spawn token may steer a kill.
+test('forged (unauthenticated) hook frames never feed hibernation state', () => {
+  const w = new WorkerWakeWatchdog();
+  w.noteHook('pam', 'Stop', undefined, NOW - 90_000);                 // forged Stop: no token
+  assert.equal(w.lastTurnWasStop('pam'), false);
+  assert.equal(w.hooksSeen('pam'), false);
+  assert.equal(w.authTurnHookAt('pam'), 0);
+  w.noteHook('pam', 'Stop', undefined, NOW - 90_000, true);           // real Stop
+  w.noteHook('pam', 'PreToolUse', undefined, NOW - 1_000);            // forged PreToolUse can't un-park it
+  assert.equal(w.lastTurnWasStop('pam'), true);
+  assert.equal(w.authTurnHookAt('pam'), NOW - 90_000);
+});
+
+test('hook token: per spawn, constant-shape verify, replay from an earlier spawn fails', async (t) => {
+  const { hive } = await floor(t);
+  const t1 = hive.issueHookToken('pam');
+  assert.equal(hive.verifyHookToken('pam', t1), true);
+  assert.equal(hive.verifyHookToken('dwight', t1), false);            // cross-agent
+  assert.equal(hive.verifyHookToken('pam', undefined), false);
+  assert.equal(hive.verifyHookToken('pam', t1.slice(1) + 'x'), false);
+  const t2 = hive.issueHookToken('pam');                              // respawn / wake
+  assert.equal(hive.verifyHookToken('pam', t1), false);               // replayed old-session frame
+  assert.equal(hive.verifyHookToken('pam', t2), true);
+});
+
+test('wiring: handle() verifies the token, both env sites issue one, the cth shim stamps it', () => {
+  const h = fs.readFileSync(path.join(__dirname, '..', 'src/main/hooks.ts'), 'utf8');
+  assert.match(h, /verifyHookToken\(agentId, p\.hook_token\)/);
+  const v = fs.readFileSync(path.join(__dirname, '..', 'src/main/hive.ts'), 'utf8');
+  assert.equal((v.match(/env\.HIVE_HOOK_TOKEN = this\.issueHookToken\(meta\.id\)/g) || []).length, 2);
+  assert.match(v, /payload\.hook_token = process\.env\.HIVE_HOOK_TOKEN/);
 });
