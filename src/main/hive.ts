@@ -664,6 +664,10 @@ export class HiveManager {
         const st = lstatSync(target);
         if (!st.isDirectory() || st.isSymbolicLink()) { refuse('protected-codex', 'is a symlink or not a directory: refused'); return false; }
       } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
+      // Same for Claude's settings file: writeJson would write straight through a link.
+      try {
+        if (!lstatSync(join(cfg, 'settings.json')).isFile()) { refuse('protected-settings', 'is a symlink or not a regular file: refused'); return false; }
+      } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
       const marker = join(cfg, '.migrated');
       if (existsSync(marker)) return true;
       // A crashed earlier run may have left staged data: finish it first (it is already inside the

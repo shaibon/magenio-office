@@ -377,3 +377,23 @@ test('a protected .codex that is already a symlink is refused fail-closed: nothi
   assert.deepEqual(fs.readdirSync(peerDir), [], 'nothing was written into the peer-writable directory');
   assert.match(log(), /protected-codex/);
 });
+
+test('a protected settings.json that is a symlink is refused: no token, no --settings, nothing written through it', async (t) => {
+  const e = env(t);
+  const m = new HiveManager(() => e.harness, undefined, () => e.appData);
+  m.ensureHive();
+  const cfg = m.agentConfigDir('a1');
+  fs.mkdirSync(cfg, { recursive: true });
+  const victim = path.join(e.hive, 'agents', 'peer-file.json');
+  fs.writeFileSync(victim, 'PEER');
+  fs.symlinkSync(victim, path.join(cfg, 'settings.json'));
+  assert.equal(m.migrateAgentConfig('a1'), false);
+  const inj = await m.ensureAgent({ id: 'a1', name: 'A', provider: 'claude', cwd: e.harness });
+  assert.equal(inj.args.includes('--settings'), false);
+  assert.equal(inj.env.HIVE_HOOK_TOKEN, undefined);
+  assert.equal(fs.readFileSync(victim, 'utf8'), 'PEER', 'nothing written through the link');
+  assert.ok(fs.lstatSync(path.join(cfg, 'settings.json')).isSymbolicLink());
+  fs.rmSync(path.join(cfg, 'settings.json'));
+  fs.mkdirSync(path.join(cfg, 'settings.json'));                         // a directory is refused too
+  assert.equal(m.migrateAgentConfig('a1'), false);
+});
