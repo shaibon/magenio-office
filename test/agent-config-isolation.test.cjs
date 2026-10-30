@@ -133,3 +133,62 @@ test('purge removes one agent\'s config dir (and only that), reset removes the h
   m.removeAllAgentConfig();
   assert.ok(!fs.existsSync(b) && fs.existsSync(other), 'only this hive\'s root goes');
 });
+
+// QA P1: coexisting homes must not strand the old session data.
+test('coexisting homes: legacy index and rollouts are merged into the app-owned home', (t) => {
+  const e = env(t);
+  const m = new HiveManager(() => e.harness, undefined, () => e.appData);
+  m.ensureHive();
+  const target = path.join(m.agentConfigDir('a1'), '.codex');
+  fs.mkdirSync(target, { recursive: true });
+  fs.writeFileSync(path.join(target, 'config.toml'), 'GOOD');
+  const legacy = path.join(e.hive, 'agents', 'a1', '.codex');
+  fs.mkdirSync(path.join(legacy, 'sessions', '2026'), { recursive: true });
+  fs.writeFileSync(path.join(legacy, 'config.toml'), 'EVIL');
+  fs.writeFileSync(path.join(legacy, 'state_5.sqlite'), 'INDEX');
+  fs.writeFileSync(path.join(legacy, 'sessions', '2026', 'rollout-session.jsonl'), 'ROLL');
+
+  m.migrateAgentConfig('a1');
+
+  assert.equal(fs.readFileSync(path.join(target, 'state_5.sqlite'), 'utf8'), 'INDEX');
+  assert.equal(fs.readFileSync(path.join(target, 'sessions', '2026', 'rollout-session.jsonl'), 'utf8'), 'ROLL');
+  assert.equal(fs.readFileSync(path.join(target, 'config.toml'), 'utf8'), 'GOOD');
+  assert.equal(fs.existsSync(legacy), false, 'fully merged legacy dir is removed');
+});
+
+test('coexisting homes with a clashing file: nothing is overwritten or deleted, and it is logged', (t) => {
+  const e = env(t);
+  const m = new HiveManager(() => e.harness, undefined, () => e.appData);
+  m.ensureHive();
+  const target = path.join(m.agentConfigDir('a1'), '.codex');
+  const legacy = path.join(e.hive, 'agents', 'a1', '.codex');
+  fs.mkdirSync(target, { recursive: true });
+  fs.mkdirSync(path.join(legacy, 'sessions'), { recursive: true });
+  fs.writeFileSync(path.join(target, 'state_5.sqlite'), 'NEW');
+  fs.writeFileSync(path.join(legacy, 'state_5.sqlite'), 'OLD');
+  fs.writeFileSync(path.join(legacy, 'sessions', 'r.jsonl'), 'ROLL');
+
+  m.migrateAgentConfig('a1');
+
+  assert.equal(fs.readFileSync(path.join(target, 'state_5.sqlite'), 'utf8'), 'NEW');
+  assert.equal(fs.readFileSync(path.join(legacy, 'state_5.sqlite'), 'utf8'), 'OLD', 'clashing legacy file kept');
+  assert.equal(fs.readFileSync(path.join(target, 'sessions', 'r.jsonl'), 'utf8'), 'ROLL', 'the rest still moved');
+  const log = fs.readFileSync(path.join(e.hive, 'log.jsonl'), 'utf8');
+  assert.match(log, /agent-config-migration-conflict/);
+  assert.match(log, /state_5\.sqlite/);
+});
+
+test('an interrupted staged copy is discarded; the intact legacy home migrates on the next run', (t) => {
+  const e = env(t);
+  const m = new HiveManager(() => e.harness, undefined, () => e.appData);
+  m.ensureHive();
+  const cfg = m.agentConfigDir('a1');
+  fs.mkdirSync(path.join(cfg, '.codex.migrating'), { recursive: true });
+  fs.writeFileSync(path.join(cfg, '.codex.migrating', 'partial'), 'x');
+  const legacy = path.join(e.hive, 'agents', 'a1', '.codex');
+  fs.mkdirSync(legacy, { recursive: true });
+  fs.writeFileSync(path.join(legacy, 'state_5.sqlite'), 'INDEX');
+  m.migrateAgentConfig('a1');
+  assert.equal(fs.readFileSync(path.join(cfg, '.codex', 'state_5.sqlite'), 'utf8'), 'INDEX');
+  assert.equal(fs.existsSync(path.join(cfg, '.codex.migrating')), false);
+});

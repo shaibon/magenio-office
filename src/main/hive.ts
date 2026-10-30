@@ -644,8 +644,44 @@ export class HiveManager {
       if (!has) return;
       mkdirSync(cfg, { recursive: true, mode: 0o700 });
       const target = join(cfg, '.codex');
-      if (!existsSync(target)) this.moveCodexDataDir(legacy, target);
-      else rmSync(join(legacy, 'config.toml'), { force: true }); // never leave a hook-bearing config behind
+      // Hook-bearing config is regenerated at every spawn; never carry the legacy one over.
+      rmSync(join(legacy, 'config.toml'), { force: true });
+      if (!existsSync(target)) {
+        // Copy-then-rename so an interrupted cross-volume copy never leaves a partial target
+        // that a later run would mistake for a finished migration (legacy is removed last).
+        const stage = `${target}.migrating`;
+        rmSync(stage, { recursive: true, force: true });
+        try { renameSync(legacy, target); }
+        catch (e) {
+          if ((e as NodeJS.ErrnoException).code !== 'EXDEV') throw e;
+          cpSync(legacy, stage, { recursive: true, force: false, errorOnExist: true });
+          renameSync(stage, target);
+          rmSync(legacy, { recursive: true, force: true });
+        }
+        return;
+      }
+      // Both homes exist (the app-owned one was created first, or a past run was interrupted):
+      // move across everything the target lacks. Anything present in BOTH (e.g. two
+      // state_5.sqlite) is never overwritten and never deleted — it stays in the legacy dir and
+      // is reported, so no session data is silently abandoned.
+      const conflicts: string[] = [];
+      const merge = (from: string, to: string, rel: string): void => {
+        for (const e of readdirSync(from, { withFileTypes: true })) {
+          const f = join(from, e.name), t = join(to, e.name), r = rel ? `${rel}/${e.name}` : e.name;
+          let there = false;
+          try { lstatSync(t); there = true; } catch { /* absent */ }
+          if (!there) { this.moveCodexDataDir(f, t); continue; }
+          if (e.isDirectory() && lstatSync(t).isDirectory()) { merge(f, t, r); continue; }
+          conflicts.push(r);
+        }
+      };
+      merge(legacy, target, '');
+      if (conflicts.length) {
+        this.appendLog({ kind: 'agent-config-migration-conflict', agentId, kept: legacy, conflicts: conflicts.slice(0, 20), count: conflicts.length });
+      } else {
+        // Only empty directories can remain; this removes them (never a file we did not move).
+        try { rmSync(legacy, { recursive: true, force: true }); } catch { /* best effort */ }
+      }
     } catch (e) { console.error(`[hive] migrateAgentConfig(${agentId}) failed:`, e); }
   }
 
