@@ -1,3 +1,4 @@
+import { displayStatus, useHibernatedIds, useIsHibernated } from '@/hooks/useHibernatedIds';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { PixelPanel } from './PixelPanel';
@@ -30,6 +31,7 @@ export interface AgentDetailPanelProps {
 }
 
 export function AgentDetailPanel({ agent, config }: AgentDetailPanelProps) {
+  const hibernated = useIsHibernated(agent.id);
   const { t } = useTranslation();
   useResolvedRepoNames([agent]);
   const [openTerminalState, setOpenTerminalState] = useState<'idle' | 'opening' | 'ok' | 'error'>('idle');
@@ -171,7 +173,7 @@ export function AgentDetailPanel({ agent, config }: AgentDetailPanelProps) {
             display: 'flex', gap: 6, alignItems: 'center', marginTop: 1,
             minWidth: 0, overflow: 'hidden'
           }}>
-            <PixelBadge status={agent.status} />
+            <PixelBadge status={displayStatus(agent.status, hibernated)} />
             <span style={{
               fontSize: 12, color: 'var(--cth-ink-500)',
               whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'

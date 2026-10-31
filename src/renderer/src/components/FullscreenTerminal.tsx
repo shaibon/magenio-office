@@ -1,3 +1,4 @@
+import { displayStatus, useHibernatedIds, useIsHibernated } from '@/hooks/useHibernatedIds';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
@@ -744,10 +745,12 @@ function SidebarRow({
   const bullets = (agent.note ?? '').split('\n').map(s => s.trim()).filter(Boolean);
 
   const typing = useHasTerminalDraft(agent.ptyId);
+  const hibernated = useIsHibernated(agent.id);
   // Same display rule as AgentCard: frozen replaces IDLE only, so an agent that
   // is genuinely mid-turn keeps showing that instead of lying about being parked.
   const badgeStatus = typing
     ? 'typing'
+    : hibernated ? 'hibernated'
     : (frozen && agent.status === 'idle') ? 'frozen' : agent.status;
 
   /** The ✎ button opens the editor beside the row — the bullets on the row are
@@ -832,7 +835,7 @@ function SidebarRow({
                 idle-and-held, and nothing else on screen said so. */}
             <PixelBadge
               status={badgeStatus}
-              title={badgeStatus === 'frozen' ? t('agentCard.frozenTitle') : undefined}
+              title={badgeStatus === 'frozen' ? t('agentCard.frozenTitle') : badgeStatus === 'hibernated' ? t('agentCard.hibernatedTitle') : undefined}
             />
             {/* Explicit note edit — a real control instead of a hover surprise.
                 A span, not a <button>: we're inside the row's button element. */}
@@ -986,6 +989,7 @@ function SidebarRow({
 
 function Header({ agent, onEdit }: { agent: Agent; onEdit: () => void }) {
   const { t } = useTranslation();
+  const hibernated = useIsHibernated(agent.id);
   const typing = useHasTerminalDraft(agent.ptyId);
   const archiveAgent = useStore((st) => st.archiveAgent);
   const [openState, setOpenState] = useState<'idle' | 'opening' | 'ok' | 'error'>('idle');
@@ -1099,7 +1103,7 @@ function Header({ agent, onEdit }: { agent: Agent; onEdit: () => void }) {
             wrapper only centres the 20px box inside 24px, it does not make the
             visible border match. */}
         <PixelBadge
-          status={typing ? 'typing' : agent.status}
+          status={typing ? 'typing' : displayStatus(agent.status, hibernated)}
           style={{ height: 24, padding: '0 8px', lineHeight: '24px' }}
         />
         {!agent.isGod && (

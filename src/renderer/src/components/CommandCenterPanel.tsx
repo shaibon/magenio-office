@@ -1,3 +1,4 @@
+import { displayStatus, useHibernatedIds, useIsHibernated } from '@/hooks/useHibernatedIds';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { PixelPanel } from './PixelPanel';
@@ -96,6 +97,7 @@ export function CommandCenterPanel({ agent, fullscreen = false, config }: {
   config?: HarnessConfig | null;
 }) {
   const { t } = useTranslation();
+  const godHibernated = useIsHibernated(agent.id);
   const [tab, setTab] = useState<CCTab>('terminal');
   // The trigger-history ledger has nothing to say until an outside party can
   // reach us, so its tab appears only once an org key or a webhook exists. This
@@ -188,7 +190,7 @@ export function CommandCenterPanel({ agent, fullscreen = false, config }: {
             whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'
           }}>{t('commandCenter.title')}</div>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 1, minWidth: 0 }}>
-            <PixelBadge status={agent.status} />
+            <PixelBadge status={displayStatus(agent.status, godHibernated)} />
             <span style={{
               fontSize: 12, color: 'var(--cth-ink-500)',
               whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'
@@ -362,6 +364,7 @@ function FloorTab({ seed, config }: {
   const { t } = useTranslation();
   const rtl = useRtl();
   const agents = useStore((s) => s.agents);
+  const hibernatedIds = useHibernatedIds(agents.map((a) => a.id));
   useResolvedRepoNames(agents);
   const godName = agents.find((a) => a.isGod)?.name ?? 'the orchestrator';
   const select = useStore((s) => s.select);
@@ -740,7 +743,7 @@ function FloorTab({ seed, config }: {
                   fontFamily: 'var(--cth-font-ui)', fontSize: 12, color: 'var(--cth-ink-900)'
                 }}
               >{a.name}{projectTag(a)}{a.isGod ? t('commandCenter.godTag') : ''}</button>
-              <PixelBadge status={armed ? 'looping' : a.status} />
+              <PixelBadge status={armed ? 'looping' : displayStatus(a.status, hibernatedIds.has(a.id))} />
               {armed && <span title={breaker?.reason} style={{ color: 'var(--cth-coral)', fontSize: 12 }}>⚠</span>}
               <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--cth-ink-500)' }}>
                 {t('commandCenter.toolCalls', { count: toolCounts[a.id] ?? 0 })}

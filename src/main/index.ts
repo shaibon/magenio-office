@@ -6340,6 +6340,9 @@ function bootstrapHiveServices(): void {
     electron: process.versions.electron,
     platform: process.platform
   });
+  // t-284: the per-agent freeze control is gone (hibernation replaces it), so a freeze left in an old
+  // config would park an agent with no way to undo it. Drop it once, before anything reads the list.
+  if ((readConfig().autoDeliveryPausedAgents ?? []).length) writeConfig({ autoDeliveryPausedAgents: [] });
   control.replaceAutoDeliveryPauses(readConfig().autoDeliveryPausedAgents ?? []);
   migrateN8nPerProject();
   archiveOrphanedAgents(); // #57/#58: archive stale archived:false entries with no live PTY

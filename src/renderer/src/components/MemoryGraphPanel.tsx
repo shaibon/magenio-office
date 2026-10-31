@@ -1,3 +1,4 @@
+import { displayStatus, useHibernatedIds, useIsHibernated } from '@/hooks/useHibernatedIds';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
@@ -370,6 +371,7 @@ export function MemoryGraphPanel({
 
 function NodeTip({ node, memories }: { node: GraphNode; memories: Record<string, string> }) {
   const { t } = useTranslation();
+  const hibernated = useIsHibernated(node.kind === 'agent' ? node.id : undefined);
   if (node.kind === 'agent') {
     const mem = memories[node.id];
     const snippet = mem === undefined ? t('memoryGraph.loadingMemory') : memorySnippet(mem, t);
@@ -377,7 +379,7 @@ function NodeTip({ node, memories }: { node: GraphNode; memories: Record<string,
       <>
         <div style={tipTitle}>{node.label}</div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, margin: '2px 0 4px' }}>
-          <PixelBadge status={node.status} />
+          <PixelBadge status={displayStatus(node.status, hibernated)} />
           <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{t('memoryGraph.messageLinks', { count: node.degree })}</span>
         </div>
         <div style={tipBody}>{snippet}</div>

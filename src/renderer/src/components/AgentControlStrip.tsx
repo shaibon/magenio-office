@@ -79,11 +79,6 @@ export function AgentControlStrip({ agentId }: { agentId: string }) {
     setSteer('');
     flash(t('agentControl.flashSteer'));
   };
-  const toggleFreeze = async () => {
-    const s = await window.cth.controlAutoDelivery(agentId, !snap?.autoDeliveryPaused);
-    if (s) setSnap(s);
-    flash(snap?.autoDeliveryPaused ? t('agentControl.flashUnfrozen') : t('agentControl.flashFrozen'));
-  };
 
   const hibernateNow = async () => {
     const ok = await window.cth.hibernateAgentNow(agentId);
@@ -135,20 +130,7 @@ export function AgentControlStrip({ agentId }: { agentId: string }) {
             Michael — so the tooltip carries that distinction now that the
             grouping no longer does. */}
         <AgentHoldButton agentId={agentId} />
-        {/* The Command Center header still has the floor-wide auto-delivery
-            switch; this is the per-agent version of the same control. */}
-        <PixelButton variant={snap?.autoDeliveryPaused ? 'primary' : 'secondary'} size="sm" onClick={toggleFreeze}>
-          <span
-            className="cth-tip cth-tip-left cth-tip-wrap"
-            data-tip={snap?.autoDeliveryPaused
-              ? t('agentControl.unfreezeTip')
-              : t('agentControl.freezeTip')}
-            aria-label={snap?.autoDeliveryPaused ? t('agentControl.unfreezeAria') : t('agentControl.freezeAria')}
-          >
-            {snap?.autoDeliveryPaused ? t('agentControl.unfreeze') : t('agentControl.freeze')}
-          </span>
-        </PixelButton>
-        <PixelButton variant="secondary" size="sm" onClick={hib.hibernated ? wake : hibernateNow} disabled={!hib.hibernated && !!snap?.autoDeliveryPaused}>
+        <PixelButton variant="secondary" size="sm" onClick={hib.hibernated ? wake : hibernateNow}>
           <span
             className="cth-tip cth-tip-left cth-tip-wrap"
             data-tip={hib.hibernated ? t('agentControl.wakeTip') : t('agentControl.hibernateNowTip')}
