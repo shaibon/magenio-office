@@ -51,24 +51,27 @@ export function shieldedButUnrestored(f: SweepFacts): string[] {
   return [...swept].filter((id) => !stillSwept.has(id));
 }
 
-/** What the main-side fallback does about shielded rows nothing restored (t-282).
- *  - the batch is still running: wait while a renderer is alive (its spawns are in flight and mail must
- *    not bounce as if the agent were dead); give up WITHOUT marking at the retry limit; mark only when
- *    the renderer is gone (the batch can never finish).
- *  - the batch is done: mark once, when it reports done; the later boot timer has nothing left to do.
- *  - the batch never started: the boot timer marks. */
+/** Boot-restore progress across windows (t-282). Each window reports its own batch, so one window
+ *  finishing (or an unrelated one staying open) says nothing about another's in-flight batch. */
+export type BatchState = 'idle' | 'running' | 'done';
+export function batchState(owners: ReadonlyMap<number, 'running' | 'done'>, isAlive: (owner: number) => boolean): BatchState {
+  if (!owners.size) return 'idle';
+  for (const [owner, st] of owners) if (st === 'running' && isAlive(owner)) return 'running';
+  return 'done'; // every batch finished, or its owning window is gone and can never finish
+}
+
+/** What the main-side fallback does about shielded rows nothing restored.
+ *  - a batch is running in a LIVE owner window: wait; give up WITHOUT marking at the retry limit.
+ *  - every batch done or its owner gone: mark (once from the timer if a done report already did).
+ *  - no batch ever started: the boot timer marks. */
 export type FallbackAction = 'mark' | 'wait' | 'skip';
 export function fallbackAction(f: {
-  state: 'idle' | 'running' | 'done';
-  source: 'timer' | 'done';
+  state: BatchState;
+  alreadyMarked: boolean;
   attempt: number;
   maxAttempts: number;
-  rendererAlive: boolean;
 }): FallbackAction {
-  if (f.state === 'running') {
-    if (!f.rendererAlive) return 'mark';
-    return f.attempt < f.maxAttempts ? 'wait' : 'skip';
-  }
-  if (f.state === 'done' && f.source === 'timer') return 'skip';
+  if (f.state === 'running') return f.attempt < f.maxAttempts ? 'wait' : 'skip';
+  if (f.state === 'done' && f.alreadyMarked) return 'skip';
   return 'mark';
 }

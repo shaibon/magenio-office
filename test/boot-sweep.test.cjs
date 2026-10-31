@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
-const { orphansToArchive, restorableRosterIds, shieldedButUnrestored, fallbackAction } = loadTs('src/main/bootSweep.ts');
+const { orphansToArchive, restorableRosterIds, shieldedButUnrestored, fallbackAction, batchState } = loadTs('src/main/bootSweep.ts');
 
 const facts = (over) => ({
   godId: 'god', agents: {}, hasLivePty: () => false, isSleeper: () => false, rosterIds: new Set(), ...over
@@ -67,8 +67,9 @@ test('the no-restore fallback waits for an in-flight batch and the renderer repo
   const root = path.join(__dirname, '..');
   const main = fs.readFileSync(path.join(root, 'src/main/index.ts'), 'utf8');
   assert.match(main, /action === 'wait'\) \{ setTimeout\(\(\) => markUnrestoredAfterBoot\(source, attempt \+ 1\)/);
+  assert.match(main, /bootRestoreOwners\.set\(evt\.sender\.id/);
   assert.match(main, /startAsleep\(id, opts\.id, recipe, 'boot-asleep'\)\) return false;\s*hive\.clearCrashed\(id\)/);
-  assert.match(main, /bootRestoreState = running === true \? 'running' : 'done';\s*if \(bootRestoreState === 'done'\) markUnrestoredAfterBoot\('done'\)/);
+  assert.match(main, /if \(running !== true\) markUnrestoredAfterBoot\('done'\)/);
   assert.match(main, /markUnrestoredAfterBoot\(\), 180_000/);
   const hook = fs.readFileSync(path.join(root, 'src/renderer/src/hooks/useRestoreTeam.ts'), 'utf8');
   assert.match(hook, /restoring = true;\s*void window\.cth\.restoreBatch\?\.\(true\)/);
@@ -87,17 +88,27 @@ test('a failed boot restore keeps the row (crashed), and mail to a crashed row b
   assert.deepEqual(orphansToArchive(facts({ agents: { pam: { crashed: true } }, rosterIds: null })), []);
 });
 
-test('fallback never marks an in-flight restore, even at the retry limit; a vanished renderer is recovered', () => {
-  const base = { source: 'timer', maxAttempts: 60 };
-  assert.equal(fallbackAction({ ...base, state: 'running', attempt: 0, rendererAlive: true }), 'wait');
-  assert.equal(fallbackAction({ ...base, state: 'running', attempt: 59, rendererAlive: true }), 'wait');
-  assert.equal(fallbackAction({ ...base, state: 'running', attempt: 60, rendererAlive: true }), 'skip', 'limit: give up, do not mark');
-  assert.equal(fallbackAction({ ...base, state: 'running', attempt: 3, rendererAlive: false }), 'mark', 'renderer gone: batch can never finish');
+test('fallback never marks a batch running in a live window, even at the retry limit', () => {
+  const b = { alreadyMarked: false, maxAttempts: 60 };
+  assert.equal(fallbackAction({ ...b, state: 'running', attempt: 0 }), 'wait');
+  assert.equal(fallbackAction({ ...b, state: 'running', attempt: 59 }), 'wait');
+  assert.equal(fallbackAction({ ...b, state: 'running', attempt: 60 }), 'skip', 'limit: give up, do not mark');
 });
 
-test('fallback: idle at the boot timer marks; done marks once (from the report), not again from the timer', () => {
-  const base = { maxAttempts: 60, attempt: 0, rendererAlive: true };
-  assert.equal(fallbackAction({ ...base, state: 'idle', source: 'timer' }), 'mark');
-  assert.equal(fallbackAction({ ...base, state: 'done', source: 'done' }), 'mark');
-  assert.equal(fallbackAction({ ...base, state: 'done', source: 'timer' }), 'skip');
+test('fallback: idle marks at the boot timer; done marks once and the timer then skips', () => {
+  const b = { maxAttempts: 60, attempt: 0 };
+  assert.equal(fallbackAction({ ...b, state: 'idle', alreadyMarked: false }), 'mark');
+  assert.equal(fallbackAction({ ...b, state: 'done', alreadyMarked: false }), 'mark');
+  assert.equal(fallbackAction({ ...b, state: 'done', alreadyMarked: true }), 'skip');
+});
+
+test('batch ownership: window A running + window B done/open is still running; A vanishing means done', () => {
+  const owners = new Map([[1, 'running'], [2, 'done']]);
+  assert.equal(batchState(owners, () => true), 'running', "B reporting done does not end A's batch");
+  assert.equal(batchState(owners, (id) => id === 2), 'done', 'A closed or crashed mid-batch: it can never finish');
+  const onlyBOpen = new Map([[1, 'running']]);
+  assert.equal(batchState(onlyBOpen, (id) => id === 2), 'done', 'an unrelated open window B is no proof A is alive');
+  assert.equal(batchState(new Map(), () => true), 'idle');
+  // and the end state of that lifecycle is a mark, not a skip, even at the attempt limit
+  assert.equal(fallbackAction({ state: batchState(onlyBOpen, (id) => id === 2), alreadyMarked: false, attempt: 60, maxAttempts: 60 }), 'mark');
 });

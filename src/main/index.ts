@@ -87,7 +87,7 @@ import { checkMcpPresence, nodePresenceDeps, installTrelloMcp, nodeInstallDeps }
 import { secretRefFor, INTEGRATION_TEMPLATES } from '../shared/integrations';
 import { buildTempHistory, type TempHistoryInput, type TempLogEvent, type TempRequest, type TempRow } from '../shared/tempHistory';
 import { RosterStore } from './roster';
-import { orphansToArchive, restorableRosterIds, shieldedButUnrestored, fallbackAction } from './bootSweep';
+import { orphansToArchive, restorableRosterIds, shieldedButUnrestored, fallbackAction, batchState } from './bootSweep';
 import { buildWorkerLaunch } from './workerLaunch';
 import { ControlRegistry } from './control';
 import { SleepMarker } from './sleepMarker';
@@ -1089,22 +1089,27 @@ function syncContextTriggers(): void {
  *  t-282: a normal quit archives nothing, so at the next start EVERY row looked like an orphan and
  *  the whole team was archived then restored (one git commit each). Rows the roster lists for the
  *  boot restore are skipped (bootSweep.ts); only rows nobody would restore are archived. */
-/** Renderer boot-restore progress (t-282): 'idle' = never started this run. */
-let bootRestoreState: 'idle' | 'running' | 'done' = 'idle';
-ipcMain.handle('hive:restoreBatch', (_evt, running: unknown) => {
-  bootRestoreState = running === true ? 'running' : 'done';
-  if (bootRestoreState === 'done') markUnrestoredAfterBoot('done'); // whatever the batch left PTY-less is not coming back this run
+/** Renderer boot-restore progress per window (t-282), keyed by webContents id: a batch belongs to the
+ *  window that reported it. */
+const bootRestoreOwners = new Map<number, 'running' | 'done'>();
+let bootMarkedOnDone = false;
+ipcMain.handle('hive:restoreBatch', (evt, running: unknown) => {
+  bootRestoreOwners.set(evt.sender.id, running === true ? 'running' : 'done');
+  if (running !== true) markUnrestoredAfterBoot('done'); // whatever the batches left PTY-less is not coming back this run
   return true;
 });
-/** After the restore batch reports done, or 3 min after start if it never ran: rows the roster shielded
- *  that are still PTY-less (not asleep, not crashed) are marked crashed (kept in the roster, retryable, mail bounces). Waits out a batch in flight. */
+/** After a restore batch reports done, or 3 min after start if none ran: rows the roster shielded that
+ *  are still PTY-less (not asleep, not crashed) are marked crashed (kept in the roster, retryable, mail
+ *  bounces). Waits out a batch that is running in a live window. */
 function markUnrestoredAfterBoot(source: 'timer' | 'done' = 'timer', attempt = 0): void {
-  const action = fallbackAction({
-    state: bootRestoreState, source, attempt, maxAttempts: 60,
-    rendererAlive: [...allWindows].some((w) => !w.isDestroyed() && !w.webContents.isDestroyed() && !w.webContents.isCrashed())
+  const state = batchState(bootRestoreOwners, (id) => {
+    const w = [...allWindows].find((x) => !x.isDestroyed() && !x.webContents.isDestroyed() && x.webContents.id === id);
+    return !!w && !w.webContents.isCrashed();
   });
+  const action = fallbackAction({ state, alreadyMarked: bootMarkedOnDone, attempt, maxAttempts: 60 });
   if (action === 'wait') { setTimeout(() => markUnrestoredAfterBoot(source, attempt + 1), 60_000).unref(); return; }
   if (action === 'skip') return;
+  if (state === 'done') bootMarkedOnDone = true;
   if (!hive.enabled()) return;
   try {
     const reg = hive.registry();
