@@ -249,6 +249,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
   const cfgX = config as HarnessConfig & {
     strongKeepalive?: boolean; audience?: string; autoMode?: boolean;
     defaultModel?: string; maxTurns?: number; semanticMemory?: boolean;
+    agentHibernateEnabled?: boolean; agentHibernateMinutes?: number;
   };
   /**
    * ONE SAVE BUTTON.
@@ -286,6 +287,19 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
     const next = !keepAwake;
     setKeepAwake(next);
     stage({ strongKeepalive: next } as Partial<HarnessConfig>);
+  };
+  // Hibernation (t-283): applied live by the main-process reaper on the next beat after Save.
+  const [hibernateOn, setHibernateOn] = useState<boolean>(cfgX.agentHibernateEnabled !== false);
+  const [hibernateMin, setHibernateMin] = useState<string>(String(cfgX.agentHibernateMinutes ?? 15));
+  const toggleHibernate = () => {
+    const next = !hibernateOn;
+    setHibernateOn(next);
+    stage({ agentHibernateEnabled: next } as Partial<HarnessConfig>);
+  };
+  const changeHibernateMin = (v: string) => {
+    setHibernateMin(v);
+    const n = Math.floor(Number(v));
+    if (Number.isFinite(n) && n >= 1 && n <= 1440) stage({ agentHibernateMinutes: n } as Partial<HarnessConfig>);
   };
   const [simpleMode, setSimpleMode] = useState<boolean>(cfgX.audience === 'non-technical');
   // Renderer-local, not part of HarnessConfig — it only changes how this window
@@ -1218,6 +1232,25 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                             <PixelButton variant={keepAwake ? 'primary' : 'secondary'} size="sm" onClick={toggleKeepAwake}>
                               {keepAwake ? t('common.on') : t('common.off')}
                             </PixelButton>
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                              <span style={{ fontSize: 13, lineHeight: '20px', color: 'var(--cth-ink-900)' }}>{t('settings.general.hibernate')}</span>
+                              <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-500)' }}>
+                                {t('settings.general.hibernateDesc')}
+                              </span>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <input
+                                type="number" min="1" max="1440" step="1" value={hibernateMin} disabled={!hibernateOn}
+                                aria-label={t('settings.general.hibernateMinutes')} title={t('settings.general.hibernateMinutes')}
+                                onChange={(e) => changeHibernateMin(e.target.value)}
+                                style={{ ...slackInputStyle, width: 72 }}
+                              />
+                              <PixelButton variant={hibernateOn ? 'primary' : 'secondary'} size="sm" onClick={toggleHibernate}>
+                                {hibernateOn ? t('common.on') : t('common.off')}
+                              </PixelButton>
+                            </div>
                           </div>
                           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>

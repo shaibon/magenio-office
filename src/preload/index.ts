@@ -310,6 +310,10 @@ export interface HarnessConfig {
   /** Opt-in strong keep-alive (prevent-display-sleep). Mirrors main + renderer
    *  HarnessConfig so updateConfig({ strongKeepalive }) is typed across the bridge. */
   strongKeepalive?: boolean;
+  /** Agent hibernation (t-283): master switch, idle minutes, per-agent opt-out. Mirrors src/main/config.ts. */
+  agentHibernateEnabled?: boolean;
+  agentHibernateMinutes?: number;
+  hibernateOptOutAgents?: string[];
   /** Auto-update from GitHub releases (default ON; Settings → General). */
   autoUpdate?: boolean;
   /** Anonymous product analytics (default ON, opt-out; see TELEMETRY.md).

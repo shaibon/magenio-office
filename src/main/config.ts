@@ -857,6 +857,7 @@ export function readConfig(): HarnessConfig {
 function migrateHibernationV1(cfg: HarnessConfig): HarnessConfig {
   const m = cfg.agentHibernateMinutes;
   if (typeof m !== 'number' || !Number.isFinite(m) || m <= 0) cfg.agentHibernateMinutes = DEFAULTS.agentHibernateMinutes;
+  else cfg.agentHibernateMinutes = Math.min(1440, Math.max(1, Math.floor(m)));
   if (typeof cfg.agentHibernateEnabled !== 'boolean') cfg.agentHibernateEnabled = true;
   cfg.hibernateOptOutAgents = Array.isArray(cfg.hibernateOptOutAgents)
     ? cfg.hibernateOptOutAgents.filter((x): x is string => typeof x === 'string' && !!x) : [];

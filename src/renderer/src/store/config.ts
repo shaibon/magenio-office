@@ -123,6 +123,10 @@ export interface HarnessConfig {
    *  while away (battery cost; best on AC). Default off = survive + catch up on
    *  resume. Mirrors the main-process field (src/main/config.ts). */
   strongKeepalive?: boolean;
+  /** Agent hibernation (t-283): master switch, idle minutes, per-agent opt-out. Mirrors src/main/config.ts. */
+  agentHibernateEnabled?: boolean;
+  agentHibernateMinutes?: number;
+  hibernateOptOutAgents?: string[];
   /** Auto-update from GitHub releases (default ON; Settings → General). */
   autoUpdate?: boolean;
   /** Anonymous product analytics (default ON, opt-out; see TELEMETRY.md).
