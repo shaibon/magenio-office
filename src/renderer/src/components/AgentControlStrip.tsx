@@ -55,10 +55,10 @@ export function AgentControlStrip({ agentId }: { agentId: string }) {
     return () => { alive = false; off?.(); };
   }, [agentId]);
 
-  const flash = (m: string) => {
+  const flash = (m: string, ms = 1800) => {
     setNote(m);
     if (noteTimer.current) clearTimeout(noteTimer.current);
-    noteTimer.current = setTimeout(() => setNote(''), 1800);
+    noteTimer.current = setTimeout(() => setNote(''), ms);
   };
 
   const togglePause = async () => {
@@ -81,8 +81,10 @@ export function AgentControlStrip({ agentId }: { agentId: string }) {
   };
 
   const hibernateNow = async () => {
-    const ok = await window.cth.hibernateAgentNow(agentId);
-    flash(ok ? t('agentControl.flashHibernating') : t('agentControl.flashNoHibernate'));
+    const res = await window.cth.hibernateAgentNow(agentId);
+    // A refusal says why, and stays up long enough to read (t-286).
+    if (res?.ok) flash(t('agentControl.flashHibernating'));
+    else flash(t(`agentControl.hibernateWhy.${res?.reason ?? 'failed'}`, { defaultValue: t('agentControl.flashNoHibernate') }), 7000);
   };
   const wake = async () => {
     await window.cth.wakeAgent(agentId, 'ui');

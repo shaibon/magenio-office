@@ -423,7 +423,7 @@ test('wiring (t-283): a frozen agent is neither auto-hibernated nor auto-woken; 
   assert.equal(holdReason(ok({ autoDeliveryPaused: true }), CFG, NOW), 'frozen');
   assert.match(SRC, /inboxCount: \(id\) => \(control\.snapshot\(id\)\.autoDeliveryPaused \? 0 : hive\.inbox\(id\)\.length\)/);
   for (const ch of ['agent:hibernateNow', 'agent:hibernateState', 'agent:setHibernateOptOut']) assert.ok(SRC.includes(`'${ch}'`), ch);
-  assert.match(SRC, /agent:hibernateNow[\s\S]{0,500}manualHibernateAllowed\([\s\S]{0,300}frozen: control\.snapshot\(agentId\)\.autoDeliveryPaused/, 'the manual IPC is guarded');
+  assert.match(SRC, /agent:hibernateNow[\s\S]{0,700}const frozen = control\.snapshot\(agentId\)\.autoDeliveryPaused;[\s\S]{0,200}manualHibernateAllowed\([\s\S]{0,200}frozen \}\)/, 'the manual IPC is guarded');
 });
 
 // t-283: selective app-start.

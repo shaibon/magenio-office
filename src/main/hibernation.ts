@@ -199,6 +199,15 @@ export class Hibernator<Recipe> {
   readonly sleepers = new Map<string, string>();
   constructor(readonly d: HibernatorDeps<Recipe>, private readonly gate = new WakeGate(3)) {}
 
+  /** Why a manual hibernate would be refused right now, or null when nothing blocks it. */
+  whyNot(agentId: string): 'not-running' | 'no-recipe' | 'already-asleep' | 'no-session' | null {
+    if (this.isSleeper(agentId) || this.d.isHibernated(agentId)) return 'already-asleep';
+    if (!this.d.ptyFor(agentId)) return 'not-running';
+    if (!this.d.recipeFor(agentId)) return 'no-recipe';
+    if (!this.d.sessionFor(agentId)) return 'no-session';
+    return null;
+  }
+
   /** Close an idle agent but keep it. False = it stays awake (nothing was touched). */
   hibernate(agentId: string, reason: string): boolean {
     const ptyId = this.d.ptyFor(agentId);

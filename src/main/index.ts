@@ -87,6 +87,7 @@ import { checkMcpPresence, nodePresenceDeps, installTrelloMcp, nodeInstallDeps }
 import { secretRefFor, INTEGRATION_TEMPLATES } from '../shared/integrations';
 import { buildTempHistory, type TempHistoryInput, type TempLogEvent, type TempRequest, type TempRow } from '../shared/tempHistory';
 import { RosterStore } from './roster';
+import { latestDeepcodeSession } from './deepcodeSession';
 import { orphansToArchive, restorableRosterIds, shieldedButUnrestored, fallbackAction, batchState } from './bootSweep';
 import { buildWorkerLaunch } from './workerLaunch';
 import { ControlRegistry } from './control';
@@ -3763,12 +3764,18 @@ ipcMain.handle('agent:wake', (_evt, agentId: unknown, reason: unknown) =>
   typeof agentId === 'string' ? wakeAgent(agentId, typeof reason === 'string' ? reason : 'ui') : false);
 // Operator controls (t-283). Manual "hibernate now" bypasses the idle rules only: it still refuses god,
 // workers, and anything without a live pty + recorded session (Hibernator.hibernate returns false).
-ipcMain.handle('agent:hibernateNow', (_evt, agentId: unknown) => {
-  if (typeof agentId !== 'string' || !hive.enabled()) return false;
+ipcMain.handle('agent:hibernateNow', (_evt, agentId: unknown): { ok: boolean; reason?: string } => {
+  if (typeof agentId !== 'string' || !hive.enabled()) return { ok: false, reason: 'not-found' };
   const reg = hive.registry();
   const a = reg.agents && Object.hasOwn(reg.agents, agentId) ? reg.agents[agentId] : undefined;
-  if (!reg.agents || !Object.hasOwn(reg.agents, agentId) || !a || !manualHibernateAllowed({ isGod: agentId === reg.godId || !!a.isGod, isWorker: liveWorkers.has(agentId), archived: !!a.archived, frozen: control.snapshot(agentId).autoDeliveryPaused })) return false;
-  return hibernateAgent(agentId, 'manual');
+  if (!reg.agents || !a) return { ok: false, reason: 'not-found' };
+  const frozen = control.snapshot(agentId).autoDeliveryPaused;
+  if (!manualHibernateAllowed({ isGod: agentId === reg.godId || !!a.isGod, isWorker: liveWorkers.has(agentId), archived: !!a.archived, frozen })) {
+    return { ok: false, reason: frozen ? 'frozen' : 'not-allowed' }; // god, worker, archived
+  }
+  const why = hibernator.whyNot(agentId);
+  if (why) return { ok: false, reason: why };
+  return hibernateAgent(agentId, 'manual') ? { ok: true } : { ok: false, reason: 'failed' };
 });
 /** The renderer's boot restore could not bring this agent back: keep it in the roster, marked crashed. */
 ipcMain.handle('hive:markRestoreFailed', (_evt, id: unknown) => {
@@ -6545,14 +6552,25 @@ function runWorkerWakeBeat(): void {
   }
 }
 
+/** The session a wake would resume. Hooks record it for Claude/Codex; DeepCode's hook carries none, so its
+ *  newest thread file in the agent's own project dir is recorded here (t-286). Other providers: unchanged. */
+function resumableSession(id: string): string | undefined {
+  const a = hive.registry().agents[id];
+  const recipeOpts = hibernateRecipes.get(id)?.opts;
+  const known = hive.lastSession(id, a?.sessionProvider ?? recipeOpts?.provider);
+  if (known) return known;
+  if (!a || (a.provider ?? recipeOpts?.provider) !== 'deepcode') return undefined;
+  const cwd = recipeOpts?.cwd ?? a.cwd;
+  const found = cwd ? latestDeepcodeSession(cwd, homedir()) : undefined;
+  if (found) hive.recordSession(id, found);
+  return found;
+}
+
 /** Hibernation lifecycle (t-279): the logic lives in hibernation.ts; this wires the real app. */
 const hibernator = new Hibernator<{ opts: AgentSpawnOptions; owner: Electron.WebContents | null }>({
   ptyFor: (id) => ptyForAgent(id),
   recipeFor: (id) => hibernateRecipes.get(id),
-  sessionFor: (id) => {
-    const a = hive.registry().agents[id];
-    return hive.lastSession(id, a?.sessionProvider ?? hibernateRecipes.get(id)?.opts.provider);
-  },
+  sessionFor: (id) => resumableSession(id),
   isHibernated: (id) => !!hive.registry().agents[id]?.hibernated,
   setHibernated: (id, on, info) => setHibernatedMarked(id, on, info),
   // ptyManager.kill reaps the detached MCP servers and sweeps the process group (no leaked tree);
@@ -6626,7 +6644,7 @@ function runHibernateBeat(): void {
       halted: snap.halted,
       ptyId,
       hasRecipe: hibernateRecipes.has(agentId),
-      hasSession: !!hive.lastSession(agentId, a.sessionProvider),
+      hasSession: !!resumableSession(agentId),
       lastOutputAt: ptyId ? (ptyManager.lastOutputAt(ptyId) ?? 0) : 0,
       spawnedAt: ptyId ? workerWake.spawnedAtFor(ptyId) : 0,
       lastTurnWasStop: workerWake.lastTurnWasStop(agentId),
