@@ -1,3 +1,5 @@
+import { selectionWakes } from './wakeOnSelect';
+import { isRestoringTeam } from './useRestoreTeam';
 import { useEffect, useRef } from 'react';
 import { useStore, type Agent, type QueuedMessage, type StationKind, type ToolKind } from '@/store/store';
 import {
@@ -1160,14 +1162,16 @@ export function useHive(config: HarnessConfig | null): void {
   }, [config?.onboardingComplete]);
 
   // 5b) Hibernation (t-279): opening a sleeping agent's tab is a direct event — wake it. Main
-  //     wakes on mail and on terminal input; this covers the plain "I clicked on it".
+  //     wakes on mail and on terminal input; this covers the plain "I clicked on it". The boot restore's
+  //     own selection changes (addAgent selects each restored agent) must not wake the whole team (t-285).
   useEffect(() => {
     if (!config?.onboardingComplete) return;
     let last: string | null = null;
     return useStore.subscribe((s) => {
       const id = s.selectedId;
-      if (!id || id === last) return;
-      last = id;
+      const wakes = selectionWakes(last, id, isRestoringTeam());
+      if (id) last = id; // seen either way, so a later unrelated store change cannot replay it
+      if (!wakes || !id) return;
       void window.cth.isAgentHibernated?.(id).then((h) => { if (h) void window.cth.wakeAgent?.(id, 'select'); });
     });
   }, [config?.onboardingComplete]);

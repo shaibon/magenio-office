@@ -45,6 +45,8 @@ function subscribe(listener: () => void): () => void {
 // useSyncExternalStore requires a stable snapshot identity — returning a fresh
 // object each call would loop forever, so the two fields are read separately.
 const getRestoring = (): boolean => restoring;
+/** True while a restore batch runs; its selection changes are not the user's (t-285). */
+export const isRestoringTeam = getRestoring;
 const getNote = (): string | null => note;
 const getAutoRestoring = (): boolean => autoRestoring;
 
