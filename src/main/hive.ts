@@ -24,10 +24,10 @@ import {
   readdirSync, statSync, lstatSync, realpathSync, rmSync, appendFileSync,
   symlinkSync, unlinkSync, copyFileSync, cpSync, chmodSync
 } from 'node:fs';
-import { join, dirname, basename, isAbsolute, relative } from 'node:path';
+import { join, dirname, basename, isAbsolute, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { spawnSync, spawn, type ChildProcess } from 'node:child_process';
-import { randomBytes, createHash } from 'node:crypto';
+import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import type { AgentUsageSample } from './usage';
 import { COMMAND_GROUPS } from '../shared/claudeCommands';
 import {
@@ -185,6 +185,14 @@ export interface RegistryAgent extends AgentMeta {
    *  "do not dispatch to them", not "they are gone", which is why it is its own
    *  flag rather than a reuse of `archived` or a breaker level. */
   onHold?: boolean;
+  /** Hibernated (t-279): the CLI process and its MCP servers were closed for inactivity but the
+   *  agent is still here and AVAILABLE — not `archived` (gone), not frozen (alive, delivery
+   *  refused). Any direct event wakes it with its session resumed. `sessionId` is the resume key
+   *  captured at hibernation; `resumeLost` is set by a wake that had to start fresh. */
+  hibernated?: { at: number; sessionId?: string; resumeLost?: boolean };
+  /** Last process exit was abnormal (crash / non-zero / signal): the agent stays in the roster,
+   *  restartable — startup's orphan archiving skips it. Cleared by the next spawn. */
+  crashed?: boolean;
   /** Most recent Claude Code session_id seen for this agent (Lane A #6.6a),
    *  captured from hook payloads. Doubles as the `--resume` key (idempotent
    *  resume after a crash/restart) AND the cost accounting/dedup key on every
@@ -549,7 +557,231 @@ export class HiveManager {
   }
   private shimPath(): string | null {
     const root = this.root();
-    return root ? join(root, 'bin', 'cth-hook.cjs') : null;
+    if (!root) return null;
+    const own = this.hookBinDir();
+    return join(own ?? join(root, 'bin'), 'cth-hook.cjs');
+  }
+
+  /** App-owned dir (Electron userData, outside every agent's writable set) holding the hook shim
+   *  and the node launcher it runs under. The shim is handed each agent's HIVE_HOOK_TOKEN, so
+   *  anything a peer can overwrite there could read it: with no app data dir (headless/tests)
+   *  the shim falls back to <hive>/bin and NO token is issued -> hooks never steer a kill. */
+  private hookBinDir(): string | null {
+    const d = this.getAppDataDir();
+    return d ? join(d, 'hook-bin') : null;
+  }
+
+  private hookLauncherPath(): string | null {
+    const d = this.hookBinDir();
+    return d ? join(d, process.platform === 'win32' ? 'hook-node.cmd' : 'hook-node') : null;
+  }
+
+  /** Hook command for `script` under the app-owned launcher (falls back to the hive launcher). */
+  private hookRun(script: string, quoted = true): string {
+    const l = this.hookLauncherPath();
+    if (!l || !existsSync(l)) return quoted ? this.nodeRun(script) : this.nodeRunUnquoted(script);
+    return quoted ? `"${l}" "${script}"` : `${l} ${script}`;
+  }
+
+  /** App-owned per-agent config dir, outside every agent-writable root: holds the files that NAME a
+   *  hook command to run in the agent's own process — Claude's --settings file and Codex's
+   *  CODEX_HOME/config.toml. Anything a peer can rewrite there is code execution in that agent's
+   *  hook process (and the home of its HIVE_HOOK_TOKEN). Active only when the app supplies its
+   *  data dir (headless/tests fall back to the agent's hive dir and get no token).
+   *  Deliberately SHORT (`~/.mdagents/<hive>/<id>`, not userData): Codex binds its Remote Control
+   *  socket under the canonical CODEX_HOME and macOS caps a socket path at 104 bytes. */
+  agentConfigDir(agentId: string): string | null {
+    const top = this.agentConfigRoot();
+    if (!top || !agentId || basename(agentId) !== agentId || agentId === '.' || agentId === '..') return null;
+    return join(top, agentId);
+  }
+
+  /** Delete an agent's app-owned config dir (worker scratch removal / purge). agentConfigDir
+   *  already rejects ids that are not a bare name; the resolved path is re-checked to sit directly
+   *  under this hive's config root before anything is removed. */
+  removeAgentConfig(agentId: string): void {
+    const dir = this.agentConfigDir(agentId);
+    const top = this.agentConfigRoot();
+    if (!dir || !top || resolve(dir) !== join(resolve(top), agentId)) return;
+    try { rmSync(dir, { recursive: true, force: true }); }
+    catch (e) { console.error(`[hive] removeAgentConfig(${agentId}) failed:`, e); }
+  }
+
+  /** `~/.mdagents/<hive hash>` — every agent's config dir for this hive (null without app data). */
+  private agentConfigRoot(): string | null {
+    const root = this.root();
+    if (!root || !this.getAppDataDir()) return null;
+    return join(homedir(), '.mdagents', createHash('sha1').update(root).digest('hex').slice(0, 6));
+  }
+
+  /** Full hive reset: drop all of this hive's agent config with it. */
+  removeAllAgentConfig(): void {
+    const top = this.agentConfigRoot();
+    if (!top) return;
+    try { rmSync(top, { recursive: true, force: true }); }
+    catch (e) { console.error('[hive] removeAllAgentConfig failed:', e); }
+  }
+
+  /** The directory the hook-bearing files live in for `agentId` (see agentConfigDir). */
+  private hookConfigDir(agentId: string, hiveAgentDir: string): string {
+    const c = this.agentConfigDir(agentId);
+    if (!c) return hiveAgentDir;
+    mkdirSync(c, { recursive: true, mode: 0o700 });
+    chmodSync(c, 0o700); // mode applies only on create
+    return c;
+  }
+
+  /** The legacy hive tree is writable by every peer, so migrating out of it treats it as hostile
+   *  input. ONCE per agent (marker in the protected dir; a legacy tree recreated afterwards is
+   *  inert, nothing reads it), and only:
+   *   - from a real directory (never a symlink: that would move/delete files the link points at);
+   *   - an allowlist of Codex DATA (sqlite index families, history/session index, and the
+   *     sessions/archived_sessions dirs or the exposure link into ~/.codex/<kind>/munder-difflin).
+   *  Never config.toml, .hook-trust.json, skills, rules, AGENTS.md, auth/packages links or anything
+   *  else: they either carry hook commands/instructions that run in the agent's process or are
+   *  recreated by installCodexHooks. Symlink children are never followed or moved (except the
+   *  validated sessions link). The legacy Claude settings.json and config.toml are left alone (inert: nothing points at them), so
+   *  this deletes nothing in the peer-writable tree. */
+  migrateAgentConfig(agentId: string): boolean {
+    const root = this.root();
+    const cfg = this.agentConfigDir(agentId);
+    const top = this.agentConfigRoot();
+    if (!root || !cfg || !top) return true; // legacy/headless layout: nothing to protect or migrate
+    const refuse = (what: string, detail: string): void => {
+      this.appendLog({ kind: 'agent-config-migration-refused', agentId, what, detail });
+    };
+    const plainDir = (p: string): boolean => { try { const st = lstatSync(p); return st.isDirectory() && !st.isSymbolicLink(); } catch { return false; } };
+    try {
+      const mdagents = dirname(top);
+      for (const d of [mdagents, top, cfg]) {
+        mkdirSync(d, { recursive: true, mode: 0o700 });
+        // Every component of the protected path must be a plain directory we own, not a link.
+        if (!plainDir(d)) { refuse('config-dir', `${basename(d)} is not a plain directory`); return false; }
+        chmodSync(d, 0o700);
+      }
+      if (relative(realpathSync(top), realpathSync(cfg)) !== agentId) { refuse('config-dir', 'resolves outside the protected root'); return false; }
+      const target = join(cfg, '.codex');
+      // A protected .codex that is a link would make CODEX_HOME resolve into a peer-writable tree:
+      // fail closed (no repair logic; nothing is written, moved or removed). Checked on EVERY call.
+      try {
+        const st = lstatSync(target);
+        if (!st.isDirectory() || st.isSymbolicLink()) { refuse('protected-codex', 'is a symlink or not a directory: refused'); return false; }
+      } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
+      // Same for Claude's settings file: writeJson would write straight through a link.
+      try {
+        if (!lstatSync(join(cfg, 'settings.json')).isFile()) { refuse('protected-settings', 'is a symlink or not a regular file: refused'); return false; }
+      } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
+      const marker = join(cfg, '.migrated');
+      if (existsSync(marker)) return true;
+      // A crashed earlier run may have left staged data: finish it first (it is already inside the
+      // protected dir, so it is read in place).
+      for (const n of readdirSync(cfg)) {
+        if (n.startsWith('.legacy-staging-') && plainDir(join(cfg, n))) {
+          const left = this.mergeLegacyCodexData(agentId, join(cfg, n), target);
+          if (left) renameSync(join(cfg, n), join(cfg, n.replace('.legacy-staging-', '.legacy-kept-')));
+          else rmSync(join(cfg, n), { recursive: true, force: true });
+        }
+      }
+      // The legacy tree is peer-writable: every component from the hive root down must be a plain
+      // directory and the fully resolved path must be exactly where it should be, BEFORE we touch it.
+      const agentsDir = join(root, 'agents'), legacyDir = join(agentsDir, agentId), legacy = join(legacyDir, '.codex');
+      let legacyExists = true;
+      try { lstatSync(legacy); } catch { legacyExists = false; }
+      if (legacyExists) {
+        if (![root, agentsDir, legacyDir, legacy].every(plainDir)
+          || realpathSync(legacy) !== join(realpathSync(root), 'agents', agentId, '.codex')) {
+          refuse('legacy-codex', 'a path component is a symlink or not a directory, or it resolves elsewhere: ignored, nothing moved');
+        } else {
+          // ONE rename into the protected dir; all reading/merging happens from the staged copy, so
+          // a peer swapping directories or links in the legacy tree afterwards changes nothing.
+          const stage = join(cfg, `.legacy-staging-${Date.now()}`);
+          try { renameSync(legacy, stage); }
+          catch (e) {
+            if ((e as NodeJS.ErrnoException).code !== 'EXDEV') throw e;
+            cpSync(legacy, stage, { recursive: true, verbatimSymlinks: true }); // other volume: copy, legacy stays put
+          }
+          const left = plainDir(stage) ? this.mergeLegacyCodexData(agentId, stage, target) : 0;
+          if (!plainDir(stage)) refuse('legacy-codex', 'staged entry is not a plain directory: dropped');
+          // Inside the protected dir (rm never follows links). A clash keeps the leftovers beside
+          // the target, in a name nothing reads, instead of deleting someone's data.
+          if (left) renameSync(stage, join(cfg, `.legacy-kept-${Date.now()}`));
+          else rmSync(stage, { recursive: true, force: true });
+        }
+      }
+      writeFileSync(marker, new Date().toISOString(), { mode: 0o600 });
+      return true;
+    } catch (e) { console.error(`[hive] migrateAgentConfig(${agentId}) failed:`, e); return false; }
+  }
+
+  private mergeLegacyCodexData(agentId: string, legacy: string, target: string): number {
+    mkdirSync(target, { recursive: true, mode: 0o700 });
+    chmodSync(target, 0o700);
+    const SFX = ['', '-wal', '-shm'];
+    const stamp = Date.now();
+    const present = (p: string): boolean => { try { lstatSync(p); return true; } catch { return false; } };
+    const isFile = (p: string): boolean => { try { return lstatSync(p).isFile(); } catch { return false; } };
+    const entries = readdirSync(legacy, { withFileTypes: true });
+
+    // sqlite index families move as a unit; legacy wins on a clash (it indexes the migrated
+    // rollouts), the target's own is kept aside; wal/shm without their db are parked unpaired.
+    const fams = new Set<string>();
+    for (const e of entries) {
+      const m = e.isFile() ? e.name.match(/^((?:state|logs)_\d+\.sqlite)(-wal|-shm)?$/) : null;
+      if (m) fams.add(m[1]);
+    }
+    const swapped: string[] = [], orphans: string[] = [];
+    for (const fam of fams) {
+      const lHas = SFX.filter((x) => isFile(join(legacy, fam + x)));
+      const tHas = SFX.filter((x) => present(join(target, fam + x)));
+      if (!lHas.includes('')) {
+        for (const x of lHas) this.moveCodexDataDir(join(legacy, fam + x), join(target, `${fam + x}.orphan-${stamp}`));
+        orphans.push(fam);
+      } else {
+        for (const x of tHas) renameSync(join(target, fam + x), join(target, `${fam + x}.superseded-${stamp}`));
+        for (const x of lHas) this.moveCodexDataDir(join(legacy, fam + x), join(target, fam + x));
+        if (tHas.length) swapped.push(fam);
+      }
+    }
+    if (swapped.length) this.appendLog({ kind: 'agent-config-db-swapped', agentId, dbs: swapped, kept: `*.superseded-${stamp}` });
+    if (orphans.length) this.appendLog({ kind: 'agent-config-db-orphan', agentId, dbs: orphans, kept: `*.orphan-${stamp}` });
+
+    const conflicts: string[] = [];
+    // Plain data files: moved only when the target lacks them.
+    for (const name of ['history.jsonl', 'session_index.jsonl']) {
+      const from = join(legacy, name), to = join(target, name);
+      if (!isFile(from)) continue;
+      if (present(to)) conflicts.push(name); else this.moveCodexDataDir(from, to);
+    }
+    // Rollout dirs: real dirs merge (no symlink is ever followed or moved from inside them); the
+    // exposure link moves only if it resolves into this user's munder-difflin scan root.
+    for (const kind of ['sessions', 'archived_sessions'] as const) {
+      const from = join(legacy, kind), to = join(target, kind);
+      let st; try { st = lstatSync(from); } catch { continue; }
+      if (st.isSymbolicLink()) {
+        let ok = false;
+        try { ok = !relative(realpathSync(join(homedir(), '.codex', kind, 'munder-difflin')), realpathSync(from)).startsWith('..'); } catch { /* dangling or absent */ }
+        if (ok && !present(to)) this.moveCodexDataDir(from, to);
+        else if (!ok) this.appendLog({ kind: 'agent-config-migration-refused', agentId, what: kind, detail: 'symlink outside the Munder scan root: ignored' });
+      } else if (st.isDirectory()) {
+        const merge = (f: string, t: string, rel: string): void => {
+          if (!present(t)) { mkdirSync(t, { recursive: true, mode: 0o700 }); }
+          for (const e of readdirSync(f, { withFileTypes: true })) {
+            const ff = join(f, e.name), tt = join(t, e.name), r = `${rel}/${e.name}`;
+            if (e.isDirectory()) merge(ff, tt, r);
+            else if (e.isFile()) { if (present(tt)) conflicts.push(r); else this.moveCodexDataDir(ff, tt); }
+            // symlinks and specials: never followed, never moved
+          }
+        };
+        if (present(to) && !lstatSync(to).isDirectory()) conflicts.push(kind); else merge(from, to, kind);
+      }
+    }
+    if (conflicts.length) this.appendLog({ kind: 'agent-config-migration-conflict', agentId, kept: legacy, conflicts: conflicts.slice(0, 20), count: conflicts.length });
+    return conflicts.length;
+  }
+
+  /** Per-spawn hook token, only when the shim that stamps it is app-owned. */
+  private spawnHookToken(agentId: string): string | undefined {
+    return this.hookBinDir() ? this.issueHookToken(agentId) : undefined;
   }
   /** The proxy-bridge sidecar (qwen). Pure-Node loopback reverse-proxy that
    *  observes a hookless CLI's LLM traffic and synthesizes the same HIVE_SOCK
@@ -711,7 +943,8 @@ export class HiveManager {
     }
     const userCodexHome = join(homedir(), '.codex');
     for (const [id, agent] of Object.entries(this.registry().agents)) {
-      const codexHome = join(root, 'agents', id, '.codex');
+      if (!this.migrateAgentConfig(id)) continue;
+      const codexHome = join(this.agentConfigDir(id) ?? join(root, 'agents', id), '.codex');
       if (agent.provider === 'codex' && existsSync(codexHome)) {
         this.exposeCodexDataDirs(codexHome, userCodexHome, id);
       }
@@ -741,7 +974,18 @@ export class HiveManager {
     // The hook shim: a dumb pipe between a `claude` hook and our UDS. Refreshed
     // on every bootstrap so it tracks code changes.
     mkdirSync(join(root, 'bin'), { recursive: true });
-    writeFileSync(this.shimPath()!, HOOK_SHIM, 'utf8');
+    const own = this.hookBinDir();
+    if (own) {
+      try {
+        mkdirSync(own, { recursive: true });
+        writeFileSync(this.shimPath()!, HOOK_SHIM, 'utf8');
+        // The old peer-writable copy is dead weight now: remove it so nothing can be pointed at it.
+        try { rmSync(join(root, 'bin', 'cth-hook.cjs'), { force: true }); } catch { /* best effort */ }
+        const l = this.hookLauncherPath()!;
+        if (process.platform === 'win32') writeFileSync(l, `@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n"${process.execPath}" %*\r\n`, 'utf8');
+        else { writeFileSync(l, `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec "${process.execPath}" "$@"\n`, 'utf8'); chmodSync(l, 0o755); }
+      } catch (e) { console.error('[hive] writing app-owned hook shim failed:', e); }
+    } else writeFileSync(this.shimPath()!, HOOK_SHIM, 'utf8');
     // The proxy-bridge sidecar for hookless CLIs (qwen). Same refresh policy.
     writeFileSync(this.proxyShimPath()!, PROXY_BRIDGE_SHIM, 'utf8');
     // The bundled-node launcher every shim above is invoked through — MUST be
@@ -994,6 +1238,7 @@ export class HiveManager {
       const sock = this.sockPath();
       if (desc && sock) {
         env.HIVE_SOCK = sock;
+        { const tok = this.spawnHookToken(meta.id); if (tok) env.HIVE_HOOK_TOKEN = tok; else delete env.HIVE_HOOK_TOKEN; }
         try {
           if (desc.kind === 'hooks') {
             if (desc.shim === 'agy') this.installAgyHooks();
@@ -1090,7 +1335,7 @@ export class HiveManager {
               this.emit?.('hive:degraded', { agentId: meta.id, name: meta.name, reason: 'proxy-bind', message: degraded });
             }
           }
-        } catch (e) { console.error(`[hive] install ${desc.kind} bridge failed:`, e); }
+        } catch (e) { delete env.HIVE_HOOK_TOKEN; console.error(`[hive] install ${desc.kind} bridge failed:`, e); }
       }
       // Inject the protocol text whichever way the CLI accepts it.
       // type-into-tui (Crush): the bare TUI reads a positional as a Cobra subcommand
@@ -1128,9 +1373,11 @@ export class HiveManager {
     // user's repo) so the agent reports activity and drains its inbox on Stop.
     const sock = this.sockPath();
     const shim = this.shimPath();
-    if (sock && shim) {
+    // Fail closed: a refused/unsafe config dir means no token and no hook/settings write at all.
+    if (sock && shim && this.migrateAgentConfig(meta.id)) {
       env.HIVE_SOCK = sock;
-      const settingsPath = join(dir, 'settings.json');
+      { const tok = this.spawnHookToken(meta.id); if (tok) env.HIVE_HOOK_TOKEN = tok; else delete env.HIVE_HOOK_TOKEN; }
+      const settingsPath = join(this.hookConfigDir(meta.id, dir), 'settings.json');
       this.writeJson(settingsPath, this.hookSettings(shim, meta.id, meta.cwd, opts.mcpDefaults, opts.theme, this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs), meta, opts.magento, opts.vault, opts.n8nBrokerUrl));
       args.push('--settings', settingsPath);
       // Claude Code ignores `mcpServers` inside --settings (see hookSettings) —
@@ -1186,6 +1433,19 @@ export class HiveManager {
    * it. No-op if the agent isn't registered or the flag is already set the way
    * asked. Best-effort — never throws, so a dying PTY/kill handler can't crash.
    */
+  /** A spawn actually succeeded: the agent is no longer "crashed". Kept out of ensureAgent so a
+   *  failed relaunch leaves the flag (and thus the roster entry) in place. */
+  clearCrashed(id: string): void {
+    const root = this.root();
+    if (!root) return;
+    try {
+      const reg = this.registry();
+      if (!reg.agents[id]?.crashed) return;
+      delete reg.agents[id].crashed;
+      this.atomicWriteJson(join(root, 'registry.json'), reg);
+    } catch { /* best-effort */ }
+  }
+
   setArchived(id: string, archived: boolean): void {
     const root = this.root();
     if (!root) return;
@@ -1302,6 +1562,65 @@ export class HiveManager {
       }
       this.appendLog({ kind: 'agent-hold', id, onHold: hold });
       return { ok: true, onHold: hold };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  /** agentId -> the hook token of its LIVE spawn (the only one that verifies). In memory only. */
+  private hookTokens = new Map<string, string>();
+  /** Minted by ensureAgent but not yet backed by a running PTY: token -> agentId. Promoted by
+   *  commitHookToken after ptyManager.spawn succeeds, dropped by discardHookToken when it fails,
+   *  so a refused duplicate spawn can never invalidate the live process's token. Keyed by token
+   *  so two racing spawn attempts for one agent cannot swap each other's. */
+  private pendingHookTokens = new Map<string, string>();
+
+  issueHookToken(agentId: string): string {
+    const t = randomBytes(24).toString('hex');
+    if (this.pendingHookTokens.size > 256) this.pendingHookTokens.clear();
+    this.pendingHookTokens.set(t, agentId);
+    return t;
+  }
+
+  /** The spawn that was handed `token` is running: it supersedes the agent's previous token. */
+  commitHookToken(token: string): void {
+    const agentId = this.pendingHookTokens.get(token);
+    if (!agentId) return;
+    this.pendingHookTokens.delete(token);
+    this.hookTokens.set(agentId, token);
+  }
+
+  discardHookToken(token: string): void { this.pendingHookTokens.delete(token); }
+
+  /** True when `token` is the one issued to this agent's live spawn (constant-time compare). */
+  verifyHookToken(agentId: string | undefined | null, token: unknown): boolean {
+    const want = agentId ? this.hookTokens.get(agentId) : undefined;
+    if (!want || typeof token !== 'string' || token.length !== want.length) return false;
+    return timingSafeEqual(Buffer.from(token), Buffer.from(want));
+  }
+
+  /** Mark an agent hibernated / awake. The registry is the record; fleet.json is patched in the
+   *  same operation (like setAgentHold) so god's next roster read is not up to 8s stale. */
+  setHibernated(id: string, on: boolean, info?: { sessionId?: string; resumeLost?: boolean; reason?: string }): { ok: boolean; error?: string } {
+    const root = this.root();
+    if (!root) return { ok: false, error: 'hive disabled (no harnessHome)' };
+    try {
+      const reg = this.registry();
+      const agent = reg.agents[id];
+      if (!agent) return { ok: false, error: 'Agent not found' };
+      if (on) agent.hibernated = { at: Date.now(), ...(info?.sessionId ? { sessionId: info.sessionId } : {}) };
+      else delete agent.hibernated;
+      this.writeJson(join(root, 'registry.json'), reg);
+      const fleetPath = join(root, 'fleet.json');
+      if (existsSync(fleetPath)) {
+        try {
+          const fleet = this.readJson<{ agents?: Array<{ id?: string; hibernated?: boolean }> }>(fleetPath, {});
+          const row = Array.isArray(fleet.agents) ? fleet.agents.find((c) => c.id === id) : undefined;
+          if (row) { row.hibernated = on; this.writeJson(fleetPath, fleet); }
+        } catch { /* fleet is a cache — the registry above is the record */ }
+      }
+      this.appendLog({ kind: on ? 'agent-hibernate' : 'agent-wake', id, ...(info?.reason ? { reason: info.reason } : {}), ...(info?.resumeLost ? { resumeLost: true } : {}) });
+      return { ok: true };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
@@ -1479,7 +1798,7 @@ export class HiveManager {
   ): unknown {
     // Bundled node, NOT bare `node` — see nodeLauncherPath(). Claude runs each of
     // these through `sh -c` with a stripped PATH, where `node` is often absent.
-    const cmd = this.nodeRun(shim);
+    const cmd = this.hookRun(shim);
     const entry = (matcher?: string) => ({
       ...(matcher ? { matcher } : {}),
       hooks: [{ type: 'command', command: cmd }]
@@ -2796,7 +3115,8 @@ export class HiveManager {
    *  nothing is enabled, in which case the file is byte-identical to before.
    *  Returns the CODEX_HOME path for the caller to put in the worker's env. */
   private installCodexHooks(dir: string, agentId: string, mcpTables = '', cwd?: string): string {
-    const home = join(dir, '.codex');
+    if (!this.migrateAgentConfig(agentId)) throw new Error('agent config dir refused: no hook config written');
+    const home = join(this.hookConfigDir(agentId, dir), '.codex');
     try {
       mkdirSync(home, { recursive: true });
       const userHome = join(homedir(), '.codex');
@@ -2859,8 +3179,8 @@ export class HiveManager {
         // through a different shell stack there (#350). The reported Codex bug
         // is POSIX, where ordinary shell quoting is both necessary and verified.
         const command = hookCommand = process.platform === 'win32'
-          ? this.nodeRunUnquoted(shim)
-          : this.nodeRun(shim);
+          ? this.hookRun(shim, false)
+          : this.hookRun(shim);
         config += '\n# --- munder-hive lifecycle hooks (auto-generated; do not edit) ---\n';
         for (const ev of events) {
           config += `\n[[hooks.${ev}]]\n[[hooks.${ev}.hooks]]\ntype = "command"\ncommand = ${JSON.stringify(command)}\ntimeout = 30\n`;
@@ -2877,14 +3197,13 @@ export class HiveManager {
         try { dirs.push(realpathSync(cwd)); } catch { /* folder not created yet */ }
         config += projectTrustToml(config, dirs);
       }
-      writeFileSync(join(home, 'config.toml'), config, { encoding: 'utf8', mode: 0o600 });
-      chmodSync(join(home, 'config.toml'), 0o600);
+      this.writeFresh(join(home, 'config.toml'), config);
       // Hooks Codex does not trust are skipped in silence — and the session runs in
       // a daemon that never saw our bypass flag. Record trust for OUR hooks in the
       // config itself (see codexHookTrust.ts); say so loudly if that is not possible.
       if (shim) {
         const trust = this.codexHookTrustFor(home, config, hookCommand);
-        if (trust) writeFileSync(join(home, 'config.toml'), config + trust, { encoding: 'utf8', mode: 0o600 });
+        if (trust) this.writeFresh(join(home, 'config.toml'), config + trust);
         else this.appendLog({ kind: 'codex-hooks-untrusted', agentId, detail: 'could not record hook trust; the agent may report no status and never drain its inbox' });
       }
 
@@ -2894,6 +3213,14 @@ export class HiveManager {
       this.exposeCodexDataDirs(home, userHome, agentId);
     } catch (e) { console.error('[hive] installCodexHooks failed:', e); }
     return home;
+  }
+
+  /** (Re)create a generated file without ever writing through a link: the old entry (file, link or
+   *  anything else) is unlinked itself, then the new one is created exclusively ('wx' fails on any
+   *  existing entry, links included). Everything here is regenerated each spawn, so nothing is lost. */
+  private writeFresh(p: string, data: string): void {
+    try { unlinkSync(p); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
+    writeFileSync(p, data, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
   }
 
   /** Test seam: how to learn Codex's own hash for each hook (default: ask codex). */
@@ -2906,12 +3233,14 @@ export class HiveManager {
     const cacheFile = join(home, '.hook-trust.json');
     const sig = createHash('sha1').update(config).update('\0').update(command).digest('hex');
     try {
+      // Only a regular file is ever read: a link here would feed peer-chosen TOML into config.toml.
+      if (!lstatSync(cacheFile).isFile()) throw new Error('not a regular file');
       const c = JSON.parse(readFileSync(cacheFile, 'utf8')) as { sig?: string; toml?: string };
       if (c.sig === sig && typeof c.toml === 'string' && c.toml) return c.toml;
     } catch { /* no usable cache */ }
     try {
       const toml = hookTrustToml(this.codexHookLister(home, home), command);
-      if (toml) writeFileSync(cacheFile, JSON.stringify({ sig, toml }), 'utf8');
+      if (toml) this.writeFresh(cacheFile, JSON.stringify({ sig, toml }));
       return toml;
     } catch (e) {
       console.error('[hive] codex hook trust probe failed:', e instanceof Error ? e.message : e);
@@ -3007,7 +3336,7 @@ export class HiveManager {
     for (const entry of readdirSync(agents, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
       for (const kind of ['sessions', 'archived_sessions'] as const) {
-        const source = join(agents, entry.name, '.codex', kind);
+        const source = join(this.agentConfigDir(entry.name) ?? join(agents, entry.name), '.codex', kind);
         try {
           if (!lstatSync(source).isSymbolicLink()) continue;
           const target = realpathSync(source);
@@ -3248,7 +3577,7 @@ export class HiveManager {
           project?: string;
           breaker?: string; tokens?: number; usd?: number;
           lastTool?: string | null; lastActiveSecAgo?: number | null; inboxBacklog?: number;
-          onHold?: boolean; frozen?: boolean;
+          onHold?: boolean; frozen?: boolean; hibernated?: boolean;
         }>;
       };
       const agents = Array.isArray(snap.agents) ? snap.agents : [];
@@ -3267,6 +3596,7 @@ export class HiveManager {
       let anyCtx = false;
       let anyHold = false;
       let anyFrozen = false;
+      let anyHibernated = false;
       const rows = shown.map((a) => {
         const bits = [a.role ?? 'agent',
           typeof a.lastActiveSecAgo === 'number' ? `active ${ago(a.lastActiveSecAgo)}` : 'no activity yet'];
@@ -3283,6 +3613,9 @@ export class HiveManager {
         // `no activity yet` / `active Nh ago`, same silence. Say so explicitly
         // or this reads as archived/killed and gets skipped or re-spawned.
         if (a.frozen) { bits.push('FROZEN — no auto-delivery'); anyFrozen = true; }
+        // Hibernated is the opposite of unavailable: the process is closed to save memory, the
+        // session is kept, and ANY message wakes it. Say so, or it reads as dead.
+        if (a.hibernated) { bits.push('HIBERNATED — wakes on mail'); anyHibernated = true; }
         // Live context-window occupancy from the statusLine shim — lets god see
         // which agents are near-full when routing, instead of guessing from the
         // cumulative token count. Clamp to 0-100; a fresh meter can briefly
@@ -3314,6 +3647,11 @@ export class HiveManager {
             + 'them when picking an owner. Route to someone else, or say the work is waiting. They '
             + 'are still running and their terminal is alive, so this is not a reason to archive '
             + 'them or spawn a replacement. The human flips it off when they are done. '
+          : '')
+        + (anyHibernated
+          ? 'An agent marked `HIBERNATED` is AVAILABLE: its process was closed after a quiet spell to save '
+            + 'memory, its session and inbox are kept, and any message (dispatch, mail, automation) wakes it '
+            + 'by itself within seconds. Dispatch to it normally; do NOT treat it as dead or spawn a replacement. '
           : '')
         + (anyFrozen
           ? 'An agent marked `FROZEN` was deliberately parked by an operator, not killed: it gets '
@@ -3357,18 +3695,22 @@ export class HiveManager {
    * A normal exit writes nothing at all; this is a diagnostic, not an audit log.
    * The tail file is written 0600 and the directory is capped at
    * MAX_CRASH_LOGS files, oldest dropped first.
+   * Returns whether the exit was abnormal (the caller keeps such an agent in the roster).
    */
   recordAgentExit(
     agentId: string,
     info: { exitCode?: number; signal?: number; tail?: string; command?: string }
-  ): void {
-    const root = this.root();
-    if (!root) return;
+  ): boolean {
     const { exitCode, signal, tail, command } = info;
     // A signal means killed (SIGILL/SIGSEGV/SIGKILL); node-pty reports exitCode 0
     // in that case, so signal must be checked independently of the code.
     const abnormal = (typeof signal === 'number' && signal !== 0) || (typeof exitCode === 'number' && exitCode !== 0);
-    if (!abnormal) return;
+    const root = this.root();
+    if (!abnormal || !root) return abnormal;
+    try {
+      const reg = this.registry();
+      if (reg.agents[agentId]) { reg.agents[agentId].crashed = true; this.atomicWriteJson(join(root, 'registry.json'), reg); }
+    } catch { /* a diagnostic must never break teardown */ }
 
     let tailPath: string | null = null;
     if (tail && tail.length) {
@@ -3409,6 +3751,7 @@ export class HiveManager {
       abnormal: true,
       tailPath
     });
+    return true;
   }
 
   // — log —
@@ -3813,6 +4156,7 @@ process.stdin.on('end', () => {
   let payload = {};
   try { payload = JSON.parse(data || '{}'); } catch (_) {}
   if (!payload.agent_id) payload.agent_id = process.env.AGENT_ID || null;
+  payload.hook_token = process.env.HIVE_HOOK_TOKEN || undefined;
   const sock = process.env.HIVE_SOCK;
   if (isStatus) {
     // Status-line mode: Claude Code pipes the session status JSON (incl.
@@ -3930,6 +4274,7 @@ if (!agentId || !sock) process.exit(0); // not a hive worker → no-op
 const payload = {
   hook_event_name: 'Stop',
   agent_id: agentId,
+  hook_token: process.env.HIVE_HOOK_TOKEN || undefined,
   status: process.env.STATUS || null,
   fail_reason: process.env.FAIL_REASON || null
 };

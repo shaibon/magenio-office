@@ -30,6 +30,8 @@ interface HookPayload {
   ping?: string;
   hook_event_name?: string;
   agent_id?: string | null;
+  /** Per-spawn secret from the agent's env (HIVE_HOOK_TOKEN); proves the frame came from that CLI. */
+  hook_token?: string;
   session_id?: string;
   transcript_path?: string;
   /** Status-line payloads only: the session's live context accounting. */
@@ -150,7 +152,7 @@ export class HookServer {
     /** Optional observer of every hook boundary (agentId, event, message). The
      *  worker inbox-wake watchdog (workerWake.ts) feeds on this to learn when an
      *  agent is parked on a permission/HITL prompt so it never types into it. */
-    private onEvent?: (agentId: string | undefined, event: string, message: string | undefined) => void
+    private onEvent?: (agentId: string | undefined, event: string, message: string | undefined, authentic: boolean) => void
   ) {}
 
   /** Bind the hook socket. Asynchronous and safe to call repeatedly — a
@@ -384,7 +386,7 @@ export class HookServer {
   private handle(p: HookPayload): unknown {
     const agentId = p.agent_id ?? undefined;
     const event = p.hook_event_name ?? 'Unknown';
-    this.onEvent?.(agentId, event, p.message);
+    this.onEvent?.(agentId, event, p.message, this.hive.verifyHookToken(agentId, p.hook_token));
     if (agentId && typeof p.transcript_path === 'string' && p.transcript_path) {
       this.transcriptPaths.set(agentId, p.transcript_path);
     }

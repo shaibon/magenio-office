@@ -214,6 +214,12 @@ export class WorkerWakeWatchdog {
    *  once per cooldown instead of every 15 s. */
   private lastHoldReportAt = new Map<string, number>();
 
+  /** Authenticated-only mirrors of the maps above: what hibernation is allowed to believe. */
+  private authSeen = new Set<string>();
+  private authTurnAt = new Map<string, number>();
+  private authTurnEvent = new Map<string, string>();
+  private authHumanAt = new Map<string, number>();
+
   /** Record a PTY spawn so its boot sequence is left alone. */
   noteSpawn(ptyId: string, at = Date.now()): void {
     this.spawnedAt.set(ptyId, at);
@@ -222,11 +228,50 @@ export class WorkerWakeWatchdog {
   /** Feed hook events (from HookServer): a HITL prompt blocks nudges, and any
    *  turn-proving event is activity the stall rule credits — the one channel
    *  every engine has, telemetry being Claude-only. */
-  noteHook(agentId: string | undefined, event: string | undefined, message: string | undefined, at = Date.now()): void {
+  noteHook(agentId: string | undefined, event: string | undefined, message: string | undefined, at = Date.now(), authentic = false): void {
     if (!agentId) return;
+    // Hibernation kills a live PTY, so it trusts ONLY frames carrying the agent's spawn token
+    // (hooks.sock is reachable by every peer; the watchdog's own nudges stay best-effort).
+    if (authentic) {
+      this.authSeen.add(agentId);
+      if (isTurnHook(event) && at > (this.authTurnAt.get(agentId) ?? 0)) { this.authTurnAt.set(agentId, at); this.authTurnEvent.set(agentId, event as string); }
+      if (classifyHook(event, message) === 'needsHuman') this.authHumanAt.set(agentId, at);
+    }
     this.hookSeenAt.set(agentId, at);
     if (isTurnHook(event) && at > (this.lastTurnHookAt.get(agentId) ?? 0)) { this.lastTurnHookAt.set(agentId, at); this.lastTurnEvent.set(agentId, event as string); }
     if (classifyHook(event, message) === 'needsHuman') this.lastHumanNeedsAt.set(agentId, at);
+  }
+
+  /** When this pty was registered as spawned, or 0. */
+  spawnedAtFor(ptyId: string): number {
+    return this.spawnedAt.get(ptyId) ?? 0;
+  }
+
+  /** True when the agent's last AUTHENTICATED turn hook was a Stop (parked at its prompt). */
+  lastTurnWasStop(agentId: string): boolean {
+    return this.authTurnEvent.get(agentId) === 'Stop';
+  }
+
+  /** Name of the last authenticated turn hook (diagnostics for the hibernate-hold log). */
+  authTurnEventOf(agentId: string): string | null {
+    return this.authTurnEvent.get(agentId) ?? null;
+  }
+
+  /** True when an authenticated permission/HITL prompt fired within the re-arm window and no
+   *  authenticated turn hook came after it (a later turn means the prompt was answered). */
+  hitlRecently(agentId: string, now = Date.now()): boolean {
+    const t = this.authHumanAt.get(agentId) ?? 0;
+    return t > 0 && now - t < WORKER_WAKE_HITL_REARM_MS && t >= (this.authTurnAt.get(agentId) ?? 0);
+  }
+
+  /** True once any authenticated hook event arrived for this agent (its hook channel is alive). */
+  hooksSeen(agentId: string): boolean {
+    return this.authSeen.has(agentId);
+  }
+
+  /** When the agent's authenticated hooks last proved a turn, or 0. */
+  authTurnHookAt(agentId: string): number {
+    return this.authTurnAt.get(agentId) ?? 0;
   }
 
   /** When the agent's hooks last proved a turn, or 0 when they never have. */
@@ -253,6 +298,7 @@ export class WorkerWakeWatchdog {
     this.hookSeenAt.delete(agentId);
     this.lastTurnHookAt.delete(agentId);
     this.lastTurnEvent.delete(agentId);
+    this.authSeen.delete(agentId); this.authTurnAt.delete(agentId); this.authTurnEvent.delete(agentId); this.authHumanAt.delete(agentId);
     this.lastHoldReportAt.delete(agentId);
     if (ptyId) this.spawnedAt.delete(ptyId);
   }

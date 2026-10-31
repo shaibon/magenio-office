@@ -420,6 +420,12 @@ export interface HarnessConfig {
    *  — idle-based, never wall-clock, so an actively-working worker is never reaped.
    *  Default 20. */
   workerIdleTimeoutMinutes?: number;
+  /** Minutes of inactivity after which an OPTED-IN hive agent is hibernated (CLI + MCP servers
+   *  closed, session/identity/inbox kept; any event wakes it). 0 = off (default). Not the worker
+   *  reaper above: that kills ephemeral workers, this parks permanent agents. */
+  agentHibernateMinutes?: number;
+  /** Phase 2a is opt-in: only these agent ids are ever hibernated. God never is. */
+  hibernateOptInAgents?: string[];
   /** Registered integrations (Phase 2) — labeled REST endpoints workers reach through
    *  the loopback secret broker. METADATA ONLY: each record carries a `secretRef`
    *  handle, never the secret value (secrets live encrypted in a separate file via
@@ -612,6 +618,8 @@ const DEFAULTS: HarnessConfig = {
   mcpDefaults: defaultMcpDefaults(),
   maxConcurrentWorkers: 4,
   workerIdleTimeoutMinutes: 20,
+  agentHibernateMinutes: 0,
+  hibernateOptInAgents: [],
   integrations: [],
   defaultWorkerTokenCap: 0, // 0 = unlimited (human directive: NO per-worker cap)
   semanticMemory: true,

@@ -9,6 +9,7 @@ const {
   codexRemoteEndpoint,
   codexRemoteSocketFits,
   withCodexRemoteArgs,
+  codexArgsAllowRemote,
   CODEX_REMOTE_SOCKET_MAX,
   CODEX_REMOTE_SOCKET_RELATIVE
 } = loadTs('src/shared/codexRemote.ts');
@@ -74,4 +75,11 @@ test('--no-daemon is prepended for fresh and resume launches when supported', ()
   assert.deepEqual(withCodexNoDaemonArgs(['--remote', 'unix:///s', 'x'], true), ['--remote', 'unix:///s', 'x']);
   assert.equal(codexHelpSupportsNoDaemon('      --no-daemon\n  Run without'), true);
   assert.equal(codexHelpSupportsNoDaemon('--no-alt-screen\n'), false);
+});
+
+test('--add-dir spawns never get --remote (codex-cli rejects the combination)', () => {
+  const args = ['--add-dir', '/h/agents/a', '--model', 'm'];
+  assert.equal(codexArgsAllowRemote(args), false);
+  assert.deepEqual(withCodexRemoteArgs(args, 'unix:///s.sock'), args);
+  assert.equal(codexArgsAllowRemote(['--model', 'm']), true);
 });

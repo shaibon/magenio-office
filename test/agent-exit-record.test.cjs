@@ -117,3 +117,26 @@ test('a death is still recorded when there is no output to dump', async (t) => {
   assert.equal(rows[0].signal, 9);
   assert.equal(rows[0].tailPath, null);
 });
+
+test('recordAgentExit reports whether the exit was abnormal (the caller keeps such an agent in the roster)', async (t) => {
+  const { hive } = await freshHive(t);
+  assert.equal(hive.recordAgentExit('a1', { exitCode: 1, tail: 'x' }), true);
+  assert.equal(hive.recordAgentExit('a1', { exitCode: 0, signal: 9 }), true);
+  assert.equal(hive.recordAgentExit('a1', { exitCode: 0 }), false);
+  assert.equal(hive.recordAgentExit('a1', {}), false);
+});
+
+test('an abnormal exit marks the registry entry crashed; the next spawn clears it', async (t) => {
+  const { home, hive } = await freshHive(t);
+  hive.recordAgentExit('a1', { exitCode: 1, tail: 'boom' });
+  assert.equal(hive.registry().agents.a1.crashed, true);
+  // a relaunch whose spawn then fails must keep the flag (ensureAgent alone does not clear it)
+  await hive.ensureAgent({ id: 'a1', name: 'A', provider: 'claude', cwd: home });
+  assert.equal(hive.registry().agents.a1.crashed, true);
+  hive.clearCrashed('a1'); // only after ptyManager.spawn returned ok
+  assert.equal(hive.registry().agents.a1.crashed, undefined);
+  assert.match(fs.readFileSync(path.join(__dirname, '..', 'src/main/index.ts'), 'utf8'), /if \(res\.ok && opts\.hive\?\.id\) hive\.clearCrashed/);
+  hive.recordAgentExit('a1', { exitCode: 0 });
+  assert.equal(hive.registry().agents.a1.crashed, undefined);
+  assert.match(fs.readFileSync(path.join(__dirname, '..', 'src/main/index.ts'), 'utf8'), /if \(a\.crashed\) continue;/);
+});
