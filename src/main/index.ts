@@ -87,7 +87,7 @@ import { checkMcpPresence, nodePresenceDeps, installTrelloMcp, nodeInstallDeps }
 import { secretRefFor, INTEGRATION_TEMPLATES } from '../shared/integrations';
 import { buildTempHistory, type TempHistoryInput, type TempLogEvent, type TempRequest, type TempRow } from '../shared/tempHistory';
 import { RosterStore } from './roster';
-import { orphansToArchive, restorableRosterIds } from './bootSweep';
+import { orphansToArchive, restorableRosterIds, shieldedButUnrestored } from './bootSweep';
 import { buildWorkerLaunch } from './workerLaunch';
 import { ControlRegistry } from './control';
 import { SleepMarker } from './sleepMarker';
@@ -1089,6 +1089,23 @@ function syncContextTriggers(): void {
  *  t-282: a normal quit archives nothing, so at the next start EVERY row looked like an orphan and
  *  the whole team was archived then restored (one git commit each). Rows the roster lists for the
  *  boot restore are skipped (bootSweep.ts); only rows nobody would restore are archived. */
+/** Renderer boot-restore progress (t-282): 'idle' = never started this run. */
+let bootRestoreState: 'idle' | 'running' | 'done' = 'idle';
+ipcMain.handle('hive:restoreBatch', (_evt, running: unknown) => { bootRestoreState = running === true ? 'running' : 'done'; return true; });
+/** Fallback when the renderer never starts a restore: rows the roster shielded that nothing attempted
+ *  are marked crashed (kept in the roster, retryable, mail bounces). Waits out a batch in flight. */
+function markUnrestoredAfterBoot(attempt = 0): void {
+  if (bootRestoreState === 'running' && attempt < 10) { setTimeout(() => markUnrestoredAfterBoot(attempt + 1), 60_000).unref(); return; }
+  if (bootRestoreState !== 'idle' || !hive.enabled()) return;
+  try {
+    const reg = hive.registry();
+    for (const id of shieldedButUnrestored({
+      godId: reg.godId, agents: reg.agents, hasLivePty: (i) => !!ptyForAgent(i),
+      isSleeper: (i) => hibernator.isSleeper(i), rosterIds: restorableRosterIds(roster.read())
+    })) hive.markRestoreFailed(id);
+  } catch (e) { console.error('[migration] markUnrestoredAfterBoot failed:', e); }
+}
+
 function archiveOrphanedAgents(): void {
   if (!hive.enabled()) return;
   try {
@@ -6358,6 +6375,7 @@ function bootstrapHiveServices(): void {
   if ((readConfig().autoDeliveryPausedAgents ?? []).length) writeConfig({ autoDeliveryPausedAgents: [] });
   control.replaceAutoDeliveryPauses(readConfig().autoDeliveryPausedAgents ?? []);
   migrateN8nPerProject();
+  setTimeout(() => markUnrestoredAfterBoot(), 180_000).unref();
   archiveOrphanedAgents(); // #57/#58: archive stale archived:false entries with no live PTY
   // App start is the one moment we can clean up what PREVIOUS runs left
   // behind. Sessions leak their detached MCP servers on every teardown, and a

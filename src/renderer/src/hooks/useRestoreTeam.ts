@@ -252,6 +252,7 @@ export function useRestoreTeam(config?: HarnessConfig | null): RestoreTeamState 
   const restoreTeam = async (): Promise<void> => {
     if (restoring) return;
     restoring = true;
+    void window.cth.restoreBatch?.(true).catch(() => { /* fallback timer in main covers it */ });
     note = null;
     emit();
     const prevSel = useStore.getState().selectedId;
@@ -313,6 +314,7 @@ export function useRestoreTeam(config?: HarnessConfig | null): RestoreTeamState 
       const sel = useStore.getState();
       if (prevSel && sel.agents.some((x) => x.id === prevSel)) sel.select(prevSel);
       restoring = false;
+      void window.cth.restoreBatch?.(false).catch(() => { /* best-effort */ });
       // ALWAYS surface a result so the button can never look inert.
       const parts: string[] = [];
       if (restored) parts.push(`restored ${restored}`);

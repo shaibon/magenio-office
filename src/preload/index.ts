@@ -985,6 +985,7 @@ const api = {
   wakeAgent: (agentId: string, reason?: string): Promise<boolean> => ipcRenderer.invoke('agent:wake', agentId, reason),
   /** Operator hibernation controls (t-283): manual "hibernate now", the per-agent opt-out, and its state. */
   hibernateAgentNow: (agentId: string): Promise<boolean> => ipcRenderer.invoke('agent:hibernateNow', agentId),
+  restoreBatch: (running: boolean): Promise<boolean> => ipcRenderer.invoke('hive:restoreBatch', running),
   markRestoreFailed: (agentId: string): Promise<boolean> => ipcRenderer.invoke('hive:markRestoreFailed', agentId),
   hibernateState: (agentId: string): Promise<{ hibernated: boolean; optOut: boolean }> => ipcRenderer.invoke('agent:hibernateState', agentId),
   setHibernateOptOut: (agentId: string, optOut: boolean): Promise<boolean> => ipcRenderer.invoke('agent:setHibernateOptOut', agentId, optOut),
