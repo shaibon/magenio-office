@@ -489,3 +489,9 @@ test('wiring (t-283 security): boot-asleep is once-per-agent, collision-safe, ma
   assert.match(body, /Object\.hasOwn\(reg\.agents, id\)/);
   assert.match(SRC, /agent:setHibernateOptOut[\s\S]{0,700}Object\.hasOwn\(regAgents, agentId\)[\s\S]{0,300}cur\.size >= 500/);
 });
+
+test('wiring (t-283 R1): every successful spawn clears the sleep marker, independent of the registry flag', () => {
+  assert.match(SRC, /sleepMarker\.clear\(opts\.hive\.id\);[^\n]*\n\s*try \{ if \(hive\.registry\(\)\.agents\[opts\.hive\.id\]\?\.hibernated\)/);
+  const i = SRC.indexOf('sleepMarker.clear(opts.hive.id);');
+  assert.ok(SRC.lastIndexOf('if (res.ok && opts.hive?.id) {', i) > SRC.lastIndexOf('ptyManager.spawn(opts, owner)'), 'inside the res.ok block');
+});

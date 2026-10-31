@@ -3694,6 +3694,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       owner
     });
     if (!opts.wakeReason) hibernator.forget(opts.hive.id); // a respawn that is not our wake supersedes the sleeper
+    sleepMarker.clear(opts.hive.id); // R1: a live process ends the sleep record whether or not a peer left the registry flag
     try { if (hive.registry().agents[opts.hive.id]?.hibernated) setHibernatedMarked(opts.hive.id, false, { reason: opts.wakeReason ?? 'respawn', resumeLost: !didResume }); } catch { /* best-effort */ }
   }
   if (res.ok && opts.hive?.id) hive.clearCrashed(opts.hive.id);
