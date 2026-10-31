@@ -67,7 +67,7 @@ test('the no-restore fallback waits for an in-flight batch and the renderer repo
   const root = path.join(__dirname, '..');
   const main = fs.readFileSync(path.join(root, 'src/main/index.ts'), 'utf8');
   assert.match(main, /bootRestoreState === 'running' && attempt < 10\) \{ setTimeout/);
-  assert.match(main, /bootRestoreState !== 'idle'/);
+  assert.match(main, /bootRestoreState = running === true \? 'running' : 'done';\s*if \(bootRestoreState === 'done'\) markUnrestoredAfterBoot\(\)/);
   assert.match(main, /markUnrestoredAfterBoot\(\), 180_000/);
   const hook = fs.readFileSync(path.join(root, 'src/renderer/src/hooks/useRestoreTeam.ts'), 'utf8');
   assert.match(hook, /restoring = true;\s*void window\.cth\.restoreBatch\?\.\(true\)/);

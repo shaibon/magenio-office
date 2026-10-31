@@ -1091,12 +1091,16 @@ function syncContextTriggers(): void {
  *  boot restore are skipped (bootSweep.ts); only rows nobody would restore are archived. */
 /** Renderer boot-restore progress (t-282): 'idle' = never started this run. */
 let bootRestoreState: 'idle' | 'running' | 'done' = 'idle';
-ipcMain.handle('hive:restoreBatch', (_evt, running: unknown) => { bootRestoreState = running === true ? 'running' : 'done'; return true; });
-/** Fallback when the renderer never starts a restore: rows the roster shielded that nothing attempted
- *  are marked crashed (kept in the roster, retryable, mail bounces). Waits out a batch in flight. */
+ipcMain.handle('hive:restoreBatch', (_evt, running: unknown) => {
+  bootRestoreState = running === true ? 'running' : 'done';
+  if (bootRestoreState === 'done') markUnrestoredAfterBoot(); // whatever the batch left PTY-less is not coming back this run
+  return true;
+});
+/** After the restore batch reports done, or 3 min after start if it never ran: rows the roster shielded
+ *  that are still PTY-less (not asleep, not crashed) are marked crashed (kept in the roster, retryable, mail bounces). Waits out a batch in flight. */
 function markUnrestoredAfterBoot(attempt = 0): void {
   if (bootRestoreState === 'running' && attempt < 10) { setTimeout(() => markUnrestoredAfterBoot(attempt + 1), 60_000).unref(); return; }
-  if (bootRestoreState !== 'idle' || !hive.enabled()) return;
+  if (!hive.enabled()) return;
   try {
     const reg = hive.registry();
     for (const id of shieldedButUnrestored({
