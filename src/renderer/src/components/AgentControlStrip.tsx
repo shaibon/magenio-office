@@ -148,7 +148,7 @@ export function AgentControlStrip({ agentId }: { agentId: string }) {
             {snap?.autoDeliveryPaused ? t('agentControl.unfreeze') : t('agentControl.freeze')}
           </span>
         </PixelButton>
-        <PixelButton variant="secondary" size="sm" onClick={hib.hibernated ? wake : hibernateNow}>
+        <PixelButton variant="secondary" size="sm" onClick={hib.hibernated ? wake : hibernateNow} disabled={!hib.hibernated && !!snap?.autoDeliveryPaused}>
           <span
             className="cth-tip cth-tip-left cth-tip-wrap"
             data-tip={hib.hibernated ? t('agentControl.wakeTip') : t('agentControl.hibernateNowTip')}

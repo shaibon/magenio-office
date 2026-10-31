@@ -99,6 +99,13 @@ export function holdReason(f: HibernateFacts, cfg: HibernateConfig, now = Date.n
   return null;
 }
 
+/** Pure: may the operator's "hibernate now" act on this agent? It skips the idle rules only. God,
+ *  workers, archived rows and FROZEN agents (process alive on purpose, a separate feature) are refused;
+ *  a per-agent opt-out only means "not automatically", so an explicit click still works. */
+export function manualHibernateAllowed(f: { isGod: boolean; isWorker: boolean; archived: boolean; frozen: boolean }): boolean {
+  return !f.isGod && !f.isWorker && !f.archived && !f.frozen;
+}
+
 /** Facts for the selective app-start decision (t-283). */
 export interface StartAsleepFacts {
   agentId: string;

@@ -15,7 +15,7 @@ const loadTs = require('./load-ts.cjs');
 // A HiveManager given an app-data dir migrates/creates agent config under ~/.mdagents: never the real one.
 process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'md-home-'));
 
-const { holdReason, countDoingCards, startAsleep, WakeGate, Hibernator, HIBERNATE_BOOT_GRACE_MS, HIBERNATE_MID_TURN_CAP_MS } = loadTs('src/main/hibernation.ts');
+const { holdReason, countDoingCards, startAsleep, manualHibernateAllowed, WakeGate, Hibernator, HIBERNATE_BOOT_GRACE_MS, HIBERNATE_MID_TURN_CAP_MS } = loadTs('src/main/hibernation.ts');
 const { WorkerWakeWatchdog } = loadTs('src/main/workerWake.ts');
 const { HiveManager } = loadTs('src/main/hive.ts');
 
@@ -423,7 +423,7 @@ test('wiring (t-283): a frozen agent is neither auto-hibernated nor auto-woken; 
   assert.equal(holdReason(ok({ autoDeliveryPaused: true }), CFG, NOW), 'frozen');
   assert.match(SRC, /inboxCount: \(id\) => \(control\.snapshot\(id\)\.autoDeliveryPaused \? 0 : hive\.inbox\(id\)\.length\)/);
   for (const ch of ['agent:hibernateNow', 'agent:hibernateState', 'agent:setHibernateOptOut']) assert.ok(SRC.includes(`'${ch}'`), ch);
-  assert.match(SRC, /agent:hibernateNow[\s\S]{0,400}agentId === reg\.godId \|\| a\.isGod \|\| liveWorkers\.has\(agentId\)/, 'god and workers are refused');
+  assert.match(SRC, /agent:hibernateNow[\s\S]{0,500}manualHibernateAllowed\([\s\S]{0,300}frozen: control\.snapshot\(agentId\)\.autoDeliveryPaused/, 'the manual IPC is guarded');
 });
 
 // t-283: selective app-start.
@@ -456,4 +456,10 @@ test('wiring (t-283): the boot restore asks main, main consults startAsleep befo
   const RT = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/src/hooks/useRestoreTeam.ts'), 'utf8');
   assert.match(RT, /respawnAgent\(a, config, true\)/, 'only the batch restore opts in');
   assert.match(RT, /\.\.\.\(boot \? \{ bootRestore: true \} : \{\}\)/);
+});
+
+test('manual hibernate-now: refuses god, workers, archived and FROZEN; opt-out does not block an explicit click', () => {
+  const M = { isGod: false, isWorker: false, archived: false, frozen: false };
+  assert.equal(manualHibernateAllowed(M), true);
+  for (const o of [{ isGod: true }, { isWorker: true }, { archived: true }, { frozen: true }]) assert.equal(manualHibernateAllowed({ ...M, ...o }), false, JSON.stringify(o));
 });

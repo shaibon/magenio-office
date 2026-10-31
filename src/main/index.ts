@@ -90,7 +90,7 @@ import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WORKER_WAKE_REPORT_MS, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
-import { holdReason, countDoingCards, startAsleep, WakeGate, Hibernator, type HibernateFacts, type StartAsleepFacts } from './hibernation';
+import { holdReason, countDoingCards, startAsleep, manualHibernateAllowed, WakeGate, Hibernator, type HibernateFacts, type StartAsleepFacts } from './hibernation';
 import { inboxNudgeText } from '../shared/hiveNudge';
 import { resolveGodName } from '../shared/godIdentity';
 import { fetchHireManifest, readHireManifestFiles } from './hire';
@@ -3702,7 +3702,7 @@ ipcMain.handle('agent:hibernateNow', (_evt, agentId: unknown) => {
   if (typeof agentId !== 'string' || !hive.enabled()) return false;
   const reg = hive.registry();
   const a = reg.agents?.[agentId];
-  if (!a || a.archived || agentId === reg.godId || a.isGod || liveWorkers.has(agentId)) return false;
+  if (!a || !manualHibernateAllowed({ isGod: agentId === reg.godId || !!a.isGod, isWorker: liveWorkers.has(agentId), archived: !!a.archived, frozen: control.snapshot(agentId).autoDeliveryPaused })) return false;
   return hibernateAgent(agentId, 'manual');
 });
 ipcMain.handle('agent:hibernateState', (_evt, agentId: unknown) => {
