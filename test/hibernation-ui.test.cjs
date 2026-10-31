@@ -90,3 +90,21 @@ test('a seed reply older than a newer event is discarded', async () => {
 test('the memory-graph status ring uses the displayed status too', () => {
   assert.doesNotMatch(comp('MemoryGraphPanel'), /cth-status-\$\{n\.status\}/);
 });
+
+test('after a remount, an older in-flight seed reply cannot override the newer one', async () => {
+  const answers = [true, false]; let n = 0;
+  const pending = []; let cb;
+  const bridge = {
+    hibernateState: () => { const a = answers[n++]; return new Promise((res) => pending.push(() => res({ hibernated: a }))); },
+    onHiveAgentHibernation: (f) => { cb = f; return () => { cb = undefined; }; }
+  };
+  const store = createHibernatedStore(() => bridge);
+  let off = store.subscribe(() => {});
+  store.seed(['pam']);            // first request: snapshot says asleep, reply delayed
+  off();
+  off = store.subscribe(() => {});
+  store.seed(['pam']);            // second request: main is awake now
+  pending[1](); await tick();     // newer reply lands first
+  pending[0](); await tick();     // then the stale one
+  assert.equal(store.snapshot().has('pam'), false);
+});

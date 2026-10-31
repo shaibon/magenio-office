@@ -8,7 +8,7 @@ export interface HibernationBridge {
 export function createHibernatedStore(bridge: () => HibernationBridge) {
   let hibernated: ReadonlySet<string> = new Set();
   const listeners = new Set<() => void>();
-  /** Bumped by every event for an id: a seed reply older than the event is discarded. */
+  /** Bumped by every event and every seed of an id: only the newest seed reply, with no event after it, is applied. */
   const version = new Map<string, number>();
   const seeded = new Set<string>();
   let unsubscribeEvent: (() => void) | undefined;
@@ -41,7 +41,8 @@ export function createHibernatedStore(bridge: () => HibernationBridge) {
     for (const id of ids) {
       if (!id || seeded.has(id)) continue;
       seeded.add(id);
-      const v = version.get(id) ?? 0;
+      const v = (version.get(id) ?? 0) + 1; // a re-seed supersedes any earlier request still in flight
+      version.set(id, v);
       void Promise.resolve(bridge().hibernateState?.(id)).then((s) => {
         if (s && (version.get(id) ?? 0) === v) setMember(id, !!s.hibernated);
       }).catch(() => { seeded.delete(id); /* not available — retry on next mount */ });
