@@ -7,7 +7,7 @@
  *  would restore (no roster entry) is swept. */
 export interface SweepFacts {
   godId: string | null | undefined;
-  agents: Record<string, { archived?: boolean; crashed?: boolean }>;
+  agents: Record<string, { archived?: boolean; crashed?: boolean; sessionId?: string; hibernated?: { sessionId?: string } }>;
   hasLivePty: (id: string) => boolean;
   isSleeper: (id: string) => boolean;
   /** Ids the roster lists as floor or restorable agents; null when the roster could not be read. */
@@ -22,7 +22,9 @@ export function orphansToArchive(f: SweepFacts): string[] {
     if (f.hasLivePty(id)) continue;        // genuinely active
     if (f.isSleeper(id)) continue;         // asleep on purpose
     if (a.crashed) continue;               // died abnormally: stays in the roster, restartable
-    if (f.rosterIds?.has(id)) continue;    // boot will restore it (awake or asleep)
+    // Boot will restore it (awake or asleep) — but only a row with a session is restorable, so a junk
+    // roster id cannot shield a real orphan.
+    if ((a.sessionId || a.hibernated?.sessionId) && f.rosterIds?.has(id)) continue;
     out.push(id);
   }
   return out;

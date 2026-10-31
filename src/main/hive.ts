@@ -1446,6 +1446,21 @@ export class HiveManager {
     } catch { /* best-effort */ }
   }
 
+  /** A boot restore of this agent failed or was refused: it stays in the roster, marked like a crash
+   *  (restartable by hand, mail to it bounces), until a spawn succeeds and clears the flag. */
+  markRestoreFailed(id: string): void {
+    const root = this.root();
+    if (!root) return;
+    try {
+      const reg = this.registry();
+      const a = reg.agents[id];
+      if (!a || a.archived || a.crashed || id === reg.godId) return;
+      a.crashed = true;
+      this.atomicWriteJson(join(root, 'registry.json'), reg);
+      this.appendLog({ kind: 'restore-failed', agentId: id });
+    } catch { /* best-effort */ }
+  }
+
   setArchived(id: string, archived: boolean): void {
     const root = this.root();
     if (!root) return;
@@ -2513,7 +2528,9 @@ export class HiveManager {
       // work order to, whatever the engine — the inbox is the only place left.
       // The notice itself is ROUTED, not dropped into an inbox, so a sender on
       // a hookless or proxy-tier engine gets it the way it gets any mail.
-      if (t !== godId && reg.agents[t]?.archived) {
+      // A crashed / restore-failed row (t-282) has no live terminal either, and stays in the roster.
+      const deadState = reg.agents[t]?.archived ? 'archived' : reg.agents[t]?.crashed ? 'not running (crashed)' : null;
+      if (t !== godId && deadState) {
         if (this.deliver(msg, t)) delivered.push(t);
         this.appendLog({ kind: 'archived-recipient', from: msg.from, to: t, id: msg.id, act: msg.act });
         const sender = reg.agents[msg.from];
@@ -2525,8 +2542,8 @@ export class HiveManager {
             conversation: msg.conversation,
             hops: msg.hops + 1,
             requires_reply: false,
-            subject: `[no one is there to answer — "${t}" is archived] ${msg.subject}`,
-            body: `Your ${msg.act} to ${t} was filed in its inbox, but ${t} has no live terminal (archived), `
+            subject: `[no one is there to answer — "${t}" is ${deadState}] ${msg.subject}`,
+            body: `Your ${msg.act} to ${t} was filed in its inbox, but ${t} has no live terminal (${deadState}), `
               + `so it will only be read if ${t} is restored or re-hired under the same id. `
               + 'If you need this done now, route it to an agent on the live roster or hire one.'
           }, 'system'));

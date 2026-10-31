@@ -3738,6 +3738,12 @@ ipcMain.handle('agent:hibernateNow', (_evt, agentId: unknown) => {
   if (!reg.agents || !Object.hasOwn(reg.agents, agentId) || !a || !manualHibernateAllowed({ isGod: agentId === reg.godId || !!a.isGod, isWorker: liveWorkers.has(agentId), archived: !!a.archived, frozen: control.snapshot(agentId).autoDeliveryPaused })) return false;
   return hibernateAgent(agentId, 'manual');
 });
+/** The renderer's boot restore could not bring this agent back: keep it in the roster, marked crashed. */
+ipcMain.handle('hive:markRestoreFailed', (_evt, id: unknown) => {
+  if (typeof id !== 'string' || !id || id.length > 128 || ptyForAgent(id) || hibernator.isSleeper(id)) return false;
+  hive.markRestoreFailed(id);
+  return true;
+});
 ipcMain.handle('agent:hibernateState', (_evt, agentId: unknown) => {
   if (typeof agentId !== 'string') return { hibernated: false, optOut: false };
   return { hibernated: hibernator.isSleeper(agentId), optOut: (readConfig().hibernateOptOutAgents ?? []).includes(agentId) };

@@ -15,7 +15,7 @@ test('a boot with N registry agents and no PTYs archives none of the restorable 
   const agents = { god: {} };
   const roster = { agents: [], restorable: [] };
   for (let i = 0; i < 68; i++) {
-    agents[`a${i}`] = {};
+    agents[`a${i}`] = { sessionId: `s${i}` };
     (i % 2 ? roster.agents : roster.restorable).push({ id: `a${i}` });
   }
   assert.deepEqual(orphansToArchive(facts({ agents, rosterIds: restorableRosterIds(roster) })), []);
@@ -23,7 +23,7 @@ test('a boot with N registry agents and no PTYs archives none of the restorable 
 
 test('a real orphan with no roster entry is still swept; god, live, asleep, crashed, archived are not', () => {
   const agents = {
-    god: {}, ghost: {}, kept: {}, live: {}, asleep: {}, crashed: { crashed: true }, old: { archived: true }
+    god: {}, ghost: {}, kept: { sessionId: 's' }, live: {}, asleep: {}, crashed: { crashed: true }, old: { archived: true }
   };
   const out = orphansToArchive(facts({
     agents,
@@ -48,4 +48,22 @@ test('archiveOrphanedAgents is wired through the roster-aware rule, and quit its
   assert.match(src, /orphansToArchive\(\{[\s\S]{0,300}restorableRosterIds\(roster\.read\(\)\)/);
   const pty = fs.readFileSync(path.join(__dirname, '..', 'src/main/pty.ts'), 'utf8');
   assert.match(pty, /killAll\(\) \{\s*this\.exitHandler = null;/, 'killAll suppresses the exit teardown');
+});
+
+test('a junk roster id (no registry session) cannot shield a real orphan; a hibernated session counts', () => {
+  const agents = { pam: {}, evil: {}, sleepy: { hibernated: { sessionId: 'h' } } };
+  const rosterIds = restorableRosterIds({ agents: [{ id: 'evil' }, { id: 'pam' }, { id: 'sleepy' }] });
+  assert.deepEqual(orphansToArchive(facts({ agents, rosterIds })), ['pam', 'evil']);
+});
+
+test('a failed boot restore keeps the row (crashed), and mail to a crashed row bounces like an archived one', () => {
+  const root = path.join(__dirname, '..');
+  const hive = fs.readFileSync(path.join(root, 'src/main/hive.ts'), 'utf8');
+  assert.match(hive, /markRestoreFailed\(id: string\)[\s\S]{0,400}a\.crashed = true/);
+  assert.match(hive, /reg\.agents\[t\]\?\.crashed \? 'not running \(crashed\)'/);
+  assert.match(hive, /if \(t !== godId && deadState\) \{/);
+  const hook = fs.readFileSync(path.join(root, 'src/renderer/src/hooks/useRestoreTeam.ts'), 'utf8');
+  assert.match(hook, /failures\.push\(outcome\.error\);[\s\S]{0,200}markRestoreFailed/);
+  assert.match(fs.readFileSync(path.join(root, 'src/main/index.ts'), 'utf8'), /hive:markRestoreFailed[\s\S]{0,200}hive\.markRestoreFailed\(id\)/);
+  assert.deepEqual(orphansToArchive(facts({ agents: { pam: { crashed: true } }, rosterIds: null })), []);
 });

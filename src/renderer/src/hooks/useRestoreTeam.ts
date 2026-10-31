@@ -299,6 +299,8 @@ export function useRestoreTeam(config?: HarnessConfig | null): RestoreTeamState 
           gone++;
         } else {
           failures.push(outcome.error);
+          // Stays restorable for the retry, and stays in the registry marked crashed so mail bounces.
+          void window.cth.markRestoreFailed?.(a.id).catch(() => { /* best-effort */ });
         }
         return null;
       }));
