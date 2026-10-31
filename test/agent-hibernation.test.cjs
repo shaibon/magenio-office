@@ -313,7 +313,7 @@ test('wiring (index.ts): the light teardown neither archives nor removes the wor
 test('wiring (index.ts): terminal input to a sleeper wakes it; mail wakes it; spawn clears the flag', () => {
   assert.match(SRC, /hibernator\.sleeperOf\(id\)[\s\S]{0,120}wakeAgent\(sleeper, 'terminal-input'\)/);
   assert.match(SRC, /a\?\.hibernated \|\| hibernator\.isSleeper\(agentId\)\) \{ if \(hive\.inbox\(agentId\)\.length > 0 && !control\.snapshot\(agentId\)\.autoDeliveryPaused\) void wakeAgent\(agentId, 'inbox'\)/);
-  assert.match(SRC, /hive\.setHibernated\(opts\.hive\.id, false/);
+  assert.match(SRC, /setHibernatedMarked\(opts\.hive\.id, false/);
   assert.match(SRC, /hibernated: !!a\.hibernated/, 'fleet.json must carry the flag');
 });
 
@@ -462,4 +462,30 @@ test('manual hibernate-now: refuses god, workers, archived and FROZEN; opt-out d
   const M = { isGod: false, isWorker: false, archived: false, frozen: false };
   assert.equal(manualHibernateAllowed(M), true);
   for (const o of [{ isGod: true }, { isWorker: true }, { archived: true }, { frozen: true }]) assert.equal(manualHibernateAllowed({ ...M, ...o }), false, JSON.stringify(o));
+});
+
+test('t-283 I1: mail that lands while an agent is registered asleep at boot wakes it right away', async () => {
+  const { h, st } = fakeApp({ mail: 1 });
+  st.live.clear();
+  assert.equal(h.startAsleep('pam', 'pty-pam', { opts: { id: 'pty-pam', cwd: '/wt/pam', isolate: false, resume: true } }, 'boot-asleep'), true);
+  await new Promise((x) => setTimeout(x, 30));
+  assert.deepEqual(st.spawns, [[true, 'mail-during-start-asleep']]);
+});
+
+test('wiring (t-283 security): boot-asleep is once-per-agent, collision-safe, marker-backed, un-archives first', () => {
+  const body = SRC.slice(SRC.indexOf('function startAgentAsleep('), SRC.indexOf('/** Core agent-spawn logic'));
+  // L1
+  assert.match(body, /bootRestoreSeen\.has\(id\)[\s\S]{0,120}bootRestoreSeen\.add\(id\)/);
+  assert.match(body, /ptyManager\.list\(\)\.some\(\(p\) => p\.id === opts\.id\) \|\| hibernator\.sleeperOf\(opts\.id\) \|\| hibernator\.isSleeper\(id\)/);
+  // L2
+  assert.match(body, /sleepMarker\.sessionOf\(id\) === hive\.lastSession\(/);
+  assert.match(SRC, /function setHibernatedMarked[\s\S]{0,400}sleepMarker\.set\(id, s\)[\s\S]{0,120}sleepMarker\.clear\(id\)/);
+  assert.equal((SRC.match(/hive\.setHibernated\(/g) || []).length, 1, 'every other writer goes through setHibernatedMarked');
+  // L3
+  assert.ok(body.indexOf('hive.setArchived(id, false)') > 0 && body.indexOf('hive.setArchived(id, false)') < body.indexOf('hibernator.startAsleep('), 'un-archive before the sleeper is registered');
+  assert.match(body, /agents\[id\]\?\.archived\) return false/);
+  assert.match(SRC, /if \(hibernator\.isSleeper\(id\)\) continue;[^\n]*\n[\s\S]{0,200}hive\.setArchived\(id, true\)/);
+  // I3 / I2
+  assert.match(body, /Object\.hasOwn\(reg\.agents, id\)/);
+  assert.match(SRC, /agent:setHibernateOptOut[\s\S]{0,700}Object\.hasOwn\(regAgents, agentId\)[\s\S]{0,300}cur\.size >= 500/);
 });

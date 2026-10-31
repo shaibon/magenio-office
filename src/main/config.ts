@@ -858,7 +858,8 @@ function migrateHibernationV1(cfg: HarnessConfig): HarnessConfig {
   const m = cfg.agentHibernateMinutes;
   if (typeof m !== 'number' || !Number.isFinite(m) || m <= 0) cfg.agentHibernateMinutes = DEFAULTS.agentHibernateMinutes;
   else cfg.agentHibernateMinutes = Math.min(1440, Math.max(1, Math.floor(m)));
-  if (typeof cfg.agentHibernateEnabled !== 'boolean') cfg.agentHibernateEnabled = true;
+  // Absent (DEFAULTS filled it in) = ON; present but not a boolean = a mangled "off" -> fail closed.
+  if (typeof cfg.agentHibernateEnabled !== 'boolean') cfg.agentHibernateEnabled = false;
   cfg.hibernateOptOutAgents = Array.isArray(cfg.hibernateOptOutAgents)
     ? cfg.hibernateOptOutAgents.filter((x): x is string => typeof x === 'string' && !!x) : [];
   delete (cfg as { hibernateOptInAgents?: unknown }).hibernateOptInAgents;

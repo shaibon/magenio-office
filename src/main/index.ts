@@ -89,6 +89,7 @@ import { buildTempHistory, type TempHistoryInput, type TempLogEvent, type TempRe
 import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
 import { ControlRegistry } from './control';
+import { SleepMarker } from './sleepMarker';
 import { WorkerWakeWatchdog, WORKER_WAKE_REPORT_MS, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
 import { holdReason, countDoingCards, startAsleep, manualHibernateAllowed, WakeGate, Hibernator, type HibernateFacts, type StartAsleepFacts } from './hibernation';
 import { inboxNudgeText } from '../shared/hiveNudge';
@@ -366,6 +367,19 @@ const workerWake = new WorkerWakeWatchdog();
  *  request (so a wake spawns exactly like the original) re-pointed at the worktree that actually
  *  exists, with isolate off (never re-cut a worktree) and resume on. In memory only — a wake needs
  *  the live app's owner window; an app restart respawns through the renderer's normal restore. */
+/** Main-owned sleep record (security L2): outside every agent-writable root, unlike registry.json. */
+const sleepMarker = new SleepMarker(join(app.getPath('userData'), 'hibernated-agents.json'), () => hive.root());
+/** Agents whose boot restore already asked to start asleep this run: honoured once (security L1). */
+const bootRestoreSeen = new Set<string>();
+/** hive.setHibernated + the main-owned marker kept in step. */
+function setHibernatedMarked(id: string, on: boolean, info?: { sessionId?: string; resumeLost?: boolean; reason?: string }): boolean {
+  const r = hive.setHibernated(id, on, info).ok;
+  if (r) {
+    if (on) { const s = info?.sessionId ?? hive.lastSession(id); if (s) sleepMarker.set(id, s); }
+    else sleepMarker.clear(id);
+  }
+  return r;
+}
 const hibernateRecipes = new Map<string, { opts: AgentSpawnOptions; owner: Electron.WebContents | null }>();
 /** One wake per agent however many events race, at most 3 spawning at once. */
 const wakeGate = new WakeGate(3);
@@ -1078,6 +1092,7 @@ function archiveOrphanedAgents(): void {
       if (a.archived) continue;
       if (id === reg.godId) continue;        // god is never archived
       if (ptyForAgent(id)) continue;         // has a live PTY → genuinely active
+      if (hibernator.isSleeper(id)) continue; // asleep on purpose (a changeHome recovery re-runs this)
       if (a.crashed) continue;               // died abnormally: stays in the roster, restartable
       hive.setArchived(id, true);            // stale archived:false orphan → archive
       console.log('[migration] archived orphaned agent (no live PTY):', id);
@@ -3136,9 +3151,13 @@ function startAgentAsleep(opts: AgentSpawnOptions, pristine: AgentSpawnOptions, 
   try {
     if (!hive.enabled() || !opts.hive) return false;
     const id = opts.hive.id;
+    // L1: honoured once per agent per run, and never over a pty id that is already live or a sleeper's.
+    if (bootRestoreSeen.has(id)) return false;
+    bootRestoreSeen.add(id);
+    if (ptyManager.list().some((p) => p.id === opts.id) || hibernator.sleeperOf(opts.id) || hibernator.isSleeper(id)) return false;
     const reg = hive.registry();
-    const a = reg.agents?.[id];
-    if (!a) return false;
+    if (!reg.agents || !Object.hasOwn(reg.agents, id)) return false; // I3: no prototype keys
+    const a = reg.agents[id];
     const cfg = readConfig();
     const decide: StartAsleepFacts = {
       agentId: id,
@@ -3146,7 +3165,10 @@ function startAgentAsleep(opts: AgentSpawnOptions, pristine: AgentSpawnOptions, 
       isGod: id === reg.godId || !!a.isGod,
       isWorker: liveWorkers.has(id),
       frozen: (cfg.autoDeliveryPausedAgents ?? []).includes(id),
-      wasHibernated: !!a.hibernated,
+      // L2: the peer-writable registry flag alone proves nothing; the app's own marker must name the
+      // very session the registry still holds.
+      wasHibernated: !!a.hibernated && sleepMarker.sessionOf(id) !== undefined
+        && sleepMarker.sessionOf(id) === hive.lastSession(id, a.sessionProvider ?? opts.provider),
       hasSession: !!hive.lastSession(id, a.sessionProvider ?? opts.provider),
       inboxCount: hive.inbox(id).length,
       doingCards: countDoingCards(hive.tasks(), id)
@@ -3154,8 +3176,11 @@ function startAgentAsleep(opts: AgentSpawnOptions, pristine: AgentSpawnOptions, 
     if (!startAsleep(decide)) return false;
     const recipe = { opts: { ...pristine, isolate: false, resume: true, resumeSessionId: undefined, wakeReason: undefined, bootRestore: undefined }, owner };
     hibernateRecipes.set(id, recipe);
+    // L3: un-archive FIRST (the orphan sweep archived it before the restore ran); a row that stays
+    // archived would never be woken by mail, so then spawn normally instead.
+    hive.setArchived(id, false);
+    if (hive.registry().agents[id]?.archived) return false;
     if (!hibernator.startAsleep(id, opts.id, recipe, 'boot-asleep')) return false;
-    try { hive.setArchived(id, false); } catch { /* best-effort */ } // the orphan sweep archived it before the restore ran
     hive.appendLog({ kind: 'agent-start-asleep', id });
     return true;
   } catch (e) {
@@ -3669,7 +3694,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       owner
     });
     if (!opts.wakeReason) hibernator.forget(opts.hive.id); // a respawn that is not our wake supersedes the sleeper
-    try { if (hive.registry().agents[opts.hive.id]?.hibernated) hive.setHibernated(opts.hive.id, false, { reason: opts.wakeReason ?? 'respawn', resumeLost: !didResume }); } catch { /* best-effort */ }
+    try { if (hive.registry().agents[opts.hive.id]?.hibernated) setHibernatedMarked(opts.hive.id, false, { reason: opts.wakeReason ?? 'respawn', resumeLost: !didResume }); } catch { /* best-effort */ }
   }
   if (res.ok && opts.hive?.id) hive.clearCrashed(opts.hive.id);
   if (res.ok) analytics.track('agent_spawned', { provider });
@@ -3701,8 +3726,8 @@ ipcMain.handle('agent:wake', (_evt, agentId: unknown, reason: unknown) =>
 ipcMain.handle('agent:hibernateNow', (_evt, agentId: unknown) => {
   if (typeof agentId !== 'string' || !hive.enabled()) return false;
   const reg = hive.registry();
-  const a = reg.agents?.[agentId];
-  if (!a || !manualHibernateAllowed({ isGod: agentId === reg.godId || !!a.isGod, isWorker: liveWorkers.has(agentId), archived: !!a.archived, frozen: control.snapshot(agentId).autoDeliveryPaused })) return false;
+  const a = reg.agents && Object.hasOwn(reg.agents, agentId) ? reg.agents[agentId] : undefined;
+  if (!reg.agents || !Object.hasOwn(reg.agents, agentId) || !a || !manualHibernateAllowed({ isGod: agentId === reg.godId || !!a.isGod, isWorker: liveWorkers.has(agentId), archived: !!a.archived, frozen: control.snapshot(agentId).autoDeliveryPaused })) return false;
   return hibernateAgent(agentId, 'manual');
 });
 ipcMain.handle('agent:hibernateState', (_evt, agentId: unknown) => {
@@ -3710,9 +3735,11 @@ ipcMain.handle('agent:hibernateState', (_evt, agentId: unknown) => {
   return { hibernated: hibernator.isSleeper(agentId), optOut: (readConfig().hibernateOptOutAgents ?? []).includes(agentId) };
 });
 ipcMain.handle('agent:setHibernateOptOut', (_evt, agentId: unknown, optOut: unknown) => {
-  if (typeof agentId !== 'string' || !agentId || typeof optOut !== 'boolean') return false;
+  if (typeof agentId !== 'string' || !agentId || agentId.length > 128 || typeof optOut !== 'boolean') return false;
+  const regAgents = hive.enabled() ? hive.registry().agents : undefined;
+  if (optOut && (!regAgents || !Object.hasOwn(regAgents, agentId))) return false; // I2/I3: real agents only
   const cur = new Set(readConfig().hibernateOptOutAgents ?? []);
-  if (optOut) cur.add(agentId); else cur.delete(agentId);
+  if (optOut) { if (cur.size >= 500 && !cur.has(agentId)) return false; cur.add(agentId); } else cur.delete(agentId);
   writeConfig({ hibernateOptOutAgents: Array.from(cur).sort() });
   return optOut;
 });
@@ -6477,7 +6504,7 @@ const hibernator = new Hibernator<{ opts: AgentSpawnOptions; owner: Electron.Web
     return hive.lastSession(id, a?.sessionProvider ?? hibernateRecipes.get(id)?.opts.provider);
   },
   isHibernated: (id) => !!hive.registry().agents[id]?.hibernated,
-  setHibernated: (id, on, info) => hive.setHibernated(id, on, info).ok,
+  setHibernated: (id, on, info) => setHibernatedMarked(id, on, info),
   // ptyManager.kill reaps the detached MCP servers and sweeps the process group (no leaked tree);
   // it removes the session first, so no pty:exit reaches the renderer — it is not a death.
   killPty: (ptyId) => ptyManager.kill(ptyId).ok,
@@ -6512,7 +6539,7 @@ function closeSleeper(ptyId: string): boolean {
   const agentId = hibernator.sleeperOf(ptyId);
   if (!agentId) return false;
   hibernator.forget(agentId);
-  try { hive.setHibernated(agentId, false, { reason: 'closed-while-asleep' }); } catch { /* best-effort */ }
+  try { setHibernatedMarked(agentId, false, { reason: 'closed-while-asleep' }); } catch { /* best-effort */ }
   try { hive.setArchived(agentId, true); } catch { /* best-effort */ }
   return true;
 }

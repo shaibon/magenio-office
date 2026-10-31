@@ -53,3 +53,12 @@ test('t-283: a saved change is read back on the next beat (hot apply, no restart
   assert.equal(readConfig().agentHibernateEnabled, true);
   assert.equal(readConfig().agentHibernateMinutes, 5);
 });
+
+test('t-283 I4: an absent switch is ON, a present-but-mangled one reads as OFF (fail closed)', () => {
+  fs.writeFileSync(file, JSON.stringify({ registeredRepos: [] }));
+  assert.equal(readConfig().agentHibernateEnabled, true);
+  for (const bad of ['false', 0, null, 'no', {}]) {
+    fs.writeFileSync(file, JSON.stringify({ agentHibernateEnabled: bad }));
+    assert.equal(readConfig().agentHibernateEnabled, false, JSON.stringify(bad));
+  }
+});

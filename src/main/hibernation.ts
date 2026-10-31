@@ -232,6 +232,8 @@ export class Hibernator<Recipe> {
     if (!this.d.setHibernated(agentId, true, { sessionId, reason })) return false;
     this.sleepers.set(ptyId, agentId);
     this.d.notify(agentId, ptyId, true, recipe);
+    // Mail written in the gap must not wait for the next wake beat.
+    if (this.d.inboxCount(agentId) > 0) void this.wake(agentId, 'mail-during-start-asleep');
     return true;
   }
 
