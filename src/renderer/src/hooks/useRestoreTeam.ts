@@ -311,6 +311,7 @@ export function useRestoreTeam(config?: HarnessConfig | null): RestoreTeamState 
       const sel = useStore.getState();
       if (prevSel && sel.agents.some((x) => x.id === prevSel)) sel.select(prevSel);
       restoring = false;
+      void window.cth.reconcileAfterRestore?.().catch(() => { /* main's fallback timer covers it */ });
       // ALWAYS surface a result so the button can never look inert.
       const parts: string[] = [];
       if (restored) parts.push(`restored ${restored}`);

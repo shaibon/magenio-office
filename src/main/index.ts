@@ -1089,7 +1089,7 @@ function syncContextTriggers(): void {
  *  t-282: a normal quit archives nothing, so at the next start EVERY row looked like an orphan and
  *  the whole team was archived then restored (one git commit each). Rows the roster lists for the
  *  boot restore are skipped (bootSweep.ts); only rows nobody would restore are archived. */
-function archiveOrphanedAgents(): void {
+function archiveOrphanedAgents(opts: { afterRestore?: boolean } = {}): void {
   if (!hive.enabled()) return;
   try {
     const reg = hive.registry();
@@ -1098,7 +1098,9 @@ function archiveOrphanedAgents(): void {
       agents: reg.agents,
       hasLivePty: (id) => !!ptyForAgent(id),
       isSleeper: (id) => hibernator.isSleeper(id),
-      rosterIds: restorableRosterIds(roster.read())
+      // After the restore has had its turn the roster is no evidence: a row that failed to restore (or a
+      // poisoned roster entry) is a plain orphan again. Its restorable entry stays for the retry UI.
+      rosterIds: opts.afterRestore ? null : restorableRosterIds(roster.read())
     });
     for (const id of orphans) {
       hive.setArchived(id, true);            // stale archived:false orphan nobody will restore → archive
@@ -3738,6 +3740,9 @@ ipcMain.handle('agent:hibernateNow', (_evt, agentId: unknown) => {
   if (!reg.agents || !Object.hasOwn(reg.agents, agentId) || !a || !manualHibernateAllowed({ isGod: agentId === reg.godId || !!a.isGod, isWorker: liveWorkers.has(agentId), archived: !!a.archived, frozen: control.snapshot(agentId).autoDeliveryPaused })) return false;
   return hibernateAgent(agentId, 'manual');
 });
+/** The boot restore has finished (renderer): whatever is still unarchived with no process is not coming
+ *  back this run, so archive it. A failed row keeps its restorable entry (retry un-archives it). */
+ipcMain.handle('hive:reconcileAfterRestore', () => { archiveOrphanedAgents({ afterRestore: true }); return true; });
 ipcMain.handle('agent:hibernateState', (_evt, agentId: unknown) => {
   if (typeof agentId !== 'string') return { hibernated: false, optOut: false };
   return { hibernated: hibernator.isSleeper(agentId), optOut: (readConfig().hibernateOptOutAgents ?? []).includes(agentId) };
@@ -6352,6 +6357,7 @@ function bootstrapHiveServices(): void {
   if ((readConfig().autoDeliveryPausedAgents ?? []).length) writeConfig({ autoDeliveryPausedAgents: [] });
   control.replaceAutoDeliveryPauses(readConfig().autoDeliveryPausedAgents ?? []);
   migrateN8nPerProject();
+  setTimeout(() => archiveOrphanedAgents({ afterRestore: true }), 120_000).unref(); // restore never ran (or never will): nothing shields a dead row
   archiveOrphanedAgents(); // #57/#58: archive stale archived:false entries with no live PTY
   // App start is the one moment we can clean up what PREVIOUS runs left
   // behind. Sessions leak their detached MCP servers on every teardown, and a
