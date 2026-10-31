@@ -15,7 +15,7 @@ const loadTs = require('./load-ts.cjs');
 // A HiveManager given an app-data dir migrates/creates agent config under ~/.mdagents: never the real one.
 process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'md-home-'));
 
-const { holdReason, countDoingCards, WakeGate, Hibernator, HIBERNATE_BOOT_GRACE_MS } = loadTs('src/main/hibernation.ts');
+const { holdReason, countDoingCards, WakeGate, Hibernator, HIBERNATE_BOOT_GRACE_MS, HIBERNATE_MID_TURN_CAP_MS } = loadTs('src/main/hibernation.ts');
 const { WorkerWakeWatchdog } = loadTs('src/main/workerWake.ts');
 const { HiveManager } = loadTs('src/main/hive.ts');
 
@@ -68,6 +68,14 @@ test('decider: hooked but untouched since spawn hibernates after minutes from sp
   const f = { lastTurnWasStop: false, lastTurnAt: 0, lastOutputAt: NOW - 5_000, spawnedAt: NOW - 90_000 };
   assert.equal(holdReason(ok(f), { minutes: 1, optIn: ['pam'] }, NOW), null);
   assert.equal(holdReason(ok({ ...f, spawnedAt: NOW - 70_000 }), { minutes: 2, optIn: ['pam'] }, NOW), 'recent-activity');
+});
+
+// t-279 smoke 3 (Phyllis): a non-Stop turn hook with no output/hook afterwards must not pin the agent forever.
+test('decider: mid-turn holds only until the silence cap, then the agent may hibernate', () => {
+  const f = { lastTurnWasStop: false, lastTurnAt: NOW - 61_000 - HIBERNATE_MID_TURN_CAP_MS, lastOutputAt: NOW - 61_000 - HIBERNATE_MID_TURN_CAP_MS };
+  assert.equal(holdReason(ok(f), { minutes: 1, optIn: ['pam'] }, NOW), null);
+  assert.equal(holdReason(ok({ ...f, lastOutputAt: NOW - 90_000 }), { minutes: 1, optIn: ['pam'] }, NOW), 'mid-turn');
+  assert.equal(holdReason(ok({ ...f, inboxCount: 1 }), { minutes: 1, optIn: ['pam'] }, NOW), 'inbox');
 });
 
 test('hitl: a turn hook after the permission prompt clears the hold', () => {

@@ -62,6 +62,11 @@ export type HibernateHold =
 /** A PTY that has never printed is still booting; spawn time bounds that. */
 export const HIBERNATE_BOOT_GRACE_MS = 60_000;
 
+/** A turn that is neither parked (Stop) nor untouched but has shown NO output and NO turn hook for this
+ *  long is treated as wedged/orphaned rather than working (a live CLI repaints its spinner every second),
+ *  so it may hibernate instead of holding 'mid-turn' forever. Counted on top of the idle minutes. */
+export const HIBERNATE_MID_TURN_CAP_MS = 15 * 60_000;
+
 /** Pure: the first reason this agent must stay awake, or null when it may hibernate.
  *  Order matters only for the reported reason; every rule is a hard stop. */
 export function holdReason(f: HibernateFacts, cfg: HibernateConfig, now = Date.now()): HibernateHold | null {
@@ -87,7 +92,7 @@ export function holdReason(f: HibernateFacts, cfg: HibernateConfig, now = Date.n
     : untouched ? f.spawnedAt
     : Math.max(f.lastOutputAt, f.spawnedAt);
   if (last <= 0 || now - last < cfg.minutes * 60_000) return 'recent-activity';
-  if (!parked && !untouched) return 'mid-turn';
+  if (!parked && !untouched && now - Math.max(last, f.lastTurnAt) < cfg.minutes * 60_000 + HIBERNATE_MID_TURN_CAP_MS) return 'mid-turn';
   if (f.hitlRecently) return 'hitl';
   if (f.inboxCount > 0) return 'inbox';
   if (f.doingCards > 0) return 'doing-card';

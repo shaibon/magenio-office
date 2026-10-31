@@ -6504,7 +6504,7 @@ function runHibernateBeat(): void {
     // One line per change of hold (not per beat) so a smoke run explains itself.
     if (hibernateHoldLast.get(agentId) !== (hold ?? 'go')) {
       hibernateHoldLast.set(agentId, hold ?? 'go');
-      hive.appendLog({ kind: 'hibernate-hold', agentId, hold: hold ?? 'go', lastOutputAgoS: facts.lastOutputAt ? Math.round((now - facts.lastOutputAt) / 1000) : null, lastTurnAgoS: facts.lastTurnAt ? Math.round((now - facts.lastTurnAt) / 1000) : null, stop: facts.lastTurnWasStop, hooks: facts.hooksSeen, inbox: facts.inboxCount, doing: facts.doingCards });
+      hive.appendLog({ kind: 'hibernate-hold', agentId, hold: hold ?? 'go', lastOutputAgoS: facts.lastOutputAt ? Math.round((now - facts.lastOutputAt) / 1000) : null, lastTurnAgoS: facts.lastTurnAt ? Math.round((now - facts.lastTurnAt) / 1000) : null, stop: facts.lastTurnWasStop, lastEvent: workerWake.authTurnEventOf(agentId), hooks: facts.hooksSeen, inbox: facts.inboxCount, doing: facts.doingCards });
     }
     if (hold === null) hibernateAgent(agentId, `idle>${minutes}m`);
   }

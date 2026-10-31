@@ -252,6 +252,11 @@ export class WorkerWakeWatchdog {
     return this.authTurnEvent.get(agentId) === 'Stop';
   }
 
+  /** Name of the last authenticated turn hook (diagnostics for the hibernate-hold log). */
+  authTurnEventOf(agentId: string): string | null {
+    return this.authTurnEvent.get(agentId) ?? null;
+  }
+
   /** True when an authenticated permission/HITL prompt fired within the re-arm window and no
    *  authenticated turn hook came after it (a later turn means the prompt was answered). */
   hitlRecently(agentId: string, now = Date.now()): boolean {
