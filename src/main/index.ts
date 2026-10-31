@@ -87,6 +87,7 @@ import { checkMcpPresence, nodePresenceDeps, installTrelloMcp, nodeInstallDeps }
 import { secretRefFor, INTEGRATION_TEMPLATES } from '../shared/integrations';
 import { buildTempHistory, type TempHistoryInput, type TempLogEvent, type TempRequest, type TempRow } from '../shared/tempHistory';
 import { RosterStore } from './roster';
+import { orphansToArchive, restorableRosterIds } from './bootSweep';
 import { buildWorkerLaunch } from './workerLaunch';
 import { ControlRegistry } from './control';
 import { SleepMarker } from './sleepMarker';
@@ -1083,18 +1084,24 @@ function syncContextTriggers(): void {
  *  "No live PTY" = ptyForAgent(id) === undefined (ptyToAgent is populated only at
  *  spawn and pruned on teardown). God is never archived. A user's real agents are
  *  unaffected: the "restore team" flow respawns them through ensureAgent, which
- *  re-clears `archived` — restorability does not depend on the archived flag. */
+ *  re-clears `archived` — restorability does not depend on the archived flag.
+ *
+ *  t-282: a normal quit archives nothing, so at the next start EVERY row looked like an orphan and
+ *  the whole team was archived then restored (one git commit each). Rows the roster lists for the
+ *  boot restore are skipped (bootSweep.ts); only rows nobody would restore are archived. */
 function archiveOrphanedAgents(): void {
   if (!hive.enabled()) return;
   try {
     const reg = hive.registry();
-    for (const [id, a] of Object.entries(reg.agents)) {
-      if (a.archived) continue;
-      if (id === reg.godId) continue;        // god is never archived
-      if (ptyForAgent(id)) continue;         // has a live PTY → genuinely active
-      if (hibernator.isSleeper(id)) continue; // asleep on purpose (a changeHome recovery re-runs this)
-      if (a.crashed) continue;               // died abnormally: stays in the roster, restartable
-      hive.setArchived(id, true);            // stale archived:false orphan → archive
+    const orphans = orphansToArchive({
+      godId: reg.godId,
+      agents: reg.agents,
+      hasLivePty: (id) => !!ptyForAgent(id),
+      isSleeper: (id) => hibernator.isSleeper(id),
+      rosterIds: restorableRosterIds(roster.read())
+    });
+    for (const id of orphans) {
+      hive.setArchived(id, true);            // stale archived:false orphan nobody will restore → archive
       console.log('[migration] archived orphaned agent (no live PTY):', id);
     }
   } catch (e) {
