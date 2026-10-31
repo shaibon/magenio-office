@@ -87,7 +87,7 @@ import { checkMcpPresence, nodePresenceDeps, installTrelloMcp, nodeInstallDeps }
 import { secretRefFor, INTEGRATION_TEMPLATES } from '../shared/integrations';
 import { buildTempHistory, type TempHistoryInput, type TempLogEvent, type TempRequest, type TempRow } from '../shared/tempHistory';
 import { RosterStore } from './roster';
-import { orphansToArchive, restorableRosterIds, shieldedButUnrestored } from './bootSweep';
+import { orphansToArchive, restorableRosterIds, shieldedButUnrestored, fallbackAction } from './bootSweep';
 import { buildWorkerLaunch } from './workerLaunch';
 import { ControlRegistry } from './control';
 import { SleepMarker } from './sleepMarker';
@@ -1093,13 +1093,18 @@ function syncContextTriggers(): void {
 let bootRestoreState: 'idle' | 'running' | 'done' = 'idle';
 ipcMain.handle('hive:restoreBatch', (_evt, running: unknown) => {
   bootRestoreState = running === true ? 'running' : 'done';
-  if (bootRestoreState === 'done') markUnrestoredAfterBoot(); // whatever the batch left PTY-less is not coming back this run
+  if (bootRestoreState === 'done') markUnrestoredAfterBoot('done'); // whatever the batch left PTY-less is not coming back this run
   return true;
 });
 /** After the restore batch reports done, or 3 min after start if it never ran: rows the roster shielded
  *  that are still PTY-less (not asleep, not crashed) are marked crashed (kept in the roster, retryable, mail bounces). Waits out a batch in flight. */
-function markUnrestoredAfterBoot(attempt = 0): void {
-  if (bootRestoreState === 'running' && attempt < 10) { setTimeout(() => markUnrestoredAfterBoot(attempt + 1), 60_000).unref(); return; }
+function markUnrestoredAfterBoot(source: 'timer' | 'done' = 'timer', attempt = 0): void {
+  const action = fallbackAction({
+    state: bootRestoreState, source, attempt, maxAttempts: 60,
+    rendererAlive: [...allWindows].some((w) => !w.isDestroyed() && !w.webContents.isDestroyed() && !w.webContents.isCrashed())
+  });
+  if (action === 'wait') { setTimeout(() => markUnrestoredAfterBoot(source, attempt + 1), 60_000).unref(); return; }
+  if (action === 'skip') return;
   if (!hive.enabled()) return;
   try {
     const reg = hive.registry();
@@ -3209,6 +3214,7 @@ function startAgentAsleep(opts: AgentSpawnOptions, pristine: AgentSpawnOptions, 
     hive.setArchived(id, false);
     if (hive.registry().agents[id]?.archived) return false;
     if (!hibernator.startAsleep(id, opts.id, recipe, 'boot-asleep')) return false;
+    hive.clearCrashed(id); // a late sleeper is a successful start: drop a restore-failed mark
     hive.appendLog({ kind: 'agent-start-asleep', id });
     return true;
   } catch (e) {

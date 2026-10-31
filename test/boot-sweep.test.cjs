@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
-const { orphansToArchive, restorableRosterIds, shieldedButUnrestored } = loadTs('src/main/bootSweep.ts');
+const { orphansToArchive, restorableRosterIds, shieldedButUnrestored, fallbackAction } = loadTs('src/main/bootSweep.ts');
 
 const facts = (over) => ({
   godId: 'god', agents: {}, hasLivePty: () => false, isSleeper: () => false, rosterIds: new Set(), ...over
@@ -66,8 +66,9 @@ test('when no restore ever starts, shielded rows that nothing attempted are the 
 test('the no-restore fallback waits for an in-flight batch and the renderer reports its batch', () => {
   const root = path.join(__dirname, '..');
   const main = fs.readFileSync(path.join(root, 'src/main/index.ts'), 'utf8');
-  assert.match(main, /bootRestoreState === 'running' && attempt < 10\) \{ setTimeout/);
-  assert.match(main, /bootRestoreState = running === true \? 'running' : 'done';\s*if \(bootRestoreState === 'done'\) markUnrestoredAfterBoot\(\)/);
+  assert.match(main, /action === 'wait'\) \{ setTimeout\(\(\) => markUnrestoredAfterBoot\(source, attempt \+ 1\)/);
+  assert.match(main, /startAsleep\(id, opts\.id, recipe, 'boot-asleep'\)\) return false;\s*hive\.clearCrashed\(id\)/);
+  assert.match(main, /bootRestoreState = running === true \? 'running' : 'done';\s*if \(bootRestoreState === 'done'\) markUnrestoredAfterBoot\('done'\)/);
   assert.match(main, /markUnrestoredAfterBoot\(\), 180_000/);
   const hook = fs.readFileSync(path.join(root, 'src/renderer/src/hooks/useRestoreTeam.ts'), 'utf8');
   assert.match(hook, /restoring = true;\s*void window\.cth\.restoreBatch\?\.\(true\)/);
@@ -84,4 +85,19 @@ test('a failed boot restore keeps the row (crashed), and mail to a crashed row b
   assert.match(hook, /failures\.push\(outcome\.error\);[\s\S]{0,200}markRestoreFailed/);
   assert.match(fs.readFileSync(path.join(root, 'src/main/index.ts'), 'utf8'), /hive:markRestoreFailed[\s\S]{0,200}hive\.markRestoreFailed\(id\)/);
   assert.deepEqual(orphansToArchive(facts({ agents: { pam: { crashed: true } }, rosterIds: null })), []);
+});
+
+test('fallback never marks an in-flight restore, even at the retry limit; a vanished renderer is recovered', () => {
+  const base = { source: 'timer', maxAttempts: 60 };
+  assert.equal(fallbackAction({ ...base, state: 'running', attempt: 0, rendererAlive: true }), 'wait');
+  assert.equal(fallbackAction({ ...base, state: 'running', attempt: 59, rendererAlive: true }), 'wait');
+  assert.equal(fallbackAction({ ...base, state: 'running', attempt: 60, rendererAlive: true }), 'skip', 'limit: give up, do not mark');
+  assert.equal(fallbackAction({ ...base, state: 'running', attempt: 3, rendererAlive: false }), 'mark', 'renderer gone: batch can never finish');
+});
+
+test('fallback: idle at the boot timer marks; done marks once (from the report), not again from the timer', () => {
+  const base = { maxAttempts: 60, attempt: 0, rendererAlive: true };
+  assert.equal(fallbackAction({ ...base, state: 'idle', source: 'timer' }), 'mark');
+  assert.equal(fallbackAction({ ...base, state: 'done', source: 'done' }), 'mark');
+  assert.equal(fallbackAction({ ...base, state: 'done', source: 'timer' }), 'skip');
 });
