@@ -147,7 +147,7 @@ export interface QueuedMessage {
    *  the agent can drain its whole inbox in the same turn the nudge was queued
    *  from, and delivering it afterwards costs a full turn to discover nothing is
    *  there. Declarative (a string, not a closure) so it survives persistQueues. */
-  precondition?: 'inbox-nonempty';
+  precondition?: 'inbox-nonempty' | 'awake';
     /** Token count captured when a /compact was enqueued for this agent, carried
    *  through to the point of successful delivery so the "already compacted at
    *  N tokens" latch (see useHive) can be written there instead of at enqueue

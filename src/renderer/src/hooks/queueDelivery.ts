@@ -58,7 +58,14 @@ export function canDeliverToAgent(
 /** The subset of a QueuedMessage this module needs. Kept structural so the
  *  gate is testable without dragging the store (and zustand) into the test. */
 export interface DeliveryGateMessage {
-  precondition?: 'inbox-nonempty';
+  precondition?: 'inbox-nonempty' | 'awake';
+}
+
+/** What the drain does with the head message of a HIBERNATED agent (t-288). Mail, the user's own
+ *  messages and work orders wake it; a message marked 'awake' (the scheduled context commands) is
+ *  only worth typing into a live session, so it is dropped and never wakes anything. */
+export function hibernatedDrainAction(message: DeliveryGateMessage): 'wake' | 'drop' {
+  return message.precondition === 'awake' ? 'drop' : 'wake';
 }
 
 export type PreconditionVerdict = 'send' | 'drop';

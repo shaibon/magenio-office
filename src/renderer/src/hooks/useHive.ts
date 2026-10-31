@@ -24,7 +24,7 @@ import { inboxNudgeText } from '../../../shared/hiveNudge';
 import { resolveGodName } from '../../../shared/godIdentity';
 import { acquireTerminal, resetTerminal, isTerminalAutomationSafe } from '@/components/terminalPool';
 import { shouldThawForDispatch } from '../../../shared/frozenAgents';
-import { canDeliverToAgent, deliverWithAcknowledgement, checkPrecondition } from './queueDelivery';
+import { canDeliverToAgent, deliverWithAcknowledgement, checkPrecondition, hibernatedDrainAction } from './queueDelivery';
 import { OFFICE_CAST, DEFAULT_CHARACTER } from '@/scene/office/cast';
 
 const GOD_ID = 'god';
@@ -810,6 +810,8 @@ export function useHive(config: HarnessConfig | null): void {
       // A hibernated agent has no process to type into: wake it and keep the message queued —
       // the normal gates below deliver it once the resumed session is idle again.
       if (await window.cth.isAgentHibernated?.(target.id)) {
+        // Scheduled commands ('awake') are dropped, not delivered: nothing automatic wakes a sleeper (t-288).
+        if (hibernatedDrainAction(next) === 'drop') { removeQueuedMessage(srcId, next.id); return { sent: false }; }
         void window.cth.wakeAgent?.(target.id, 'queued-message');
         return { sent: false };
       }
@@ -1210,11 +1212,18 @@ export function useHive(config: HarnessConfig | null): void {
   useEffect(() => {
     if (!config?.onboardingComplete) return;
 
-       const fire = (action: 'compact' | 'clear', rule: ContextRule): void => {
+       const fire = async (action: 'compact' | 'clear', rule: ContextRule): Promise<void> => {
+      // A hibernated agent's context is unchanged and it has no process: a tick must not queue a command
+      // for it, because delivering one would wake it (t-288). Asked of main, the owner of the sleepers.
+      const asleep = new Set<string>();
+      await Promise.all(useStore.getState().agents.filter((x) => x.ptyId).map(async (x) => {
+        try { if (await window.cth.isAgentHibernated?.(x.id)) asleep.add(x.id); } catch { /* treat as awake */ }
+      }));
       const { agents, messageQueues, enqueueMessage } = useStore.getState();
       const now = Date.now();
       for (const a of agents) {
         if (!a.ptyId) continue;
+        if (asleep.has(a.id)) continue;
         // Gate #109-2: don't enqueue a context command for an agent that cannot
         // currently receive one (e.g. god 'blocked' on a human prompt). Enqueuing
         // anyway left a stuck /compact at the head of the queue that dedupe then
@@ -1259,7 +1268,8 @@ export function useHive(config: HarnessConfig | null): void {
         // send — silently latching out every future attempt at that count.
         // compactUsed rides on the queued message so the delivery site knows
         // which count to latch.
-        enqueueMessage(a.id, command, action === 'compact' ? { compactUsed: used } : undefined);
+        // 'awake': if the agent goes to sleep before this is delivered, the drain drops it instead of waking it.
+        enqueueMessage(a.id, command, action === 'compact' ? { compactUsed: used, precondition: 'awake' } : { precondition: 'awake' });
       }
     };
 
@@ -1271,7 +1281,7 @@ export function useHive(config: HarnessConfig | null): void {
       ) => () => void;
     }).onContextTrigger?.((p) => {
       if (!p?.rule) return;
-      fire(p.action === 'clear' ? 'clear' : 'compact', p.rule);
+      void fire(p.action === 'clear' ? 'clear' : 'compact', p.rule);
     });
 
     // LEGACY fallback: main still emits the old parameterless auto-compact until
@@ -1279,7 +1289,7 @@ export function useHive(config: HarnessConfig | null): void {
     // continuous across that landing. Harmless if both fire — the dedupe above
     // drops the duplicate.
     const offLegacy = window.cth.onAutoCompact(
-      () => fire('compact', DEFAULT_CONTEXT_TRIGGER.compact)
+      () => { void fire('compact', DEFAULT_CONTEXT_TRIGGER.compact); }
     );
 
     return () => { off?.(); offLegacy?.(); };
