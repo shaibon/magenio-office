@@ -1,4 +1,5 @@
-import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync, mkdirSync, unlinkSync, chmodSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { dirname } from 'node:path';
 
 /** Main-owned record of which agents the APP put to sleep (t-283, security L2). `registry.json` is
@@ -18,9 +19,14 @@ export class SleepMarker {
   private write(all: Record<string, Record<string, string>>): void {
     try {
       mkdirSync(dirname(this.file), { recursive: true });
-      const tmp = `${this.file}.${process.pid}.tmp`;
-      writeFileSync(tmp, JSON.stringify(all), { mode: 0o600 });
-      renameSync(tmp, this.file);
+      // Fresh, unpredictable name + 'wx' (O_EXCL): never opens an existing file or follows a planted
+      // symlink, and the mode is exact. rename() then replaces the target entry itself (not its link target).
+      const tmp = `${this.file}.${randomBytes(8).toString('hex')}.tmp`;
+      try {
+        writeFileSync(tmp, JSON.stringify(all), { mode: 0o600, flag: 'wx' });
+        chmodSync(tmp, 0o600); // umask can only narrow the mode, but make 0600 explicit
+        renameSync(tmp, this.file);
+      } catch (e) { try { unlinkSync(tmp); } catch { /* not created */ } throw e; }
     } catch { /* best-effort: without the marker the agent simply boots awake */ }
   }
 
