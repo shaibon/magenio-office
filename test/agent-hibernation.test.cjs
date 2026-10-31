@@ -20,7 +20,7 @@ const { WorkerWakeWatchdog } = loadTs('src/main/workerWake.ts');
 const { HiveManager } = loadTs('src/main/hive.ts');
 
 const NOW = 10_000_000;
-const CFG = { minutes: 30, optIn: ['pam'] };
+const CFG = { minutes: 30, optOut: [] };
 /** An agent that is hibernatable on every axis; each case flips ONE thing. */
 const ok = (o = {}) => ({
   agentId: 'pam', isGod: false, isWorker: false, onHold: false, autoDeliveryPaused: false, paused: false, halted: false,
@@ -29,7 +29,7 @@ const ok = (o = {}) => ({
   lastTurnAt: NOW - 31 * 60_000, hooksSeen: true, hitlRecently: false, inboxCount: 0, doingCards: 0, ...o
 });
 
-test('decider: an idle, opted-in, drained agent hibernates', () => {
+test('decider: an idle, drained agent hibernates', () => {
   assert.equal(holdReason(ok(), CFG, NOW), null);
 });
 
@@ -46,10 +46,10 @@ test('decider: every hard stop keeps the agent awake', () => {
   for (const [over, why] of cases) assert.equal(holdReason(ok(over), CFG, NOW), why, why);
 });
 
-test('decider: off and opt-in gates (phase 2a is opt-in, 0 = off)', () => {
-  assert.equal(holdReason(ok(), { minutes: 0, optIn: ['pam'] }, NOW), 'off');
-  assert.equal(holdReason(ok({ agentId: 'dwight' }), CFG, NOW), 'not-opted-in');
-  assert.equal(holdReason(ok(), { minutes: 30, optIn: [] }, NOW), 'not-opted-in');
+test('decider: off and opt-in gates (on for everyone, per-agent opt-out, 0 = off)', () => {
+  assert.equal(holdReason(ok(), { minutes: 0, optOut: [] }, NOW), 'off');
+  assert.equal(holdReason(ok({ agentId: 'dwight' }), { minutes: 30, optOut: ['dwight'] }, NOW), 'opted-out');
+  assert.equal(holdReason(ok({ agentId: 'dwight' }), { minutes: 30, optOut: [] }, NOW), null, 'no list = everyone hibernates');
 });
 
 test('decider: a never-printed pty is judged from its spawn time, not as infinitely idle', () => {
@@ -59,23 +59,23 @@ test('decider: a never-printed pty is judged from its spawn time, not as infinit
 
 // t-279 smoke: the Claude TUI repaints, so PTY output must not hold a parked (Stop) agent.
 test('decider: Stop + idle hooks hibernate even while the TUI keeps repainting (Angela, claude)', () => {
-  assert.equal(holdReason(ok({ lastOutputAt: NOW - 5_000, lastTurnAt: NOW - 90_000 }), { minutes: 1, optIn: ['pam'] }, NOW), null);
-  assert.equal(holdReason(ok({ lastOutputAt: NOW - 5_000, lastTurnAt: NOW - 30_000 }), { minutes: 1, optIn: ['pam'] }, NOW), 'recent-activity');
+  assert.equal(holdReason(ok({ lastOutputAt: NOW - 5_000, lastTurnAt: NOW - 90_000 }), { minutes: 1, optOut: [] }, NOW), null);
+  assert.equal(holdReason(ok({ lastOutputAt: NOW - 5_000, lastTurnAt: NOW - 30_000 }), { minutes: 1, optOut: [] }, NOW), 'recent-activity');
 });
 
 // t-279 smoke: a hooked CLI that never took a turn is parked, not "mid-turn" (Phyllis/Toby, codex).
 test('decider: hooked but untouched since spawn hibernates after minutes from spawn', () => {
   const f = { lastTurnWasStop: false, lastTurnAt: 0, lastOutputAt: NOW - 5_000, spawnedAt: NOW - 90_000 };
-  assert.equal(holdReason(ok(f), { minutes: 1, optIn: ['pam'] }, NOW), null);
-  assert.equal(holdReason(ok({ ...f, spawnedAt: NOW - 70_000 }), { minutes: 2, optIn: ['pam'] }, NOW), 'recent-activity');
+  assert.equal(holdReason(ok(f), { minutes: 1, optOut: [] }, NOW), null);
+  assert.equal(holdReason(ok({ ...f, spawnedAt: NOW - 70_000 }), { minutes: 2, optOut: [] }, NOW), 'recent-activity');
 });
 
 // t-279 smoke 3 (Phyllis): a non-Stop turn hook with no output/hook afterwards must not pin the agent forever.
 test('decider: mid-turn holds only until the silence cap, then the agent may hibernate', () => {
   const f = { lastTurnWasStop: false, lastTurnAt: NOW - 61_000 - HIBERNATE_MID_TURN_CAP_MS, lastOutputAt: NOW - 61_000 - HIBERNATE_MID_TURN_CAP_MS };
-  assert.equal(holdReason(ok(f), { minutes: 1, optIn: ['pam'] }, NOW), null);
-  assert.equal(holdReason(ok({ ...f, lastOutputAt: NOW - 90_000 }), { minutes: 1, optIn: ['pam'] }, NOW), 'mid-turn');
-  assert.equal(holdReason(ok({ ...f, inboxCount: 1 }), { minutes: 1, optIn: ['pam'] }, NOW), 'inbox');
+  assert.equal(holdReason(ok(f), { minutes: 1, optOut: [] }, NOW), null);
+  assert.equal(holdReason(ok({ ...f, lastOutputAt: NOW - 90_000 }), { minutes: 1, optOut: [] }, NOW), 'mid-turn');
+  assert.equal(holdReason(ok({ ...f, inboxCount: 1 }), { minutes: 1, optOut: [] }, NOW), 'inbox');
 });
 
 test('hitl: a turn hook after the permission prompt clears the hold', () => {
@@ -398,7 +398,7 @@ test('failed duplicate spawn keeps the live token; the genuine active turn still
   w.noteHook('pam', 'Stop', undefined, NOW - 90_000, hive.verifyHookToken('pam', live));
   w.noteHook('pam', 'PreToolUse', undefined, NOW - 1_000, hive.verifyHookToken('pam', live)); // active turn, original token
   assert.equal(w.lastTurnWasStop('pam'), false);
-  assert.equal(holdReason(ok({ lastTurnWasStop: false, lastTurnAt: NOW - 1_000, lastOutputAt: NOW - 1_000 }), { minutes: 1, optIn: ['pam'] }, NOW), 'recent-activity', 'active turn is held, not hibernated');
+  assert.equal(holdReason(ok({ lastTurnWasStop: false, lastTurnAt: NOW - 1_000, lastOutputAt: NOW - 1_000 }), { minutes: 1, optOut: [] }, NOW), 'recent-activity', 'active turn is held, not hibernated');
 });
 
 test('wiring: token commits/discards and noteSpawn happen only after ptyManager.spawn', () => {

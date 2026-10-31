@@ -49,13 +49,13 @@ export interface HibernateFacts {
 export interface HibernateConfig {
   /** Minutes of inactivity before hibernation; 0/undefined = feature off. */
   minutes: number;
-  /** Phase 2a is opt-in: only these agent ids may hibernate. */
-  optIn: readonly string[];
+  /** Agent ids that never hibernate (per-agent opt-out; hibernation is on for everyone else). */
+  optOut: readonly string[];
 }
 
 /** Why an agent is NOT hibernated right now (null from holdReason = go ahead). */
 export type HibernateHold =
-  | 'off' | 'not-opted-in' | 'god' | 'worker' | 'on-hold' | 'frozen' | 'paused' | 'halted'
+  | 'off' | 'opted-out' | 'god' | 'worker' | 'on-hold' | 'frozen' | 'paused' | 'halted'
   | 'no-pty' | 'no-recipe' | 'no-session' | 'booting' | 'recent-activity' | 'mid-turn'
   | 'hitl' | 'inbox' | 'doing-card';
 
@@ -71,7 +71,7 @@ export const HIBERNATE_MID_TURN_CAP_MS = 15 * 60_000;
  *  Order matters only for the reported reason; every rule is a hard stop. */
 export function holdReason(f: HibernateFacts, cfg: HibernateConfig, now = Date.now()): HibernateHold | null {
   if (!(cfg.minutes > 0)) return 'off';
-  if (!cfg.optIn.includes(f.agentId)) return 'not-opted-in';
+  if (cfg.optOut.includes(f.agentId)) return 'opted-out';
   if (f.isGod) return 'god';
   if (f.isWorker) return 'worker';
   if (f.onHold) return 'on-hold';

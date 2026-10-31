@@ -6469,14 +6469,13 @@ function runHibernateBeat(): void {
   if (!hive.enabled()) return;
   const cfg = readConfig();
   const minutes = cfg.agentHibernateMinutes ?? 0;
-  const optIn = cfg.hibernateOptInAgents ?? [];
-  if (!(minutes > 0) || optIn.length === 0) return;
+  const optOut = cfg.hibernateOptOutAgents ?? [];
+  if (cfg.agentHibernateEnabled === false || !(minutes > 0)) return;
   const reg = hive.registry();
   if (!reg?.agents) return;
   const now = Date.now();
   const ledger = hive.tasks();
-  for (const agentId of optIn) {
-    const a = reg.agents[agentId];
+  for (const [agentId, a] of Object.entries(reg.agents)) {
     if (!a || a.archived || a.hibernated) continue;
     const ptyId = ptyForAgent(agentId);
     const snap = control.snapshot(agentId);
@@ -6500,7 +6499,7 @@ function runHibernateBeat(): void {
       inboxCount: hive.inbox(agentId).length,
       doingCards: countDoingCards(ledger, agentId)
     };
-    const hold = holdReason(facts, { minutes, optIn }, now);
+    const hold = holdReason(facts, { minutes, optOut }, now);
     // One line per change of hold (not per beat) so a smoke run explains itself.
     if (hibernateHoldLast.get(agentId) !== (hold ?? 'go')) {
       hibernateHoldLast.set(agentId, hold ?? 'go');

@@ -420,12 +420,16 @@ export interface HarnessConfig {
    *  — idle-based, never wall-clock, so an actively-working worker is never reaped.
    *  Default 20. */
   workerIdleTimeoutMinutes?: number;
-  /** Minutes of inactivity after which an OPTED-IN hive agent is hibernated (CLI + MCP servers
-   *  closed, session/identity/inbox kept; any event wakes it). 0 = off (default). Not the worker
-   *  reaper above: that kills ephemeral workers, this parks permanent agents. */
+  /** Master switch for agent hibernation (t-283): every non-god, non-worker hive agent that has been
+   *  quiet for `agentHibernateMinutes` is parked (CLI + MCP servers closed, session/identity/inbox
+   *  kept; any event wakes it). Default ON. Not the worker reaper above: that kills ephemeral
+   *  workers, this parks permanent agents. Applied live by the reaper beat. */
+  agentHibernateEnabled?: boolean;
+  /** Minutes of inactivity before an agent is hibernated. Default 15. A stored 0/invalid value
+   *  (the old "off") is migrated to the default on read; turn the feature off with the switch. */
   agentHibernateMinutes?: number;
-  /** Phase 2a is opt-in: only these agent ids are ever hibernated. God never is. */
-  hibernateOptInAgents?: string[];
+  /** Per-agent opt-out: these agent ids are never hibernated. God never is either. */
+  hibernateOptOutAgents?: string[];
   /** Registered integrations (Phase 2) — labeled REST endpoints workers reach through
    *  the loopback secret broker. METADATA ONLY: each record carries a `secretRef`
    *  handle, never the secret value (secrets live encrypted in a separate file via
@@ -618,8 +622,9 @@ const DEFAULTS: HarnessConfig = {
   mcpDefaults: defaultMcpDefaults(),
   maxConcurrentWorkers: 4,
   workerIdleTimeoutMinutes: 20,
-  agentHibernateMinutes: 0,
-  hibernateOptInAgents: [],
+  agentHibernateEnabled: true,
+  agentHibernateMinutes: 15,
+  hibernateOptOutAgents: [],
   integrations: [],
   defaultWorkerTokenCap: 0, // 0 = unlimited (human directive: NO per-worker cap)
   semanticMemory: true,
@@ -840,10 +845,23 @@ export function readConfig(): HarnessConfig {
   try {
     const raw = readFileSync(p, 'utf8');
     const parsed = JSON.parse(raw);
-    return migrateSlackChannelsV1(migrateJiraProjectsV1(normalizeStoredHomes(migrateTriggersV1(withTriggerDefaults({ ...DEFAULTS, ...parsed })))));
+    return migrateHibernationV1(migrateSlackChannelsV1(migrateJiraProjectsV1(normalizeStoredHomes(migrateTriggersV1(withTriggerDefaults({ ...DEFAULTS, ...parsed }))))));
   } catch {
     return withTriggerDefaults({ ...DEFAULTS });
   }
+}
+
+/** (t-283) Hibernation is ON by default. A config from phase 2a stored `agentHibernateMinutes: 0`
+ *  (= off) and an opt-in list; both are obsolete: a non-positive/invalid minutes value takes the
+ *  default (the explicit off switch is `agentHibernateEnabled`), and the opt-out list is sanitized. */
+function migrateHibernationV1(cfg: HarnessConfig): HarnessConfig {
+  const m = cfg.agentHibernateMinutes;
+  if (typeof m !== 'number' || !Number.isFinite(m) || m <= 0) cfg.agentHibernateMinutes = DEFAULTS.agentHibernateMinutes;
+  if (typeof cfg.agentHibernateEnabled !== 'boolean') cfg.agentHibernateEnabled = true;
+  cfg.hibernateOptOutAgents = Array.isArray(cfg.hibernateOptOutAgents)
+    ? cfg.hibernateOptOutAgents.filter((x): x is string => typeof x === 'string' && !!x) : [];
+  delete (cfg as { hibernateOptInAgents?: unknown }).hibernateOptInAgents;
+  return cfg;
 }
 
 /** (#140, the upgrade path) A config.json persisted BEFORE `writeConfig`
