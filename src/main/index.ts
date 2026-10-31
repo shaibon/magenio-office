@@ -90,7 +90,7 @@ import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
 import { ControlRegistry } from './control';
 import { WorkerWakeWatchdog, WORKER_WAKE_REPORT_MS, activityEvidenceAt, type WorkerWakeFacts } from './workerWake';
-import { holdReason, countDoingCards, WakeGate, Hibernator, type HibernateFacts } from './hibernation';
+import { holdReason, countDoingCards, startAsleep, WakeGate, Hibernator, type HibernateFacts, type StartAsleepFacts } from './hibernation';
 import { inboxNudgeText } from '../shared/hiveNudge';
 import { resolveGodName } from '../shared/godIdentity';
 import { fetchHireManifest, readHireManifestFiles } from './hire';
@@ -3077,7 +3077,7 @@ function findCodexHomeForSession(sessionId: string, siblingsRoot: string): strin
 
 /** Spawn options shared by the `pty:spawn` IPC handler and the god-triggered
  *  ephemeral-worker watcher. */
-type AgentSpawnOptions = SpawnOptions & { wakeReason?: string; hive?: AgentMeta; isolate?: boolean; resume?: boolean; requireResume?: boolean; resumeSessionId?: string; provider?: AgentProvider; noAutoInstall?: boolean; noResumeRetry?: boolean; model?: string };
+type AgentSpawnOptions = SpawnOptions & { wakeReason?: string; hive?: AgentMeta; isolate?: boolean; resume?: boolean; requireResume?: boolean; resumeSessionId?: string; provider?: AgentProvider; noAutoInstall?: boolean; noResumeRetry?: boolean; model?: string; bootRestore?: boolean };
 
 /** Resolve the shared `project` label stamped into registry.json/fleet.json at
  *  spawn time so same-named agents are distinguishable OUTSIDE the renderer
@@ -3130,13 +3130,47 @@ function cwdIsDir(p: string): boolean {
   try { return statSync(p).isDirectory(); } catch { return false; }
 }
 
+/** Boot restore of an agent that was hibernated: register the sleeper instead of spawning (see
+ *  `startAsleep` in hibernation.ts for the rule). Returns true when it did. Never throws. */
+function startAgentAsleep(opts: AgentSpawnOptions, pristine: AgentSpawnOptions, owner: Electron.WebContents | null): boolean {
+  try {
+    if (!hive.enabled() || !opts.hive) return false;
+    const id = opts.hive.id;
+    const reg = hive.registry();
+    const a = reg.agents?.[id];
+    if (!a) return false;
+    const cfg = readConfig();
+    const decide: StartAsleepFacts = {
+      agentId: id,
+      allowed: cfg.agentHibernateEnabled !== false && (cfg.agentHibernateMinutes ?? 0) > 0 && !(cfg.hibernateOptOutAgents ?? []).includes(id),
+      isGod: id === reg.godId || !!a.isGod,
+      isWorker: liveWorkers.has(id),
+      frozen: (cfg.autoDeliveryPausedAgents ?? []).includes(id),
+      wasHibernated: !!a.hibernated,
+      hasSession: !!hive.lastSession(id, a.sessionProvider ?? opts.provider),
+      inboxCount: hive.inbox(id).length,
+      doingCards: countDoingCards(hive.tasks(), id)
+    };
+    if (!startAsleep(decide)) return false;
+    const recipe = { opts: { ...pristine, isolate: false, resume: true, resumeSessionId: undefined, wakeReason: undefined, bootRestore: undefined }, owner };
+    hibernateRecipes.set(id, recipe);
+    if (!hibernator.startAsleep(id, opts.id, recipe, 'boot-asleep')) return false;
+    try { hive.setArchived(id, false); } catch { /* best-effort */ } // the orphan sweep archived it before the restore ran
+    hive.appendLog({ kind: 'agent-start-asleep', id });
+    return true;
+  } catch (e) {
+    console.error('[hibernate] start-asleep failed; spawning normally:', e);
+    return false;
+  }
+}
+
 /** Core agent-spawn logic — provider inference, the missing-CLI installer
  *  short-circuit, git-worktree isolation, hive provisioning, model/resume flags,
  *  and the final PTY spawn. Extracted VERBATIM from the `pty:spawn` IPC handler so
  *  it can ALSO be invoked by the god-triggered ephemeral-worker watcher (which has
  *  no renderer `evt`). `owner` is the window that should receive this PTY's output
  *  (null → the primary window). Behavior-identical to the prior inline handler. */
-async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebContents | null): Promise<{ ok: boolean; error?: string; cwd?: string; worktreePath?: string; resumeNotFound?: boolean; resumed?: boolean; seedPrompt?: string }> {
+async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebContents | null): Promise<{ ok: boolean; asleep?: boolean; error?: string; cwd?: string; worktreePath?: string; resumeNotFound?: boolean; resumed?: boolean; seedPrompt?: string }> {
   // ── cwd INGESTION — expand `~` exactly once, here ───────────────────────────
   // This is the single door every agent spawn comes through (`pty:spawn` IPC and
   // the god-triggered ephemeral-worker watcher), so it is where a user-typed
@@ -3157,6 +3191,11 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
   if (opts.hive && !cwdIsDir(opts.cwd)) {
     hive.setArchived(opts.hive.id, true);
     return { ok: false, error: `cwd-missing: ${opts.cwd}` };
+  }
+  // Selective app-start (t-283): the boot restore does not spawn an agent that was asleep when the app
+  // closed — it comes back already hibernated and wakes on its first mail / click / input.
+  if (opts.bootRestore && opts.hive?.id && startAgentAsleep(opts, pristine, owner)) {
+    return { ok: true, cwd: opts.cwd, asleep: true };
   }
   // Which CLI is this? Explicit wins; else inferred from the binary
   // (claude/codex/grok/agy). Non-Claude providers skip every Claude-only spawn step

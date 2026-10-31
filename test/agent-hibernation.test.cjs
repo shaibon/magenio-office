@@ -15,7 +15,7 @@ const loadTs = require('./load-ts.cjs');
 // A HiveManager given an app-data dir migrates/creates agent config under ~/.mdagents: never the real one.
 process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'md-home-'));
 
-const { holdReason, countDoingCards, WakeGate, Hibernator, HIBERNATE_BOOT_GRACE_MS, HIBERNATE_MID_TURN_CAP_MS } = loadTs('src/main/hibernation.ts');
+const { holdReason, countDoingCards, startAsleep, WakeGate, Hibernator, HIBERNATE_BOOT_GRACE_MS, HIBERNATE_MID_TURN_CAP_MS } = loadTs('src/main/hibernation.ts');
 const { WorkerWakeWatchdog } = loadTs('src/main/workerWake.ts');
 const { HiveManager } = loadTs('src/main/hive.ts');
 
@@ -424,4 +424,36 @@ test('wiring (t-283): a frozen agent is neither auto-hibernated nor auto-woken; 
   assert.match(SRC, /inboxCount: \(id\) => \(control\.snapshot\(id\)\.autoDeliveryPaused \? 0 : hive\.inbox\(id\)\.length\)/);
   for (const ch of ['agent:hibernateNow', 'agent:hibernateState', 'agent:setHibernateOptOut']) assert.ok(SRC.includes(`'${ch}'`), ch);
   assert.match(SRC, /agent:hibernateNow[\s\S]{0,400}agentId === reg\.godId \|\| a\.isGod \|\| liveWorkers\.has\(agentId\)/, 'god and workers are refused');
+});
+
+// t-283: selective app-start.
+const SA = { agentId: 'pam', allowed: true, isGod: false, isWorker: false, frozen: false, wasHibernated: true, hasSession: true, inboxCount: 0, doingCards: 0 };
+test('selective start: only a previously hibernated, drained, resumable, non-frozen agent stays asleep', () => {
+  assert.equal(startAsleep(SA), true);
+  for (const o of [{ allowed: false }, { isGod: true }, { isWorker: true }, { frozen: true }, { wasHibernated: false }, { hasSession: false }, { inboxCount: 1 }, { doingCards: 1 }]) {
+    assert.equal(startAsleep({ ...SA, ...o }), false, JSON.stringify(o));
+  }
+});
+
+test('selective start: a sleeper registered without a process wakes once on mail, resumed', async () => {
+  const { h, st } = fakeApp();
+  st.live.clear(); // nothing was spawned this run
+  assert.equal(h.startAsleep('pam', 'pty-pam', { opts: { id: 'pty-pam', cwd: '/wt/pam', isolate: false, resume: true } }, 'boot-asleep'), true);
+  assert.equal(st.hibernated, true);
+  assert.equal(h.sleeperOf('pty-pam'), 'pam', 'terminal input to the dead pty wakes it');
+  assert.deepEqual(st.notes, [true]);
+  assert.equal(await h.wake('pam', 'inbox'), true);
+  assert.deepEqual(st.spawns, [[true, 'inbox']]);
+  const { h: h2, st: st2 } = fakeApp({ session: '' });
+  st2.live.clear();
+  assert.equal(h2.startAsleep('pam', 'pty-pam', {}, 'boot-asleep'), false, 'no session: never trade context for memory');
+  assert.equal(st2.hibernated, false);
+});
+
+test('wiring (t-283): the boot restore asks main, main consults startAsleep before spawning', () => {
+  assert.match(SRC, /opts\.bootRestore && opts\.hive\?\.id && startAgentAsleep\(opts, pristine, owner\)/);
+  assert.match(SRC, /if \(!startAsleep\(decide\)\) return false;/);
+  const RT = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/src/hooks/useRestoreTeam.ts'), 'utf8');
+  assert.match(RT, /respawnAgent\(a, config, true\)/, 'only the batch restore opts in');
+  assert.match(RT, /\.\.\.\(boot \? \{ bootRestore: true \} : \{\}\)/);
 });

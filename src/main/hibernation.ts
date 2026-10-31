@@ -99,6 +99,30 @@ export function holdReason(f: HibernateFacts, cfg: HibernateConfig, now = Date.n
   return null;
 }
 
+/** Facts for the selective app-start decision (t-283). */
+export interface StartAsleepFacts {
+  agentId: string;
+  /** Hibernation configured on (switch + minutes) and this agent not opted out. */
+  allowed: boolean;
+  isGod: boolean;
+  isWorker: boolean;
+  frozen: boolean;
+  /** The registry flag from the last run: it was asleep when the app closed. */
+  wasHibernated: boolean;
+  hasSession: boolean;
+  inboxCount: number;
+  doingCards: number;
+}
+
+/** Pure: should the boot restore leave this agent ASLEEP instead of spawning its CLI? Only an agent
+ *  that was already hibernated when the app closed (an idle one reaches that state after the
+ *  configured minutes), with a session to resume, no mail and no `doing` card. Everything else
+ *  starts normally; a frozen agent is the freeze feature's business, not ours. */
+export function startAsleep(f: StartAsleepFacts): boolean {
+  if (!f.allowed || f.isGod || f.isWorker || f.frozen) return false;
+  return f.wasHibernated && f.hasSession && f.inboxCount === 0 && f.doingCards === 0;
+}
+
 /** Count `doing` cards assigned to an agent in a tasks.json ledger. */
 export function countDoingCards(ledger: unknown, agentId: string): number {
   const tasks = (ledger as { tasks?: Array<{ assignee?: string; status?: string }> } | null)?.tasks;
@@ -189,6 +213,18 @@ export class Hibernator<Recipe> {
     this.d.notify(agentId, ptyId, true, recipe);
     // Race: mail that landed while we were closing must not wait for the next beat.
     if (this.d.inboxCount(agentId) > 0) void this.wake(agentId, 'mail-during-hibernate');
+    return true;
+  }
+
+  /** Selective app-start: register an agent as already asleep (no process was ever spawned this run).
+   *  The same sleeper record a live hibernation leaves, so mail / click / terminal input wake it. */
+  startAsleep(agentId: string, ptyId: string, recipe: Recipe, reason: string): boolean {
+    if (this.isSleeper(agentId) || this.d.ptyFor(agentId)) return false;
+    const sessionId = this.d.sessionFor(agentId);
+    if (!sessionId) return false;
+    if (!this.d.setHibernated(agentId, true, { sessionId, reason })) return false;
+    this.sleepers.set(ptyId, agentId);
+    this.d.notify(agentId, ptyId, true, recipe);
     return true;
   }
 

@@ -76,7 +76,9 @@ export type RespawnOutcome =
  */
 export async function respawnAgent(
   a: Agent,
-  config?: HarnessConfig | null
+  config?: HarnessConfig | null,
+  /** Boot/batch restore: lets main leave a previously hibernated agent asleep (selective start, t-283). */
+  boot = false
 ): Promise<RespawnOutcome> {
   try {
     const provider = inferAgentProvider(a.command, a.provider);
@@ -127,6 +129,7 @@ export async function respawnAgent(
       // agent id is preserved across restart, so its registry entry,
       // memory.md and inbox reattach by id. No-op without a recorded session.
       resume: true,
+      ...(boot ? { bootRestore: true } : {}),
       hive: { id: a.id, name: a.name, provider, cwd, role: roleForHiveSpawn(a) }
     });
     if (res.ok) {
@@ -139,7 +142,7 @@ export async function respawnAgent(
           archived: false,
           status: 'idle',
           // Surface the worktree fallback on the floor card; otherwise normal.
-          action: worktreeGone ? 'worktree gone — using base repo' : 'starting up',
+          action: worktreeGone ? 'worktree gone — using base repo' : res.asleep ? 'hibernated' : 'starting up',
           // The worktree is no longer on disk — drop it so this agent is treated
           // as a plain base-cwd agent going forward (a future restore won't keep
           // re-probing a dead path).
@@ -282,7 +285,7 @@ export function useRestoreTeam(config?: HarnessConfig | null): RestoreTeamState 
       const restoredInOrder = await Promise.all([...restorableAgents].map(async (a): Promise<Agent | null> => {
         // Per-agent guard: one agent's failure (or a rejected IPC call) must NEVER
         // abort the others — respawnAgent converts every failure into a result.
-        const outcome = await respawnAgent(a, config);
+        const outcome = await respawnAgent(a, config, true);
         if (outcome.kind === 'restored') {
           restored++;
           return outcome.agent;
