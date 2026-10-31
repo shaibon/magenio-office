@@ -30,6 +30,7 @@ export function MemoryGraphPanel({
 }) {
   const { t } = useTranslation();
   const agents = useStore((s) => s.agents);
+  const hibernatedIds = useHibernatedIds(agents.map((a) => a.id));
 
   const [log, setLog] = useState<MessageLogEntry[]>([]);
   const [showTopics, setShowTopics] = useState(false);
@@ -311,7 +312,7 @@ export function MemoryGraphPanel({
                   {/* status ring for agents */}
                   {n.kind === 'agent' && (
                     <rect x={-half - 2} y={-half - 2} width={s + 4} height={s + 4}
-                      fill="none" stroke={`var(--cth-status-${n.status})`} strokeWidth={1.5} />
+                      fill="none" stroke={`var(--cth-status-${displayStatus(n.status, hibernatedIds.has(n.id))})`} strokeWidth={1.5} />
                   )}
                 </g>
               );
