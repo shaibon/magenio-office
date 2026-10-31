@@ -484,7 +484,8 @@ test('wiring (t-283 security): boot-asleep is once-per-agent, collision-safe, ma
   // L3
   assert.ok(body.indexOf('hive.setArchived(id, false)') > 0 && body.indexOf('hive.setArchived(id, false)') < body.indexOf('hibernator.startAsleep('), 'un-archive before the sleeper is registered');
   assert.match(body, /agents\[id\]\?\.archived\) return false/);
-  assert.match(SRC, /if \(hibernator\.isSleeper\(id\)\) continue;[^\n]*\n[\s\S]{0,200}hive\.setArchived\(id, true\)/);
+  assert.match(fs.readFileSync(path.join(__dirname, '..', 'src/main/bootSweep.ts'), 'utf8'), /if \(f\.isSleeper\(id\)\) continue;/);
+  assert.match(SRC, /isSleeper: \(id\) => hibernator\.isSleeper\(id\)/);
   // I3 / I2
   assert.match(body, /Object\.hasOwn\(reg\.agents, id\)/);
   assert.match(SRC, /agent:setHibernateOptOut[\s\S]{0,700}Object\.hasOwn\(regAgents, agentId\)[\s\S]{0,300}cur\.size >= 500/);

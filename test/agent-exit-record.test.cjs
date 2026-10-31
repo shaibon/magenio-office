@@ -138,5 +138,5 @@ test('an abnormal exit marks the registry entry crashed; the next spawn clears i
   assert.match(fs.readFileSync(path.join(__dirname, '..', 'src/main/index.ts'), 'utf8'), /if \(res\.ok && opts\.hive\?\.id\) hive\.clearCrashed/);
   hive.recordAgentExit('a1', { exitCode: 0 });
   assert.equal(hive.registry().agents.a1.crashed, undefined);
-  assert.match(fs.readFileSync(path.join(__dirname, '..', 'src/main/index.ts'), 'utf8'), /if \(a\.crashed\) continue;/);
+  assert.match(fs.readFileSync(path.join(__dirname, '..', 'src/main/bootSweep.ts'), 'utf8'), /if \(a\.crashed\) continue;/);
 });
