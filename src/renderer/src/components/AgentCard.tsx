@@ -19,6 +19,8 @@ export interface AgentCardProps {
    *  instead of idle so a deliberately parked agent is never read as merely
    *  quiet. Display-only — the freeze semantics stay in shared/frozenAgents.ts. */
   frozen?: boolean;
+  /** Process closed for inactivity (t-283). Display override: shows HIBERNATED instead of idle. */
+  hibernated?: boolean;
   /** This agent's pty, if it has one. Only used to notice that the USER has
    *  unsent text on its prompt — which holds the agent's queue, and otherwise
    *  looks identical to an idle agent with nothing to do. */
@@ -67,7 +69,7 @@ const fmtK = (n: number): string => `${Math.round(n / 1000)}k`;
  * and a slim gauge pinned to the bottom edge. Nothing overlaps anything.
  */
 export function AgentCard({
-  name, character, accent, status, frozen, ptyId, project, nameTag, action, progress = 0,
+  name, character, accent, status, frozen, hibernated, ptyId, project, nameTag, action, progress = 0,
   contextTokens, contextLimit, selected, isGod, onClick, onRename,
   doingCount = 0, onTaskNoteClick, draggable, note, onEditNote, onUnfreeze
 }: AgentCardProps) {
@@ -80,6 +82,7 @@ export function AgentCard({
   // about.
   const badgeStatus: StatusKind = typing
     ? 'typing'
+    : hibernated ? 'hibernated'
     : (frozen && status === 'idle') ? 'frozen' : status;
   // IDENTITY and SELECTION are two different things, and conflating them is why
   // selecting Michael appeared to do nothing.
@@ -276,7 +279,7 @@ export function AgentCard({
               ) : (
                 <PixelBadge
                   status={badgeStatus}
-                  title={badgeStatus === 'frozen' ? t('agentCard.frozenTitle') : undefined}
+                  title={badgeStatus === 'frozen' ? t('agentCard.frozenTitle') : badgeStatus === 'hibernated' ? t('agentCard.hibernatedTitle') : undefined}
                   style={{ flexShrink: 0 }}
                 />
               )}

@@ -312,7 +312,7 @@ test('wiring (index.ts): the light teardown neither archives nor removes the wor
 
 test('wiring (index.ts): terminal input to a sleeper wakes it; mail wakes it; spawn clears the flag', () => {
   assert.match(SRC, /hibernator\.sleeperOf\(id\)[\s\S]{0,120}wakeAgent\(sleeper, 'terminal-input'\)/);
-  assert.match(SRC, /a\?\.hibernated \|\| hibernator\.isSleeper\(agentId\)\) \{ if \(hive\.inbox\(agentId\)\.length > 0\) void wakeAgent\(agentId, 'inbox'\)/);
+  assert.match(SRC, /a\?\.hibernated \|\| hibernator\.isSleeper\(agentId\)\) \{ if \(hive\.inbox\(agentId\)\.length > 0 && !control\.snapshot\(agentId\)\.autoDeliveryPaused\) void wakeAgent\(agentId, 'inbox'\)/);
   assert.match(SRC, /hive\.setHibernated\(opts\.hive\.id, false/);
   assert.match(SRC, /hibernated: !!a\.hibernated/, 'fleet.json must carry the flag');
 });
@@ -417,4 +417,11 @@ test('wiring (index.ts): an abnormal PTY exit keeps the agent in the roster (no 
   assert.match(body, /!opts\.hibernate && !opts\.keepRoster\) \{\s*try \{ hive\.setArchived/);
   assert.match(SRC, /abnormal = hive\.recordAgentExit\(/);
   assert.match(SRC, /teardownPty\(id, \{ keepRoster: abnormal && !liveWorkers\.has\(id\) \}\)/);
+});
+
+test('wiring (t-283): a frozen agent is neither auto-hibernated nor auto-woken; operator IPC exists', () => {
+  assert.equal(holdReason(ok({ autoDeliveryPaused: true }), CFG, NOW), 'frozen');
+  assert.match(SRC, /inboxCount: \(id\) => \(control\.snapshot\(id\)\.autoDeliveryPaused \? 0 : hive\.inbox\(id\)\.length\)/);
+  for (const ch of ['agent:hibernateNow', 'agent:hibernateState', 'agent:setHibernateOptOut']) assert.ok(SRC.includes(`'${ch}'`), ch);
+  assert.match(SRC, /agent:hibernateNow[\s\S]{0,400}agentId === reg\.godId \|\| a\.isGod \|\| liveWorkers\.has\(agentId\)/, 'god and workers are refused');
 });

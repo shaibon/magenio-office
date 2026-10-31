@@ -7,6 +7,7 @@ import { useStore, type Agent } from '@/store/store';
 import { type HarnessConfig } from '@/store/config';
 import { useRestoreTeam, restoreRestorableAgent } from '@/hooks/useRestoreTeam';
 import { useRtl } from '@/i18n/useDirection';
+import { useHibernatedIds } from '@/hooks/useHibernatedIds';
 import { projectTag, projectTagCompact, repoLabelOf, jiraKeyFor, useResolvedRepoNames } from '@/hooks/useResolvedRepoNames';
 
 export interface AgentStripProps {
@@ -28,6 +29,7 @@ export function AgentStrip({ config }: AgentStripProps) {
   useResolvedRepoNames(agents);
   useResolvedRepoNames(restorableAgents);
   const frozenIds = new Set(config?.autoDeliveryPausedAgents ?? []);
+  const hibernatedIds = useHibernatedIds(agents.map((a) => a.id));
   const selectedId = useStore(s => s.selectedId);
   const select = useStore(s => s.select);
   const setAddAgentOpen = useStore(s => s.setAddAgentOpen);
@@ -151,6 +153,7 @@ export function AgentStrip({ config }: AgentStripProps) {
             accent={a.accent}
             status={a.status}
             frozen={frozenIds.has(a.id)}
+            hibernated={hibernatedIds.has(a.id)}
             ptyId={a.ptyId}
             project={repoLabelOf(a)}
             nameTag={a.isGod ? undefined : (jiraKeyFor(a) ?? repoLabelOf(a))}

@@ -3657,6 +3657,26 @@ ipcMain.handle('agent:isHibernated', (_evt, agentId: unknown) =>
   typeof agentId === 'string' && hibernator.isSleeper(agentId));
 ipcMain.handle('agent:wake', (_evt, agentId: unknown, reason: unknown) =>
   typeof agentId === 'string' ? wakeAgent(agentId, typeof reason === 'string' ? reason : 'ui') : false);
+// Operator controls (t-283). Manual "hibernate now" bypasses the idle rules only: it still refuses god,
+// workers, and anything without a live pty + recorded session (Hibernator.hibernate returns false).
+ipcMain.handle('agent:hibernateNow', (_evt, agentId: unknown) => {
+  if (typeof agentId !== 'string' || !hive.enabled()) return false;
+  const reg = hive.registry();
+  const a = reg.agents?.[agentId];
+  if (!a || a.archived || agentId === reg.godId || a.isGod || liveWorkers.has(agentId)) return false;
+  return hibernateAgent(agentId, 'manual');
+});
+ipcMain.handle('agent:hibernateState', (_evt, agentId: unknown) => {
+  if (typeof agentId !== 'string') return { hibernated: false, optOut: false };
+  return { hibernated: hibernator.isSleeper(agentId), optOut: (readConfig().hibernateOptOutAgents ?? []).includes(agentId) };
+});
+ipcMain.handle('agent:setHibernateOptOut', (_evt, agentId: unknown, optOut: unknown) => {
+  if (typeof agentId !== 'string' || !agentId || typeof optOut !== 'boolean') return false;
+  const cur = new Set(readConfig().hibernateOptOutAgents ?? []);
+  if (optOut) cur.add(agentId); else cur.delete(agentId);
+  writeConfig({ hibernateOptOutAgents: Array.from(cur).sort() });
+  return optOut;
+});
 ipcMain.handle('pty:resize', (_evt, id: string, cols: number, rows: number) => {
   if (typeof id !== 'string' || typeof cols !== 'number' || typeof rows !== 'number') return { ok: false, error: 'invalid args' };
   return ptyManager.resize(id, cols, rows);
@@ -6347,7 +6367,7 @@ function runWorkerWakeBeat(): void {
   for (const [agentId, a] of Object.entries(reg.agents)) {
     if (agentId === reg.godId || a?.archived) continue;
     // A sleeper with mail wakes; the normal nudge below then delivers it once it has booted.
-    if (a?.hibernated || hibernator.isSleeper(agentId)) { if (hive.inbox(agentId).length > 0) void wakeAgent(agentId, 'inbox'); if (hibernator.isSleeper(agentId)) continue; }
+    if (a?.hibernated || hibernator.isSleeper(agentId)) { if (hive.inbox(agentId).length > 0 && !control.snapshot(agentId).autoDeliveryPaused) void wakeAgent(agentId, 'inbox'); if (hibernator.isSleeper(agentId)) continue; }
     const ptyId = ptyForAgent(agentId);
     if (!ptyId) continue;
     const snap = control.snapshot(agentId);
@@ -6441,7 +6461,8 @@ const hibernator = new Hibernator<{ opts: AgentSpawnOptions; owner: Electron.Web
       liveWebContents()?.send('hive:agentHibernation', { id: agentId, hibernated });
     } catch { /* window gone */ }
   },
-  inboxCount: (id) => hive.inbox(id).length
+  // A frozen agent (operator: process alive, no automatic delivery) is never auto-woken by mail.
+  inboxCount: (id) => (control.snapshot(id).autoDeliveryPaused ? 0 : hive.inbox(id).length)
 }, wakeGate);
 /** Closing a SLEEPER's pty (Restart & Continue, close tab, voice kill). The process is already
  *  gone, so the normal teardown has nothing to reap and everything to lose: it would force-remove

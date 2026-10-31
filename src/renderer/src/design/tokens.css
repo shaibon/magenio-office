@@ -38,6 +38,7 @@
   --cth-status-looping:    #D6903F; /* #5C — circuit-breaker armed (runaway) */
   --cth-status-typing:     #C89838; /* unsent text on the prompt — queue is held */
   --cth-status-frozen:     #7FA8C9; /* operator-parked: deliberate, not idle */
+  --cth-status-hibernated: #9C8FC9; /* closed for inactivity, wakes on mail/click */
 
   /* Spacing */
   --cth-space-0: 0px;
@@ -169,6 +170,7 @@
   --cth-status-looping:    #D69A55;
   --cth-status-typing:     #CBA24A;
   --cth-status-frozen:     #8FBCE0; /* operator-parked: deliberate, not idle */
+  --cth-status-hibernated: #B4A8E0; /* closed for inactivity, wakes on mail/click */
 
   /* Hard shadow reads as depth, not void */
   --cth-shadow-hard: 4px 4px 0 rgba(0, 0, 0, 0.45);

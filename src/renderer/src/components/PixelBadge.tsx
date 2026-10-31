@@ -14,7 +14,10 @@ export type StatusKind =
   // An operator deliberately parked the agent (autoDeliveryPausedAgents). Not
   // idle: it gets no automatic delivery, consumes no tokens while parked, and
   // a deliberate wake RESUMES its session rather than starting fresh.
-  | 'frozen';
+  | 'frozen'
+  // Hibernated (t-283): process closed for inactivity, still on the floor and AVAILABLE; mail or a
+  // click wakes it. Not frozen (operator: alive, no automatic delivery).
+  | 'hibernated';
 
 export interface PixelBadgeProps {
   status: StatusKind;
@@ -34,7 +37,8 @@ const colorByStatus: Record<StatusKind, string> = {
   compacting: 'var(--cth-status-compacting)',
   looping:    'var(--cth-status-looping)',
   typing:     'var(--cth-status-typing)',
-  frozen:     'var(--cth-status-frozen)'
+  frozen:     'var(--cth-status-frozen)',
+  hibernated: 'var(--cth-status-hibernated)'
 };
 
 // i18n key per status. "blocked" is reserved for the god agent waiting on YOU,
@@ -53,7 +57,8 @@ const labelKeyByStatus: Record<StatusKind, string> = {
   // Reads as "you are typing", not "the agent is typing" — it is your text
   // sitting on the prompt, and it is why nothing is being delivered.
   typing:     'badge.typing',
-  frozen:     'badge.frozen'
+  frozen:     'badge.frozen',
+  hibernated: 'badge.hibernated'
 };
 
 export function PixelBadge({ status, label, title, style }: PixelBadgeProps) {

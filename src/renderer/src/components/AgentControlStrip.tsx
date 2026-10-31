@@ -38,12 +38,21 @@ export function AgentControlStrip({ agentId }: { agentId: string }) {
   const [snap, setSnap] = useState<Snapshot | null>(null);
   const [steer, setSteer] = useState('');
   const [note, setNote] = useState('');
+  const [hib, setHib] = useState<{ hibernated: boolean; optOut: boolean }>({ hibernated: false, optOut: false });
   const noteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let alive = true;
     window.cth.controlSnapshot(agentId).then((s) => { if (alive && s) setSnap(s); }).catch(() => { /* none */ });
     return () => { alive = false; };
+  }, [agentId]);
+
+  // Hibernation (t-283): manual hibernate/wake and the per-agent opt-out. Distinct from freeze.
+  useEffect(() => {
+    let alive = true;
+    void window.cth.hibernateState?.(agentId).then((s) => { if (alive && s) setHib(s); }).catch(() => { /* none */ });
+    const off = window.cth.onHiveAgentHibernation?.((e) => { if (e.id === agentId) setHib((h) => ({ ...h, hibernated: e.hibernated })); });
+    return () => { alive = false; off?.(); };
   }, [agentId]);
 
   const flash = (m: string) => {
@@ -74,6 +83,21 @@ export function AgentControlStrip({ agentId }: { agentId: string }) {
     const s = await window.cth.controlAutoDelivery(agentId, !snap?.autoDeliveryPaused);
     if (s) setSnap(s);
     flash(snap?.autoDeliveryPaused ? t('agentControl.flashUnfrozen') : t('agentControl.flashFrozen'));
+  };
+
+  const hibernateNow = async () => {
+    const ok = await window.cth.hibernateAgentNow(agentId);
+    flash(ok ? t('agentControl.flashHibernating') : t('agentControl.flashNoHibernate'));
+  };
+  const wake = async () => {
+    await window.cth.wakeAgent(agentId, 'ui');
+    flash(t('agentControl.flashWaking'));
+  };
+  const toggleOptOut = async () => {
+    const next = !hib.optOut;
+    await window.cth.setHibernateOptOut(agentId, next);
+    setHib((h) => ({ ...h, optOut: next }));
+    flash(next ? t('agentControl.flashOptOut') : t('agentControl.flashOptIn'));
   };
 
   return (
@@ -122,6 +146,24 @@ export function AgentControlStrip({ agentId }: { agentId: string }) {
             aria-label={snap?.autoDeliveryPaused ? t('agentControl.unfreezeAria') : t('agentControl.freezeAria')}
           >
             {snap?.autoDeliveryPaused ? t('agentControl.unfreeze') : t('agentControl.freeze')}
+          </span>
+        </PixelButton>
+        <PixelButton variant="secondary" size="sm" onClick={hib.hibernated ? wake : hibernateNow}>
+          <span
+            className="cth-tip cth-tip-left cth-tip-wrap"
+            data-tip={hib.hibernated ? t('agentControl.wakeTip') : t('agentControl.hibernateNowTip')}
+            aria-label={hib.hibernated ? t('agentControl.wakeAria') : t('agentControl.hibernateNowAria')}
+          >
+            {hib.hibernated ? t('agentControl.wake') : t('agentControl.hibernateNow')}
+          </span>
+        </PixelButton>
+        <PixelButton variant={hib.optOut ? 'primary' : 'secondary'} size="sm" onClick={toggleOptOut}>
+          <span
+            className="cth-tip cth-tip-left cth-tip-wrap"
+            data-tip={hib.optOut ? t('agentControl.keepAwakeOnTip') : t('agentControl.keepAwakeTip')}
+            aria-label={hib.optOut ? t('agentControl.keepAwakeOnTip') : t('agentControl.keepAwakeTip')}
+          >
+            {hib.optOut ? t('agentControl.keepAwakeOn') : t('agentControl.keepAwake')}
           </span>
         </PixelButton>
         {snap?.halted && <span style={{ fontSize: 11, color: 'var(--cth-coral)' }}>{t('agentControl.halting')}</span>}
