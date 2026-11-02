@@ -2043,13 +2043,15 @@ async function startSlackServer(): Promise<{ ok: boolean; url?: string; error?: 
     catch { /* window torn down */ }
   };
   // Socket Mode dials out to Slack: no HTTP listener and NO tunnel to open.
+  const activatedThreadsFile = join(app.getPath('userData'), 'slack-activated-threads.json');
   slackServer = socketMode
-    ? new SlackSocketServer({ appToken: cfg.slackAppToken as string, channelId: cfg.slackChannelId, onMessage })
+    ? new SlackSocketServer({ appToken: cfg.slackAppToken as string, channelId: cfg.slackChannelId, onMessage, activatedThreadsFile })
     : new SlackWebhookServer({
         port: cfg.slackPort && cfg.slackPort > 0 ? cfg.slackPort : 3847,
         signingSecret: cfg.slackSigningSecret as string,
         channelId: cfg.slackChannelId,
-        onMessage
+        onMessage,
+        activatedThreadsFile
       });
   const res = await slackServer.start();
   // ok:false means we never bound the port → drop the instance. ok:true with no

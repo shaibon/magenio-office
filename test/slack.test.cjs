@@ -1,7 +1,10 @@
 'use strict';
 
 const assert = require('assert');
-const { shouldTrigger, ActivatedThreads, SeenEvents, dedupKey, ACTIVATED_THREADS_MAX, SEEN_EVENTS_MAX, MAX_FILES_PER_MESSAGE } =
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { SlackDispatcher, shouldTrigger, ActivatedThreads, SeenEvents, dedupKey, ACTIVATED_THREADS_MAX, SEEN_EVENTS_MAX, MAX_FILES_PER_MESSAGE } =
   require('../src/main/slack-trigger.cjs');
 
 let failures = 0;
@@ -405,6 +408,72 @@ function ev(overrides = {}) {
     ingest(ev({ type: 'message',     text: `<@${BOT_ID}> one`, ts: '1900.0001' })); // dup
     ingest(ev({ type: 'app_mention', text: `<@${BOT_ID}> two`, ts: '1900.0002' })); // new
     assert.strictEqual(fires, 2, 'distinct ts values each fire once');
+  });
+
+  // ─── t-312: activated threads survive a restart ────────────────────────────
+
+  const payload = (event) => ({ type: 'event_callback', authorizations: [{ user_id: BOT_ID }], event: { type: 'message', channel: 'C1', user: 'U9', ...event } });
+
+  await test('restart: a thread activated before it still triggers WITHOUT a new mention', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'slack-act-'));
+    const file = path.join(dir, 'nested', 'slack-activated-threads.json');
+    try {
+      const got1 = [];
+      const d1 = new SlackDispatcher({ onMessage: (m) => got1.push(m), activatedThreadsFile: file });
+      assert.strictEqual(d1.dispatch(payload({ text: `<@${BOT_ID}> start`, ts: '100.1' })), true);
+      // same instance: reply in thread works (baseline)
+      assert.strictEqual(d1.dispatch(payload({ text: 'reply', ts: '100.2', thread_ts: '100.1' })), true);
+
+      // "restart": a brand-new dispatcher, empty memory, same file
+      const got2 = [];
+      const d2 = new SlackDispatcher({ onMessage: (m) => got2.push(m), activatedThreadsFile: file });
+      assert.strictEqual(d2.dispatch(payload({ text: 'after restart', ts: '100.3', thread_ts: '100.1' })), true, 'reply in an activated thread must not be ignored');
+      assert.strictEqual(got2[0].thread_ts, '100.1');
+      // a thread that was never activated is still ignored, and the channel filter/dedup are untouched
+      assert.strictEqual(d2.dispatch(payload({ text: 'noise', ts: '200.2', thread_ts: '200.1' })), false);
+      assert.strictEqual(d2.dispatch(payload({ text: 'after restart', ts: '100.3', thread_ts: '100.1' })), false, 'dedup still applies');
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  await test('persisted set keeps the FIFO cap and the newest entries across a restart', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'slack-act-'));
+    const file = path.join(dir, 't.json');
+    try {
+      const a = new ActivatedThreads(3, file);
+      for (const t of ['1', '2', '3', '4', '5']) a.add(t);
+      const b = new ActivatedThreads(3, file);
+      assert.deepStrictEqual(['1', '2', '3', '4', '5'].filter((t) => b.has(t)), ['3', '4', '5']);
+      // a smaller cap on reload keeps the newest
+      const c = new ActivatedThreads(2, file);
+      assert.deepStrictEqual(['3', '4', '5'].filter((t) => c.has(t)), ['4', '5']);
+      assert.deepStrictEqual(fs.readdirSync(dir), ['t.json'], 'no temp file left behind');
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  await test('a missing, corrupt or wrong-shaped file starts empty and never throws; no file option stays memory-only', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'slack-act-'));
+    try {
+      const f = path.join(dir, 'x.json');
+      assert.strictEqual(new ActivatedThreads(5, f).size, 0);
+      fs.writeFileSync(f, '{not json');
+      assert.strictEqual(new ActivatedThreads(5, f).size, 0);
+      fs.writeFileSync(f, JSON.stringify({ a: 1 }));
+      assert.strictEqual(new ActivatedThreads(5, f).size, 0);
+      fs.writeFileSync(f, JSON.stringify(['9.9', 5, null, '', '9.9']));
+      assert.strictEqual(new ActivatedThreads(5, f).size, 1, 'only non-empty strings, deduped');
+      const mem = new ActivatedThreads(5); mem.add('1');
+      assert.strictEqual(fs.readdirSync(dir).length, 1, 'memory-only writes nothing');
+      // unwritable target: add() must not throw
+      const bad = new ActivatedThreads(5, path.join(f, 'under-a-file.json'));
+      assert.doesNotThrow(() => bad.add('1'));
+      assert.ok(bad.has('1'));
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  await test('wiring: both Slack servers get the userData file', () => {
+    const idx = fs.readFileSync(path.join(__dirname, '..', 'src/main/index.ts'), 'utf8');
+    assert.strictEqual((idx.match(/activatedThreadsFile/g) || []).length, 3);
+    assert.match(idx, /join\(app\.getPath\('userData'\), 'slack-activated-threads\.json'\)/);
   });
 
   console.log(failures === 0 ? '\nall passed' : `\n${failures} failure(s)`);

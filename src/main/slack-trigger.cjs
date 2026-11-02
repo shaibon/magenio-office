@@ -1,5 +1,8 @@
 'use strict';
 
+const fs = require('node:fs');
+const path = require('node:path');
+
 // Pure trigger-decision logic for the Slack mention filter.
 // Extracted as plain CommonJS so test/slack.test.cjs can require() it directly
 // without a TypeScript compile step — same pattern as compact-gate.cjs.
@@ -24,10 +27,36 @@ const SEEN_EVENTS_MAX = 500;
  * thread trigger onMessage — until the entry is FIFO-evicted.
  */
 class ActivatedThreads {
-  constructor(maxSize = ACTIVATED_THREADS_MAX) {
+  /** @param {number} [maxSize]
+   *  @param {string} [file] when set, the set survives a restart: loaded here, rewritten
+   *  (atomically) on every change. Without it the set is memory-only, as before. */
+  constructor(maxSize = ACTIVATED_THREADS_MAX, file) {
     this.maxSize = maxSize;
+    this.file = file;
     this._set = new Set();
     this._order = []; // FIFO eviction queue — parallel to _set
+    if (file) this._load();
+  }
+
+  _load() {
+    try {
+      const arr = JSON.parse(fs.readFileSync(this.file, 'utf8'));
+      if (!Array.isArray(arr)) return;
+      // Oldest first, so the newest survive when the cap shrank; ts strings only.
+      for (const t of arr.filter((x) => typeof x === 'string' && x).slice(-this.maxSize)) {
+        if (!this._set.has(t)) { this._set.add(t); this._order.push(t); }
+      }
+    } catch { /* no file or corrupt: start empty, never block startup */ }
+  }
+
+  _save() {
+    if (!this.file) return;
+    try {
+      fs.mkdirSync(path.dirname(this.file), { recursive: true });
+      const tmp = `${this.file}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(this._order), { mode: 0o600 });
+      fs.renameSync(tmp, this.file);
+    } catch { /* best-effort: a failed write only costs the restart survival */ }
   }
 
   add(threadTs) {
@@ -38,6 +67,7 @@ class ActivatedThreads {
     }
     this._set.add(threadTs);
     this._order.push(threadTs);
+    this._save();
   }
 
   has(threadTs) { return this._set.has(threadTs); }
@@ -172,11 +202,11 @@ function stripLeadingMention(text) {
  * concerns (signature check, envelope ack) stay with the callers.
  */
 class SlackDispatcher {
-  constructor({ channelId, onMessage }) {
+  constructor({ channelId, onMessage, activatedThreadsFile }) {
     this.channelId = channelId;
     this.onMessage = onMessage;
     this.botUserId = null;
-    this.activatedThreads = new ActivatedThreads();
+    this.activatedThreads = new ActivatedThreads(ACTIVATED_THREADS_MAX, activatedThreadsFile);
     this.seenEvents = new SeenEvents();
   }
 

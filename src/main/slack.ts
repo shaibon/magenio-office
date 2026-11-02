@@ -29,7 +29,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { SlackDispatcher: _SlackDispatcher } = require('./slack-trigger.cjs') as {
-  SlackDispatcher: new (o: { channelId?: string; onMessage: (m: SlackInboundMessage) => void | Promise<void> }) => {
+  SlackDispatcher: new (o: { channelId?: string; onMessage: (m: SlackInboundMessage) => void | Promise<void>; activatedThreadsFile?: string }) => {
     dispatch(payload: unknown): boolean;
   };
 };
@@ -63,6 +63,9 @@ export interface SlackWebhookServerOptions {
    *  coordinates needed to reply back in the originating thread. May be async
    *  (e.g. to download file attachments before forwarding via IPC). */
   onMessage: (m: SlackInboundMessage) => void | Promise<void>;
+  /** Where the activated-thread set is kept so replies in a thread the bot was already
+   *  mentioned in still reach it after a restart. Omit for a memory-only set. */
+  activatedThreadsFile?: string;
 }
 
 /** A verified, de-mentioned inbound Slack message plus the coordinates needed to
@@ -108,7 +111,7 @@ export class SlackWebhookServer {
     this.port = opts.port;
     this.signingSecret = opts.signingSecret;
     this.channelId = opts.channelId?.trim() || undefined;
-    this.dispatcher = new _SlackDispatcher({ channelId: this.channelId, onMessage: opts.onMessage });
+    this.dispatcher = new _SlackDispatcher({ channelId: this.channelId, onMessage: opts.onMessage, activatedThreadsFile: opts.activatedThreadsFile });
   }
 
   /**
@@ -258,8 +261,8 @@ export class SlackWebhookServer {
 export class SlackSocketServer {
   private readonly client: { start(): Promise<{ ok: boolean; error?: string }>; stop(): void; readonly connected: boolean };
 
-  constructor(opts: { appToken: string; channelId?: string; onMessage: (m: SlackInboundMessage) => void | Promise<void> }) {
-    const dispatcher = new _SlackDispatcher({ channelId: opts.channelId?.trim() || undefined, onMessage: opts.onMessage });
+  constructor(opts: { appToken: string; channelId?: string; onMessage: (m: SlackInboundMessage) => void | Promise<void>; activatedThreadsFile?: string }) {
+    const dispatcher = new _SlackDispatcher({ channelId: opts.channelId?.trim() || undefined, onMessage: opts.onMessage, activatedThreadsFile: opts.activatedThreadsFile });
     this.client = new _SlackSocketClient({ appToken: opts.appToken, onEvent: (p) => { dispatcher.dispatch(p); } });
   }
 
