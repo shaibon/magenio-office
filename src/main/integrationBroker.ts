@@ -38,6 +38,7 @@ import {
 } from '../shared/integrations';
 import type { JiraProjectBinding, JiraPollSettings } from '../shared/jiraProjects';
 import { DEFAULT_JIRA_POLL_SETTINGS } from '../shared/jiraProjects';
+import { MCP_CATALOG, remoteBrokerRoute } from '../shared/mcpCatalog';
 
 const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB request-body cap
 const UPSTREAM_TIMEOUT_MS = 30_000;
@@ -71,6 +72,9 @@ interface Capability {
   n8nOnly?: boolean;
   /** Project the n8n capability is bound to (set with n8nOnly); picks the upstream. */
   n8nProject?: string;
+  /** Remote MCP route this token alone may reach. */
+  remoteId?: string;
+  remoteProject?: string;
 }
 
 export interface IntegrationBrokerDeps {
@@ -110,6 +114,8 @@ export interface IntegrationBrokerDeps {
    *  bearer, or undefined when n8n is off / the agent is not allow-listed / no token
    *  is stored. Evaluated per request so consent changes apply without a respawn. */
   n8nUpstream?: (agentId: string, project: string) => { url: string; token: string } | undefined;
+  /** Upstream for other catalog remotes, evaluated per request. */
+  remoteUpstream?: (id: string, agentId: string, project: string) => { url: string; token: string } | undefined;
 }
 
 /** True for IPv4 loopback (127.0.0.0/8) and IPv6 ::1 (incl. v4-mapped). Mirrors slack.ts. */
@@ -192,21 +198,33 @@ export class IntegrationBroker {
    *  Kept under its own key so it neither replaces nor is replaced by the agent's
    *  general token; `revoke(agentId)` drops both. */
   grantN8n(agentId: string, project: string): string {
-    const key = `n8n:${agentId}`;
+    return this.grantRemote('n8n', agentId, project)!;
+  }
+
+  /** A token opens exactly one remote MCP route and is never a write capability. */
+  grantRemote(id: string, agentId: string, project: string): string | undefined {
+    if (!remoteBrokerRoute(id)) return undefined;
+    const key = `${id}:${agentId}`;
     this.revokeKey(key);
     const token = randomBytes(32).toString('base64url');
-    this.byToken.set(token, { workerId: agentId, allowedIds: new Set(), grantedAt: Date.now(), readOnly: false, n8nOnly: true, n8nProject: project });
+    this.byToken.set(token, { workerId: agentId, allowedIds: new Set(), grantedAt: Date.now(),
+      readOnly: false, remoteId: id, remoteProject: project,
+      ...(id === 'n8n' ? { n8nOnly: true, n8nProject: project } : {}) });
     this.byWorker.set(key, token);
     return token;
   }
 
   /** Drop only the n8n capability (a failed spawn that never mounted the server). */
-  revokeN8n(agentId: string): void { this.revokeKey(`n8n:${agentId}`); }
+  revokeN8n(agentId: string): void { this.revokeRemote('n8n', agentId); }
+
+  revokeRemote(id: string, agentId: string): void {
+    if (remoteBrokerRoute(id)) this.revokeKey(`${id}:${agentId}`);
+  }
 
   /** Revoke a worker's capability (called on teardown). Idempotent. */
   revoke(workerId: string): void {
     this.revokeKey(workerId);
-    this.revokeKey(`n8n:${workerId}`);
+    for (const entry of MCP_CATALOG) if (entry.remote) this.revokeRemote(entry.id, workerId);
   }
 
   private revokeKey(key: string): void {
@@ -218,7 +236,7 @@ export class IntegrationBroker {
    *  one). Used by other loopback endpoints (Slack alert) to gate god-only actions. */
   hasWritableCapability(provided: string | undefined): boolean {
     const cap = this.resolveCapability(provided);
-    return !!cap && !cap.readOnly && !cap.n8nOnly; // the n8n route token is not a write capability
+    return !!cap && !cap.readOnly && !cap.remoteId;
   }
 
   /** Constant-time-ish lookup of a presented token against live capabilities. */
@@ -291,19 +309,22 @@ export class IntegrationBroker {
       return IntegrationBroker.sendError(res, 403, 'forbidden', 'read-only capability: GET only (thaw excepted)');
     }
 
-    // 2a') The n8n MCP proxy. An n8n-only capability reaches this route and nothing
-    // else; no other capability reaches it (the bearer is injected here, so who may
-    // ask is decided by the per-agent token plus the live allow-list in n8nUpstream).
-    const n8nRoute = /^\/n8n-mcp\/?(\?[^#]*)?$/.exec(req.url ?? '');
-    if (cap.n8nOnly || n8nRoute) {
-      if (!cap.n8nOnly || !n8nRoute) {
-        return IntegrationBroker.sendError(res, 403, 'forbidden', 'n8n capability: /n8n-mcp only');
+    // 2a') Remote MCP proxy: one route per capability, no cross-remote access.
+    const remoteRoute = /^\/([a-z0-9-]+)-mcp\/?(\?[^#]*)?$/.exec(req.url ?? '');
+    const routeId = remoteRoute && remoteBrokerRoute(remoteRoute[1]) ? remoteRoute[1] : undefined;
+    if (cap.remoteId || routeId) {
+      if (!cap.remoteId || cap.remoteId !== routeId) {
+        return IntegrationBroker.sendError(res, 403, 'forbidden', `${cap.remoteId ?? routeId} capability: ${remoteBrokerRoute(cap.remoteId ?? routeId!)} only`);
       }
-      const up = cap.n8nProject ? this.deps.n8nUpstream?.(cap.workerId, cap.n8nProject) : undefined;
-      if (!up) return IntegrationBroker.sendError(res, 403, 'forbidden', 'n8n is not enabled for this agent');
+      const up = cap.remoteProject
+        ? (cap.remoteId === 'n8n'
+          ? this.deps.n8nUpstream?.(cap.workerId, cap.remoteProject)
+          : this.deps.remoteUpstream?.(cap.remoteId, cap.workerId, cap.remoteProject))
+        : undefined;
+      if (!up) return IntegrationBroker.sendError(res, 403, 'forbidden', `${cap.remoteId} is not enabled for this agent`);
       let target: URL;
-      try { target = new URL(up.url); if (n8nRoute[1]) target.search = n8nRoute[1]; } catch {
-        return IntegrationBroker.sendError(res, 500, 'internal_error', 'invalid n8n endpoint');
+      try { target = new URL(up.url); if (remoteRoute?.[2]) target.search = remoteRoute[2]; } catch {
+        return IntegrationBroker.sendError(res, 500, 'internal_error', `invalid ${cap.remoteId} endpoint`);
       }
       void this.forward(req, res, target, { authorization: `Bearer ${up.token}` }, true);
       return;

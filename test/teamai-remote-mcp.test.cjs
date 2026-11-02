@@ -83,3 +83,55 @@ test('spawn grant gives only a broker capability to listed Team AI agents', () =
   assert.equal(n8nSpawnGrant(deps, consent, 'BURD', 'jim'), undefined, 'n8n keeps its HTTPS-only rule');
   assert.equal(grants, 1);
 });
+
+test('broker keeps remote capabilities separate and neither is writable', async () => {
+  const { createServer } = require('node:http');
+  const { IntegrationBroker } = loadTs('src/main/integrationBroker.ts');
+  const seen = [];
+  const upstream = (id) => createServer((req, res) => {
+    seen.push({ id, authorization: req.headers.authorization, path: req.url });
+    res.end(JSON.stringify({ id }));
+  });
+  const n8n = upstream('n8n');
+  const teamai = upstream('teamai');
+  await Promise.all([new Promise((r) => n8n.listen(0, '127.0.0.1', r)),
+    new Promise((r) => teamai.listen(0, '127.0.0.1', r))]);
+  const n8nUrl = `http://127.0.0.1:${n8n.address().port}/mcp`;
+  const teamaiUrl = `http://127.0.0.1:${teamai.address().port}/mcp`;
+  const broker = new IntegrationBroker({
+    getRecord: () => undefined, getSecret: () => undefined,
+    n8nUpstream: () => ({ url: n8nUrl, token: 'TOKEN_N8N_X' }),
+    remoteUpstream: (id) => id === 'teamai' ? { url: teamaiUrl, token: 'TOKEN_TEAMAI_Y' } : undefined
+  });
+  await broker.start();
+  const call = (route, cap) => fetch(broker.url() + route, {
+    method: 'POST', redirect: 'manual', body: '{}', headers: { 'X-MD-Broker-Token': cap }
+  });
+  try {
+    const n8nCap = broker.grantN8n('jim', 'BURD');
+    const teamaiCap = broker.grantRemote('teamai', 'jim', 'BURD');
+    assert.ok(teamaiCap && teamaiCap !== n8nCap);
+    assert.equal(broker.hasWritableCapability(teamaiCap), false);
+    assert.equal(broker.hasWritableCapability(n8nCap), false);
+    assert.equal((await call('/n8n-mcp', n8nCap)).status, 200);
+    assert.equal((await call('/teamai-mcp', teamaiCap)).status, 200);
+    assert.deepEqual(seen.map((x) => [x.id, x.authorization]), [
+      ['n8n', 'Bearer TOKEN_N8N_X'], ['teamai', 'Bearer TOKEN_TEAMAI_Y']
+    ]);
+    assert.equal((await call('/n8n-mcp', teamaiCap)).status, 403);
+    assert.equal((await call('/teamai-mcp', n8nCap)).status, 403);
+    assert.equal((await call('/automations', teamaiCap)).status, 403);
+    assert.equal(seen.length, 2, 'cross-route requests reached neither upstream');
+    broker.revokeRemote('teamai', 'jim');
+    assert.equal((await call('/teamai-mcp', teamaiCap)).status, 401);
+    assert.equal((await call('/n8n-mcp', n8nCap)).status, 200);
+    const teamaiCap2 = broker.grantRemote('teamai', 'jim', 'BURD');
+    broker.revoke('jim');
+    assert.equal((await call('/teamai-mcp', teamaiCap2)).status, 401);
+    assert.equal((await call('/n8n-mcp', n8nCap)).status, 401);
+    assert.equal(broker.grantRemote('unknown', 'jim', 'BURD'), undefined);
+  } finally {
+    broker.stop(); n8n.closeAllConnections(); teamai.closeAllConnections();
+    n8n.close(); teamai.close();
+  }
+});
