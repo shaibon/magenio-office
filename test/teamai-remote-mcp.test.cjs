@@ -2,7 +2,19 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
+
+const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'md-teamai-'));
+const electronPath = require.resolve('electron');
+require.cache[electronPath] = {
+  id: electronPath, filename: electronPath, loaded: true,
+  exports: { app: { getPath: () => userData, isPackaged: false,
+    getAppPath: () => path.join(__dirname, '..') } }
+};
+test.after(() => fs.rmSync(userData, { recursive: true, force: true }));
 
 const {
   MCP_CATALOG, defaultMcpDefaults, mergeMcpConsent,
@@ -134,4 +146,71 @@ test('broker keeps remote capabilities separate and neither is writable', async 
     broker.stop(); n8n.closeAllConnections(); teamai.closeAllConnections();
     n8n.close(); teamai.close();
   }
+});
+
+test('Team AI mount requires its own project, allow-list and broker capability', () => {
+  const { HiveManager } = loadTs('src/main/hive.ts');
+  const hive = new HiveManager(() => userData);
+  const off = Object.fromEntries(MCP_CATALOG.map((e) => [e.id, { enabled: false }]));
+  const teamai = { enabled: true, projects: { BURD: {
+    url: 'http://172.30.0.7:8080/mcp', agents: ['jim']
+  } } };
+  const brokerUrls = { teamai: 'http://127.0.0.1:4555/teamai-mcp' };
+  const build = (consent, agent = 'jim', project = 'BURD', urls = brokerUrls) =>
+    hive['buildDefaultMcpServers'](userData, { ...off, teamai: consent }, agent,
+      { provider: 'claude', project }, undefined, undefined, undefined, undefined, undefined, urls);
+  assert.deepEqual(build(teamai)['munder-teamai'], {
+    type: 'http', url: brokerUrls.teamai,
+    headers: { 'X-MD-Broker-Token': '${MD_TEAMAI_MCP_TOKEN}' }
+  });
+  for (const [consent, agent, project, urls] of [
+    [{ ...teamai, enabled: false }, 'jim', 'BURD', brokerUrls],
+    [teamai, 'dwight', 'BURD', brokerUrls],
+    [teamai, 'jim', 'RISTO', brokerUrls],
+    [{ enabled: true, projects: { BURD: { url: teamai.projects.BURD.url, agents: [] } } }, 'jim', 'BURD', brokerUrls],
+    [{ enabled: true, projects: { BURD: { url: 'http://8.8.8.8/mcp', agents: ['jim'] } } }, 'jim', 'BURD', brokerUrls],
+    [teamai, 'jim', 'BURD', {}]
+  ]) assert.equal(build(consent, agent, project, urls)['munder-teamai'], undefined);
+  const note = hive['mcpMountFailures'].get('jim');
+  assert.ok(note.some((f) => f.server === 'munder-teamai' && /BURD/.test(f.detail)
+    && /bearer token/.test(f.detail) && !f.detail.includes('172.30.0.7')));
+  const codex = hive['codexMcpTables']({ id: 'jim', cwd: userData, provider: 'codex', project: 'BURD' },
+    { mcpDefaults: { ...off, teamai }, remoteBrokerUrls: brokerUrls });
+  assert.match(codex, /\[mcp_servers\.munder-teamai\]/);
+  assert.match(codex, /env_http_headers = \{ X-MD-Broker-Token = "MD_TEAMAI_MCP_TOKEN" \}/);
+  assert.doesNotMatch(codex, /172\.30\.0\.7|Bearer|TOKEN_TEAMAI_Y/);
+});
+
+test('Claude receives Team AI only when mounted; agent files keep no bearer and stay private', async () => {
+  const { HiveManager } = loadTs('src/main/hive.ts');
+  const hive = new HiveManager(() => userData);
+  const off = Object.fromEntries(MCP_CATALOG.map((e) => [e.id, { enabled: false }]));
+  const teamai = { enabled: true, projects: { BURD: {
+    url: 'http://172.30.0.7:8080/mcp', agents: ['teamai-claude', 'teamai-opencode']
+  } } };
+  const opts = { mcpDefaults: { ...off, teamai },
+    remoteBrokerUrls: { teamai: 'http://127.0.0.1:4555/teamai-mcp' } };
+  await hive.ensureAgent({ id: 'teamai-claude', name: 'Team AI Claude', provider: 'claude',
+    cwd: userData, project: 'BURD' }, opts);
+  assert.equal(hive.remoteMounted('teamai', 'teamai-claude'), true);
+  assert.equal(hive.n8nMounted('teamai-claude'), false);
+  const agentDir = hive['agentDir']('teamai-claude');
+  const mcpPath = path.join(agentDir, 'mcp.json');
+  const mcp = fs.readFileSync(mcpPath, 'utf8');
+  assert.match(mcp, /munder-teamai/);
+  assert.match(mcp, /MD_TEAMAI_MCP_TOKEN/);
+  assert.equal(fs.statSync(mcpPath).mode & 0o777, 0o600);
+  const allFiles = [];
+  function scan(dir) {
+    for (const item of fs.readdirSync(dir, { withFileTypes: true })) {
+      const file = path.join(dir, item.name);
+      if (item.isDirectory()) scan(file);
+      else if (item.isFile()) allFiles.push(fs.readFileSync(file).toString());
+    }
+  }
+  scan(agentDir);
+  assert.ok(allFiles.every((text) => !text.includes('TOKEN_TEAMAI_Y')));
+  await hive.ensureAgent({ id: 'teamai-opencode', name: 'Team AI OpenCode', provider: 'opencode',
+    cwd: userData, project: 'BURD' }, opts);
+  assert.equal(hive.remoteMounted('teamai', 'teamai-opencode'), false);
 });
