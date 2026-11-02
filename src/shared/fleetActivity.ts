@@ -8,3 +8,10 @@ export function lastActiveSecAgo(now: number, usageTs: number | undefined, ptyOu
   if (ptyOutputAt && ptyOutputAt > 0) return Math.max(0, Math.round((now - ptyOutputAt) / 1000));
   return null;
 }
+
+/** May terminal output stand in for telemetry? Only for a provider that has none (DeepCode) and only
+ *  until its first turn since spawn/wake completes: that is the silent stretch (t-296). After a Stop
+ *  the prompt's own redraws would read as work, so the last real signal is all there is. */
+export function outputCountsAsActivity(provider: string | undefined, turnCompletedSinceSpawn: boolean): boolean {
+  return provider === 'deepcode' && !turnCompletedSinceSpawn;
+}

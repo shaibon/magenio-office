@@ -25,7 +25,8 @@ export function createHibernatedStore(bridge: () => HibernationBridge) {
   /** Re-ask main about every member: bounds how long a missed wake event can leave a stale badge. */
   const refresh = (): void => {
     for (const id of hibernated) {
-      const v = version.get(id) ?? 0;
+      const v = (version.get(id) ?? 0) + 1; // each request supersedes the ones still in flight
+      version.set(id, v);
       void Promise.resolve(bridge().hibernateState?.(id)).then((s) => {
         if (s && (version.get(id) ?? 0) === v) setMember(id, !!s.hibernated);
       }).catch(() => { /* keep what we have */ });

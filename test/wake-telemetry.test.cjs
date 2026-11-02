@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
-const { lastActiveSecAgo } = loadTs('src/shared/fleetActivity.ts');
+const { lastActiveSecAgo, outputCountsAsActivity } = loadTs('src/shared/fleetActivity.ts');
 const { createHibernatedStore } = loadTs('src/renderer/src/hooks/hibernatedStore.ts');
 
 const tick = () => new Promise((r) => setImmediate(r));
@@ -57,4 +57,32 @@ test('wiring: hibernation events reach every window; both fleet snapshots use th
   const main = fs.readFileSync(path.join(__dirname, '..', 'src/main/index.ts'), 'utf8');
   assert.match(main, /for \(const w of allWindows\) \{ if \(!w\.isDestroyed\(\) && !w\.webContents\.isDestroyed\(\)\) w\.webContents\.send\('hive:agentHibernation'/);
   assert.equal((main.match(/lastActiveSecAgo\(now, u\?\.ts, ptyOutputAtFor\(id\)\)/g) || []).length, 2);
+});
+
+test('terminal output counts only for a telemetry-less provider before its first turn completes', () => {
+  assert.equal(outputCountsAsActivity('deepcode', false), true, 'woken DeepCode, first turn running');
+  assert.equal(outputCountsAsActivity('deepcode', true), false, 'idle prompt redraws after a Stop are not work');
+  assert.equal(outputCountsAsActivity('claude', false), false, 'Claude before its first OTel sample is not "active"');
+  assert.equal(outputCountsAsActivity(undefined, false), false);
+});
+
+test('overlapping refreshes: the older reply arriving last cannot flip the badge back', async () => {
+  const pending = [];
+  const bridge = {
+    hibernateState: () => new Promise((res) => pending.push(res)),
+    onHiveAgentHibernation: (f) => { f({ id: 'pam', hibernated: true }); return () => {}; }
+  };
+  const store = createHibernatedStore(() => bridge);
+  store.subscribe(() => {});
+  assert.equal(store.snapshot().has('pam'), true);
+  store.refresh(); store.refresh();
+  pending[1]({ hibernated: false }); await tick();
+  assert.equal(store.snapshot().has('pam'), false);
+  pending[0]({ hibernated: true }); await tick();
+  assert.equal(store.snapshot().has('pam'), false, 'stale reply discarded');
+});
+
+test('wiring: the activity stand-in is gated on provider and turn state', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src/main/index.ts'), 'utf8');
+  assert.match(main, /outputCountsAsActivity\(provider, workerWake\.lastTurnWasStop\(agentId\)\) \? ptyManager\.lastOutputAt\(p\)/);
 });

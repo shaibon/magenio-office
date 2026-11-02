@@ -87,7 +87,7 @@ import { checkMcpPresence, nodePresenceDeps, installTrelloMcp, nodeInstallDeps }
 import { secretRefFor, INTEGRATION_TEMPLATES } from '../shared/integrations';
 import { buildTempHistory, type TempHistoryInput, type TempLogEvent, type TempRequest, type TempRow } from '../shared/tempHistory';
 import { RosterStore } from './roster';
-import { lastActiveSecAgo } from '../shared/fleetActivity';
+import { lastActiveSecAgo, outputCountsAsActivity } from '../shared/fleetActivity';
 import { latestDeepcodeSession } from './deepcodeSession';
 import { orphansToArchive, restorableRosterIds, shieldedButUnrestored, fallbackAction, batchState } from './bootSweep';
 import { buildWorkerLaunch } from './workerLaunch';
@@ -1541,7 +1541,9 @@ const costTotals = new CostLedgerTotals();
 /** Last terminal output of an agent's live pty, if it has one (activity stand-in for telemetry-less providers). */
 function ptyOutputAtFor(agentId: string): number | undefined {
   const p = ptyForAgent(agentId);
-  return p ? ptyManager.lastOutputAt(p) : undefined;
+  if (!p) return undefined;
+  const provider = hive.registry().agents[agentId]?.provider;
+  return outputCountsAsActivity(provider, workerWake.lastTurnWasStop(agentId)) ? ptyManager.lastOutputAt(p) : undefined;
 }
 
 /** Build + write the live fleet snapshot Michael reads (`<hive>/fleet.json`).
