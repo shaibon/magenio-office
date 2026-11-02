@@ -1539,13 +1539,22 @@ function runBreakerBeat(progressWindowMs: number): void {
 const costTotals = new CostLedgerTotals();
 
 /** DeepCode's own live session files for an agent (its notify hook only fires at turn end). Null for
- *  every other provider, or when nothing can be read. Cached on the files' mtimes by the caller's cadence. */
+ *  every other provider, when nothing can be read, or when the agent's own session cannot be told apart.
+ *  The file parses are cached on mtime+size in deepcodeSession.ts. */
 function deepcodeActivityFor(agentId: string, a: { provider?: string; cwd?: string }): DeepcodeActivity | null {
   if (a.provider !== 'deepcode') return null;
-  const recipe = hibernateRecipes.get(agentId)?.opts;
-  const cwd = recipe?.cwd ?? a.cwd;
+  const cwd = hibernateRecipes.get(agentId)?.opts.cwd ?? a.cwd;
   if (!cwd) return null;
-  try { return deepcodeActivity(cwd, homedir(), hive.registry().agents[agentId]?.sessionId); } catch { return null; }
+  try {
+    const ptyId = ptyForAgent(agentId);
+    const act = deepcodeActivity(cwd, homedir(), {
+      sessionId: hive.registry().agents[agentId]?.sessionId,
+      spawnedAt: ptyId ? workerWake.spawnedAtFor(ptyId) : undefined
+    });
+    // A first-turn session found by spawn time becomes the agent's recorded session: from here on it is bound.
+    if (act && !hive.registry().agents[agentId]?.sessionId) hive.recordSession(agentId, act.sessionId);
+    return act;
+  } catch { return null; }
 }
 
 /** Build + write the live fleet snapshot Michael reads (`<hive>/fleet.json`).
@@ -1571,7 +1580,7 @@ function writeFleetSnapshot(): void {
       .map(([id, a]) => {
         const u = usageById.get(id);
         const spans = snap.spans[id] ?? [];
-        const act = fleetActivity(now, { usageTs: u?.ts, usageTokens: u ? u.input + u.output + u.cacheRead + u.cacheCreation : undefined, lastSpanTool: spans.length ? spans[spans.length - 1].tool : null, deepcode: deepcodeActivityFor(id, a) });
+        const act = fleetActivity(now, { usageTs: u?.ts, usageTokens: u ? u.input + u.output + u.cacheRead + u.cacheCreation : undefined, lastSpanTool: spans.length ? spans[spans.length - 1].tool : null, deepcode: deepcodeActivityFor(id, a), live: !!ptyForAgent(id) });
         const tokens = act.tokens ?? 0;
         // `usd` is LIFETIME (reset-corrected). Until the first fold completes we
         // fall back to the session figure rather than publishing a cold $0.
@@ -1590,6 +1599,7 @@ function writeFleetSnapshot(): void {
           sessionUsd,
           lastTool: act.lastTool,
           lastActiveSecAgo: act.lastActiveSecAgo,
+          turn: act.turn,
           inboxBacklog: hive.inboxBacklog(id),
           onHold: !!a.onHold,
           frozen: frozenIds.has(id),
@@ -5100,7 +5110,7 @@ ipcMain.handle('hive:agentDirectory', () => {
   const agents = Object.entries(reg.agents).map(([id, a]) => {
     const u = usageById.get(id);
     const spans = snap.spans[id] ?? [];
-    const act = fleetActivity(now, { usageTs: u?.ts, usageTokens: u ? u.input + u.output + u.cacheRead + u.cacheCreation : undefined, lastSpanTool: spans.length ? spans[spans.length - 1].tool : null, deepcode: deepcodeActivityFor(id, a) });
+    const act = fleetActivity(now, { usageTs: u?.ts, usageTokens: u ? u.input + u.output + u.cacheRead + u.cacheCreation : undefined, lastSpanTool: spans.length ? spans[spans.length - 1].tool : null, deepcode: deepcodeActivityFor(id, a), live: !!ptyForAgent(id) });
     const tokens = act.tokens ?? 0;
     const ctx = hookServer.contextFor(id);
     return {
@@ -5123,6 +5133,7 @@ ipcMain.handle('hive:agentDirectory', () => {
       usd: u ? Number(u.usd.toFixed(4)) : 0,
       lastTool: act.lastTool,
       lastActiveSecAgo: act.lastActiveSecAgo,
+      turn: act.turn,
       contextTokens: ctx?.tokens ?? null,
       contextLimit: ctx?.limit ?? null,
       contextPct: ctx && ctx.limit > 0 ? Math.round((ctx.tokens / ctx.limit) * 100) : null

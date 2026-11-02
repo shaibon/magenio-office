@@ -47,7 +47,7 @@ test('a refresh reply older than a newer event is discarded', async () => {
 test('wiring: hibernation events reach every window; both fleet snapshots use fleetActivity with the DeepCode session files', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'src/main/index.ts'), 'utf8');
   assert.match(main, /for \(const w of allWindows\) \{ if \(!w\.isDestroyed\(\) && !w\.webContents\.isDestroyed\(\)\) w\.webContents\.send\('hive:agentHibernation'/);
-  assert.equal((main.match(/fleetActivity\(now, \{ usageTs: u\?\.ts[^\n]*deepcode: deepcodeActivityFor\(id, a\) \}\)/g) || []).length, 2);
+  assert.equal((main.match(/fleetActivity\(now, \{ usageTs: u\?\.ts[^\n]*deepcode: deepcodeActivityFor\(id, a\), live: !!ptyForAgent\(id\) \}\)/g) || []).length, 2);
   assert.doesNotMatch(main, /ptyOutputAtFor|outputCountsAsActivity/, 'no terminal-output heuristic');
 });
 
@@ -93,20 +93,20 @@ test('DeepCode activity comes from its own session files DURING the turn: status
     ]
   });
   try {
-    const a = deepcodeActivity(f.cwd, f.home, SID);
-    assert.deepEqual({ ...a }, { status: 'processing', updatedAt: Date.parse('2026-11-02T01:22:00.000Z'), totalTokens: 4242, lastTool: 'bash' });
+    const a = deepcodeActivity(f.cwd, f.home, { sessionId: SID });
+    assert.deepEqual({ ...a }, { sessionId: SID, status: 'processing', updatedAt: Date.parse('2026-11-02T01:22:00.000Z'), totalTokens: 4242, lastTool: 'bash' });
     // and the fleet fields come out of it instead of tokens 0 / lastTool null / lastActive null
     const now = Date.parse('2026-11-02T01:22:30.000Z');
-    assert.deepEqual({ ...fleetActivity(now, { deepcode: a }) }, { lastActiveSecAgo: 30, lastTool: 'bash', tokens: 4242 });
+    assert.deepEqual({ ...fleetActivity(now, { deepcode: a }) }, { lastActiveSecAgo: 30, lastTool: 'bash', tokens: 4242, turn: null });
   } finally { fs.rmSync(f.home, { recursive: true, force: true }); }
 });
 
 test('telemetry still wins when present; no files and no telemetry stays null (nothing inferred)', () => {
   const now = 1_000_000;
   assert.deepEqual({ ...fleetActivity(now, { usageTs: now - 600_000, usageTokens: 7, lastSpanTool: 'Edit', deepcode: { updatedAt: now, totalTokens: 1, lastTool: 'x' } }) },
-    { lastActiveSecAgo: 600, lastTool: 'Edit', tokens: 7 });
-  assert.deepEqual({ ...fleetActivity(now, {}) }, { lastActiveSecAgo: null, lastTool: null, tokens: null });
-  assert.equal(deepcodeActivity('/Users/x/none', os.tmpdir(), SID), null);
+    { lastActiveSecAgo: 600, lastTool: 'Edit', tokens: 7, turn: null });
+  assert.deepEqual({ ...fleetActivity(now, {}) }, { lastActiveSecAgo: null, lastTool: null, tokens: null, turn: null });
+  assert.equal(deepcodeActivity('/Users/x/none', os.tmpdir(), { sessionId: SID }), null);
 });
 
 test('the last tool is read from the tail of a large session file; a cut first line and junk rows are skipped', () => {
@@ -118,4 +118,57 @@ test('the last tool is read from the tail of a large session file; a cut first l
     assert.equal(lastToolInJsonl(file), 'grep');
     assert.equal(lastToolInJsonl(path.join(dir, 'missing.jsonl')), null);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+function twoSessions() {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dc-two-'));
+  const cwd = '/Users/x/wt/shared';
+  const dir = path.join(home, '.deepcode', 'projects', deepcodeProjectCode(cwd));
+  fs.mkdirSync(dir, { recursive: true });
+  const T0 = Date.parse('2026-11-02T00:00:00.000Z');
+  const iso = (ms) => new Date(ms).toISOString();
+  const A = 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa';
+  const B = 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb';
+  fs.writeFileSync(path.join(dir, 'sessions-index.json'), JSON.stringify({ entries: [
+    { id: A, status: 'processing', createTime: iso(T0), updateTime: iso(T0 + 60_000), usage: { total_tokens: 100 } },
+    { id: B, status: 'completed', createTime: iso(T0 + 5_000_000), updateTime: iso(T0 + 5_100_000), usage: { total_tokens: 9000 } }
+  ] }));
+  for (const id of [A, B]) fs.writeFileSync(path.join(dir, `${id}.jsonl`), JSON.stringify({ role: 'tool', meta: { function: { name: id === A ? 'bash' : 'grep' } } }) + '\n');
+  return { home, cwd, T0, A, B };
+}
+
+test('two sessions in one folder: the recorded id binds; without one and without a spawn time it fails closed', () => {
+  const f = twoSessions();
+  try {
+    assert.equal(deepcodeActivity(f.cwd, f.home, { sessionId: f.A }).totalTokens, 100, 'explicit A is A, not the newer B');
+    assert.equal(deepcodeActivity(f.cwd, f.home, {}), null, 'no id, no spawn time: refuse to guess');
+    // first turn: only sessions created after this process was spawned count, and only if exactly one
+    assert.equal(deepcodeActivity(f.cwd, f.home, { spawnedAt: f.T0 + 5_000_000 }).sessionId, f.B);
+    assert.equal(deepcodeActivity(f.cwd, f.home, { spawnedAt: f.T0 - 10_000 }), null, 'two candidates: ambiguous');
+    assert.equal(deepcodeActivity(f.cwd, f.home, { spawnedAt: f.T0 + 6_000_000 }), null, 'nothing created since the spawn');
+  } finally { fs.rmSync(f.home, { recursive: true, force: true }); }
+});
+
+test('a long turn is visible: processing with an old updateTime reads as working, completed or dead does not', () => {
+  const now = Date.parse('2026-11-02T01:25:00.000Z');
+  const proc = { status: 'processing', updatedAt: now - 85 * 60_000, totalTokens: 100, lastTool: 'bash' };
+  const r = fleetActivity(now, { deepcode: proc, live: true });
+  assert.equal(r.lastActiveSecAgo, 5100);
+  assert.equal(r.turn, 'working', 'the 85-minute silence is a turn in progress');
+  assert.equal(fleetActivity(now, { deepcode: proc, live: false }).turn, null, 'no process: a stale processing is not work');
+  assert.equal(fleetActivity(now, { deepcode: { ...proc, status: 'completed' }, live: true }).turn, null);
+  assert.equal(fleetActivity(now, { deepcode: { ...proc, status: 'waiting_for_user' }, live: true }).turn, 'waiting');
+});
+
+test('parsed files are cached on mtime+size: a rewrite is seen, an untouched file is not re-read', () => {
+  const f = twoSessions();
+  try {
+    const idx = path.join(f.home, '.deepcode', 'projects', deepcodeProjectCode(f.cwd), 'sessions-index.json');
+    assert.equal(deepcodeActivity(f.cwd, f.home, { sessionId: f.A }).status, 'processing');
+    const j = JSON.parse(fs.readFileSync(idx, 'utf8')); j.entries[0].status = 'completed';
+    fs.writeFileSync(idx, JSON.stringify(j) + ' ');
+    assert.equal(deepcodeActivity(f.cwd, f.home, { sessionId: f.A }).status, 'completed');
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src/main/deepcodeSession.ts'), 'utf8');
+    assert.match(src, /sig === `\$\{st\.mtimeMs\}:\$\{st\.size\}`|const sig = `\$\{st\.mtimeMs\}:\$\{st\.size\}`/);
+  } finally { fs.rmSync(f.home, { recursive: true, force: true }); }
 });

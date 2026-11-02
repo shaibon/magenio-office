@@ -52,6 +52,7 @@ export function latestDeepcodeSession(cwd: string, home: string): string | undef
  *   - the session `<id>.jsonl`: one row appended per message; a `role:"tool"` row names the tool run
  *     in `meta.function.name`. */
 export interface DeepcodeActivity {
+  sessionId: string;
   status: string | null;
   updatedAt: number | null;
   totalTokens: number | null;
@@ -60,49 +61,82 @@ export interface DeepcodeActivity {
 
 const TAIL_BYTES = 256 * 1024;
 
-/** The last tool name in the tail of a session file, or null. Reads only the end; rows are one JSON each. */
-export function lastToolInJsonl(file: string): string | null {
-  let fd: number | undefined;
-  try {
-    fd = openSync(file, 'r');
-    const size = fstatSync(fd).size;
-    const len = Math.min(size, TAIL_BYTES);
-    const buf = Buffer.alloc(len);
-    readSync(fd, buf, 0, len, size - len);
-    const lines = buf.toString('utf8').split('\n');
-    if (size > len) lines.shift(); // first line is cut
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const l = lines[i].trim();
-      if (!l) continue;
-      try {
-        const r = JSON.parse(l) as { role?: string; meta?: { function?: { name?: unknown } } };
-        const name = r.role === 'tool' ? r.meta?.function?.name : undefined;
-        if (typeof name === 'string' && name) return name;
-      } catch { /* partial or odd row */ }
-    }
-  } catch { /* no file */ } finally { if (fd !== undefined) try { closeSync(fd); } catch { /* noop */ } }
-  return null;
+/** Parsed-file caches keyed on (mtime, size): the fleet timer runs every few seconds for every DeepCode
+ *  agent, and an unchanged file must cost one stat, not a parse. */
+const fileCache = new Map<string, { sig: string; value: unknown }>();
+function cached<T>(file: string, load: () => T): T {
+  const st = statSync(file);
+  const sig = `${st.mtimeMs}:${st.size}`;
+  const hit = fileCache.get(file);
+  if (hit && hit.sig === sig) return hit.value as T;
+  const value = load();
+  fileCache.set(file, { sig, value });
+  if (fileCache.size > 512) fileCache.delete(fileCache.keys().next().value as string);
+  return value;
 }
 
-export function deepcodeActivity(cwd: string, home: string, sessionId?: string): DeepcodeActivity | null {
+/** The last tool name in the tail of a session file, or null. Reads only the end; rows are one JSON each. */
+export function lastToolInJsonl(file: string): string | null {
+  try {
+    return cached(file, () => {
+      let fd: number | undefined;
+      try {
+        fd = openSync(file, 'r');
+        const size = fstatSync(fd).size;
+        const len = Math.min(size, TAIL_BYTES);
+        const buf = Buffer.alloc(len);
+        readSync(fd, buf, 0, len, size - len);
+        const lines = buf.toString('utf8').split('\n');
+        if (size > len) lines.shift(); // first line is cut
+        for (let i = lines.length - 1; i >= 0; i--) {
+          const l = lines[i].trim();
+          if (!l) continue;
+          try {
+            const r = JSON.parse(l) as { role?: string; meta?: { function?: { name?: unknown } } };
+            const name = r.role === 'tool' ? r.meta?.function?.name : undefined;
+            if (typeof name === 'string' && name) return name;
+          } catch { /* partial or odd row */ }
+        }
+      } finally { if (fd !== undefined) try { closeSync(fd); } catch { /* noop */ } }
+      return null;
+    });
+  } catch { return null; }
+}
+
+interface IndexEntry { id?: string; status?: string; createTime?: string; updateTime?: string; usage?: { total_tokens?: number } }
+
+/** Which session belongs to THIS agent. Only a recorded id, or — for a first turn that has none yet — the
+ *  single session created after this process was spawned. Anything ambiguous returns null: a wrong
+ *  agent's activity is worse than none (two agents can share a working folder). */
+export function pickDeepcodeSession(entries: IndexEntry[], sessionId: string | undefined, spawnedAt: number | undefined): IndexEntry | null {
+  if (sessionId) return entries.find((e) => e?.id === sessionId) ?? null;
+  if (!spawnedAt) return null;
+  const mine = entries.filter((e) => e?.id && Date.parse(e.createTime ?? '') >= spawnedAt - 2000);
+  return mine.length === 1 ? mine[0] : null;
+}
+
+export function deepcodeActivity(cwd: string, home: string, bind: { sessionId?: string; spawnedAt?: number } = {}): DeepcodeActivity | null {
   const roots = new Set<string>([cwd]);
   try { roots.add(realpathSync(cwd)); } catch { /* gone */ }
   for (const root of roots) {
     const dir = join(home, '.deepcode', 'projects', deepcodeProjectCode(root));
-    let entries: Array<{ id?: string; status?: string; updateTime?: string; usage?: { total_tokens?: number } }>;
+    let entries: IndexEntry[];
     try {
-      const idx = JSON.parse(readFileSync(join(dir, 'sessions-index.json'), 'utf8')) as { entries?: unknown };
-      entries = Array.isArray(idx.entries) ? idx.entries : Object.values((idx.entries ?? {}) as object);
+      const idxFile = join(dir, 'sessions-index.json');
+      entries = cached(idxFile, () => {
+        const idx = JSON.parse(readFileSync(idxFile, 'utf8')) as { entries?: unknown };
+        return (Array.isArray(idx.entries) ? idx.entries : Object.values((idx.entries ?? {}) as object)) as IndexEntry[];
+      });
     } catch { continue; }
-    const sid = sessionId && entries.some((e) => e?.id === sessionId) ? sessionId : latestDeepcodeSession(root, home);
-    const e = entries.find((x) => x?.id === sid);
-    if (!e || !sid) continue;
+    const e = pickDeepcodeSession(entries, bind.sessionId, bind.spawnedAt);
+    if (!e?.id) continue;
     const t = typeof e.updateTime === 'string' ? Date.parse(e.updateTime) : NaN;
     return {
+      sessionId: e.id,
       status: typeof e.status === 'string' ? e.status : null,
       updatedAt: Number.isFinite(t) ? t : null,
       totalTokens: typeof e.usage?.total_tokens === 'number' ? e.usage.total_tokens : null,
-      lastTool: lastToolInJsonl(join(dir, `${sid}.jsonl`))
+      lastTool: lastToolInJsonl(join(dir, `${e.id}.jsonl`))
     };
   }
   return null;
