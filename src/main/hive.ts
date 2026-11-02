@@ -3593,7 +3593,7 @@ export class HiveManager {
           id: string; name?: string; role?: string; isGod?: boolean;
           project?: string;
           breaker?: string; tokens?: number; usd?: number;
-          lastTool?: string | null; lastActiveSecAgo?: number | null; inboxBacklog?: number;
+          lastTool?: string | null; lastActiveSecAgo?: number | null; turn?: 'working' | 'waiting' | null; inboxBacklog?: number;
           onHold?: boolean; frozen?: boolean; hibernated?: boolean;
         }>;
       };
@@ -3617,6 +3617,10 @@ export class HiveManager {
       const rows = shown.map((a) => {
         const bits = [a.role ?? 'agent',
           typeof a.lastActiveSecAgo === 'number' ? `active ${ago(a.lastActiveSecAgo)}` : 'no activity yet'];
+        // A turn in progress is the one fact a silent model/tool wait would otherwise hide behind
+        // an old `active Nm ago` (t-296): say it, so a working agent is not mistaken for a stuck one.
+        if (a.turn === 'working') bits.push('WORKING (turn in progress, may be silent for a while)');
+        else if (a.turn === 'waiting') bits.push('WAITING for the human');
         if (a.tokens) bits.push(`${Math.round(a.tokens / 1000)}k tok`);
         if (a.usd) bits.push(`$${a.usd.toFixed(2)}`);
         if (a.inboxBacklog) bits.push(`inbox ${a.inboxBacklog}`);

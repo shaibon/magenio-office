@@ -987,6 +987,7 @@ const api = {
   hibernateAgentNow: (agentId: string): Promise<{ ok: boolean; reason?: string }> => ipcRenderer.invoke('agent:hibernateNow', agentId),
   restoreBatch: (running: boolean): Promise<boolean> => ipcRenderer.invoke('hive:restoreBatch', running),
   markRestoreFailed: (agentId: string): Promise<boolean> => ipcRenderer.invoke('hive:markRestoreFailed', agentId),
+  agentTurns: (): Promise<Record<string, 'working' | 'waiting'>> => ipcRenderer.invoke('hive:agentTurns'),
   hibernateState: (agentId: string): Promise<{ hibernated: boolean; optOut: boolean }> => ipcRenderer.invoke('agent:hibernateState', agentId),
   setHibernateOptOut: (agentId: string, optOut: boolean): Promise<boolean> => ipcRenderer.invoke('agent:setHibernateOptOut', agentId, optOut),
   onHiveAgentHibernation: (cb: (e: { id: string; hibernated: boolean }) => void): (() => void) => {

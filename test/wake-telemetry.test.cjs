@@ -8,6 +8,11 @@ const loadTs = require('./load-ts.cjs');
 const { fleetActivity } = loadTs('src/shared/fleetActivity.ts');
 const { deepcodeActivity, lastToolInJsonl, deepcodeProjectCode } = loadTs('src/main/deepcodeSession.ts');
 const os = require('node:os');
+const electronPath = require.resolve('electron');
+require.cache[electronPath] = { id: electronPath, filename: electronPath, loaded: true, exports: { Notification: class { show() {} static isSupported() { return false; } } } };
+const { HiveManager } = loadTs('src/main/hive.ts');
+const { createAgentTurnsStore } = loadTs('src/renderer/src/hooks/agentTurnsStore.ts');
+const { withTurn } = loadTs('src/renderer/src/hooks/useAgentTurns.ts');
 const { createHibernatedStore } = loadTs('src/renderer/src/hooks/hibernatedStore.ts');
 
 const tick = () => new Promise((r) => setImmediate(r));
@@ -171,4 +176,47 @@ test('parsed files are cached on mtime+size: a rewrite is seen, an untouched fil
     const src = fs.readFileSync(path.join(__dirname, '..', 'src/main/deepcodeSession.ts'), 'utf8');
     assert.match(src, /sig === `\$\{st\.mtimeMs\}:\$\{st\.size\}`|const sig = `\$\{st\.mtimeMs\}:\$\{st\.size\}`/);
   } finally { fs.rmSync(f.home, { recursive: true, force: true }); }
+});
+
+test('consumers: LIVE ROSTER says WORKING for an 85m processing turn, and not for completed or a dead process', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'dc-roster-'));
+  try {
+    const hive = new HiveManager(() => home);
+    await hive.ensureAgent({ id: 'andy', name: 'Andy', provider: 'deepcode', cwd: home });
+    const now = Date.now();
+    const base = { status: 'processing', updatedAt: now - 85 * 60_000, totalTokens: 100, lastTool: 'bash' };
+    const row = (src) => ({ id: 'andy', name: 'Andy', role: 'worker', breaker: 'ok', ...fleetActivity(now, src) });
+    const line = (src) => { hive.writeFleetSnapshot({ ts: now, agents: [row(src)] }); return hive.rosterContext(); };
+    const working = line({ deepcode: base, live: true });
+    assert.match(working, /active 85m ago/);
+    assert.match(working, /WORKING/);
+    assert.doesNotMatch(line({ deepcode: { ...base, status: 'completed' }, live: true }), /WORKING/);
+    assert.doesNotMatch(line({ deepcode: base, live: false }), /WORKING/);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('consumers: the card status shows working for a silent turn but never overrides a known state', () => {
+  assert.equal(withTurn('idle', 'working'), 'working');
+  assert.equal(withTurn('idle', 'waiting'), 'idle');
+  assert.equal(withTurn('blocked', 'working'), 'blocked');
+  assert.equal(withTurn('idle', undefined), 'idle');
+});
+
+test('consumers: the turns store polls main, ignores a stale reply, and wiring reaches the strip', async () => {
+  const replies = [];
+  const store = createAgentTurnsStore(() => ({ agentTurns: () => new Promise((r) => replies.push(r)) }), 1_000_000);
+  const seen = [];
+  const un = store.subscribe(() => seen.push({ ...store.snapshot() }));
+  store.refresh(); // second, newer request
+  replies[1]({ andy: 'working' });
+  await tick();
+  replies[0]({}); // older reply arrives last: discarded
+  await tick();
+  assert.deepEqual({ ...store.snapshot() }, { andy: 'working' });
+  un();
+  const strip = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/src/components/AgentStrip.tsx'), 'utf8');
+  assert.match(strip, /status=\{withTurn\(a\.status, turns\[a\.id\]\)\}/);
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src/main/index.ts'), 'utf8');
+  assert.match(main, /ipcMain\.handle\('hive:agentTurns'/);
+  assert.match(fs.readFileSync(path.join(__dirname, '..', 'src/preload/index.ts'), 'utf8'), /agentTurns:/);
 });

@@ -8,6 +8,7 @@ import { type HarnessConfig } from '@/store/config';
 import { useRestoreTeam, restoreRestorableAgent } from '@/hooks/useRestoreTeam';
 import { useRtl } from '@/i18n/useDirection';
 import { useHibernatedIds } from '@/hooks/useHibernatedIds';
+import { useAgentTurns, withTurn } from '@/hooks/useAgentTurns';
 import { projectTag, projectTagCompact, repoLabelOf, jiraKeyFor, useResolvedRepoNames } from '@/hooks/useResolvedRepoNames';
 
 export interface AgentStripProps {
@@ -30,6 +31,7 @@ export function AgentStrip({ config }: AgentStripProps) {
   useResolvedRepoNames(restorableAgents);
   const frozenIds = new Set(config?.autoDeliveryPausedAgents ?? []);
   const hibernatedIds = useHibernatedIds(agents.map((a) => a.id));
+  const turns = useAgentTurns();
   const selectedId = useStore(s => s.selectedId);
   const select = useStore(s => s.select);
   const setAddAgentOpen = useStore(s => s.setAddAgentOpen);
@@ -151,7 +153,7 @@ export function AgentStrip({ config }: AgentStripProps) {
             name={a.name}
             character={a.character}
             accent={a.accent}
-            status={a.status}
+            status={withTurn(a.status, turns[a.id])}
             frozen={frozenIds.has(a.id)}
             hibernated={hibernatedIds.has(a.id)}
             ptyId={a.ptyId}

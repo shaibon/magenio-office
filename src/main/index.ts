@@ -1557,6 +1557,19 @@ function deepcodeActivityFor(agentId: string, a: { provider?: string; cwd?: stri
   } catch { return null; }
 }
 
+/** Turn state of every DeepCode agent that has a live process (UI badge source; same data as fleet.json). */
+ipcMain.handle('hive:agentTurns', (): Record<string, 'working' | 'waiting'> => {
+  const out: Record<string, 'working' | 'waiting'> = {};
+  if (!hive.enabled()) return out;
+  const now = Date.now();
+  for (const [id, a] of Object.entries(hive.registry().agents)) {
+    if (a.archived || a.provider !== 'deepcode' || !ptyForAgent(id)) continue;
+    const t = fleetActivity(now, { deepcode: deepcodeActivityFor(id, a), live: true }).turn;
+    if (t) out[id] = t;
+  }
+  return out;
+});
+
 /** Build + write the live fleet snapshot Michael reads (`<hive>/fleet.json`).
  *  Always-on (independent of the heartbeat) since `claude agents` can't see the
  *  hive's sibling sessions. PII-free; never throws (called from a timer). */
