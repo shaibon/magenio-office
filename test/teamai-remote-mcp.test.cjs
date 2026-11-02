@@ -214,3 +214,72 @@ test('Claude receives Team AI only when mounted; agent files keep no bearer and 
     cwd: userData, project: 'BURD' }, opts);
   assert.equal(hive.remoteMounted('teamai', 'teamai-opencode'), false);
 });
+
+test('generic token operations reject unknown remotes and never return a bearer', async () => {
+  const { createRemoteTokenOps } = loadTs('src/main/remoteTokens.ts');
+  const secrets = new Map();
+  const checked = [];
+  const ops = createRemoteTokenOps({
+    setSecret: (ref, token) => { secrets.set(ref, token); return { ok: true }; },
+    deleteSecret: (ref) => secrets.delete(ref),
+    hasSecret: (ref) => secrets.has(ref),
+    getSecret: (ref) => secrets.get(ref),
+    urlFor: () => 'http://172.30.0.7:8080/mcp',
+    checkToken: async (url, token) => { checked.push({ url, token }); return 'valid'; }
+  });
+  for (const id of ['unknown', 'trello']) {
+    assert.equal(ops.set(id, 'BURD', 'TOKEN_TEAMAI_Y').ok, false);
+    assert.equal(ops.has(id, 'BURD'), false);
+    assert.equal(await ops.test(id, 'BURD'), 'missing');
+  }
+  for (const project of ['constructor', '__proto__']) {
+    assert.equal(ops.set('teamai', project, 'TOKEN_TEAMAI_Y').ok, false);
+    assert.equal(ops.clear('teamai', project).ok, false);
+  }
+  assert.deepEqual(ops.set('teamai', 'BURD', ''), { ok: true });
+  assert.equal(secrets.size, 0);
+  assert.deepEqual(ops.set('teamai', 'BURD', 'TOKEN_TEAMAI_Y'), { ok: true });
+  assert.equal(secrets.get('mcp:teamai:BURD'), 'TOKEN_TEAMAI_Y');
+  assert.equal(ops.has('teamai', 'BURD'), true);
+  assert.equal(await ops.test('teamai', 'BURD'), 'valid');
+  assert.deepEqual(checked, [{ url: 'http://172.30.0.7:8080/mcp', token: 'TOKEN_TEAMAI_Y' }]);
+  assert.deepEqual(ops.clear('teamai', 'BURD'), { ok: true });
+  assert.equal(await ops.test('teamai', 'BURD'), 'missing');
+  assert.equal(JSON.stringify([ops.set('teamai', 'BURD', 'TOKEN_TEAMAI_Y'),
+    ops.has('teamai', 'BURD'), await ops.test('teamai', 'BURD')]).includes('TOKEN_TEAMAI_Y'), false);
+});
+
+test('main wires Team AI grants, cleanup and write-only remote IPC', () => {
+  const main = fs.readFileSync(path.join(__dirname, '../src/main/index.ts'), 'utf8');
+  const preload = fs.readFileSync(path.join(__dirname, '../src/preload/index.ts'), 'utf8');
+  assert.ok(/remoteGrantFor\('teamai'|for \(const remote of MCP_CATALOG/.test(main), 'spawn grants catalog remotes');
+  assert.ok(/remoteBrokerUrls: remoteBrokerUrls/.test(main), 'passes broker URLs to hive');
+  assert.ok(/remoteUpstream:/.test(main), 'wires the remote upstream');
+  assert.ok(/revokeRemote\(remoteId, remoteAgentId\)/.test(main), 'revokes unmounted remotes');
+  assert.ok(/delete opts\.env\?\.\[remoteBrokerEnv\(remoteId\)!\]/.test(main), 'drops unmounted env');
+  for (const method of ['SetToken', 'ClearToken', 'HasToken', 'TestToken']) {
+    assert.ok(new RegExp(`mcp:remote${method}`).test(main), `${method} IPC registered`);
+    assert.ok(new RegExp(`mcpRemote${method}`).test(preload), `${method} preload exposed`);
+  }
+  assert.ok(/createRemoteTokenOps\(/.test(main), 'main uses the tested token operations');
+});
+
+test('remote settings use per-id projects, token channels and translated hints', () => {
+  const ui = fs.readFileSync(path.join(__dirname, '../src/renderer/src/components/McpDefaultsSettings.tsx'), 'utf8');
+  assert.match(ui, /config\.mcpDefaults\?\.\[entry\.id\]\?\.projects/);
+  assert.match(ui, /writeConsentPatch\(id, n8nProjectOps\.upsert/);
+  assert.match(ui, /mcpRemoteSetToken\(id, project, token\)/);
+  assert.match(ui, /mcpRemoteHasToken\(id, k\)/);
+  assert.match(ui, /mcpRemoteTestToken\(id, project\)/);
+  assert.match(ui, /normalizeRemoteUrl\(entry\.id, pe\.url\)/);
+  assert.match(ui, /mcpDefaults\.teamaiUrlPlaceholder/);
+  assert.match(ui, /mcpDefaults\.teamaiUrlHint/);
+  for (const locale of ['en', 'zh-CN', 'ar']) {
+    const dict = JSON.parse(fs.readFileSync(path.join(__dirname, `../src/renderer/src/i18n/locales/${locale}.json`)));
+    for (const key of ['remoteProjectsHint', 'remoteAgentsHint', 'remoteTokenHint',
+      'remoteTokenUnreachable', 'teamaiUrlPlaceholder', 'teamaiUrlHint']) {
+      assert.equal(typeof dict.mcpDefaults[key], 'string', `${locale}: ${key}`);
+      assert.ok(dict.mcpDefaults[key].trim(), `${locale}: ${key} is empty`);
+    }
+  }
+});
