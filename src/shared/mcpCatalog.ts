@@ -99,8 +99,8 @@ export interface N8nProjectEntry {
 /** Secret-store handle of a project's n8n MCP bearer token (same encrypted store as
  *  the integrations' `int:<id>` secrets, but a distinct namespace). */
 export const remoteSecretRef = (id: string, project: string): string | undefined =>
-  remoteBrokerEnv(id) && isN8nProjectKey(project) ? `mcp:${id}:${project}` : undefined;
-export const n8nSecretRef = (project: string): string => `mcp:n8n:${project}`;
+  remoteBrokerEnv(id) ? `mcp:${id}:${project}` : undefined;
+export const n8nSecretRef = (project: string): string => remoteSecretRef('n8n', project)!;
 /** Outcome of a live token check against the project's n8n MCP endpoint. */
 export type N8nTokenCheck = 'valid' | 'invalid' | 'unreachable';
 /** The JSON-RPC 2.0 reply carried by `body` (plain JSON, or the first parsable SSE `data:` frame). */

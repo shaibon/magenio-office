@@ -40,8 +40,9 @@ import { CircuitBreaker, type BreakerInput } from './breaker';
 import { CumulativeSampleGate, type UsageProvider } from './usage';
 import { MemoryManager } from './memory';
 import { KnowledgeManager } from './knowledge';
-import { n8nSpawnGrant } from './n8nGrant';
-import { n8nSecretRef, N8N_LEGACY_SECRET_REF, N8N_BROKER_TOKEN_ENV, isN8nProjectKey, resolveN8nProject, runN8nMigration, normalizeN8nUrl } from '../shared/mcpCatalog';
+import { n8nSpawnGrant, remoteSpawnGrant } from './n8nGrant';
+import { MCP_CATALOG, n8nSecretRef, N8N_LEGACY_SECRET_REF, N8N_BROKER_TOKEN_ENV, isN8nProjectKey, resolveN8nProject, resolveRemoteProject, remoteSecretRef, remoteBrokerEnv, runN8nMigration, normalizeN8nUrl } from '../shared/mcpCatalog';
+import { createRemoteTokenOps } from './remoteTokens';
 import { vaultScopesFor, type VaultMount } from '../shared/vaultMount';
 import { resolveProjectForCwd, runVaultSync, type VaultSyncResult } from './knowledgeVaultSync';
 import { MemoryReflector, type ReflectSettings } from './reflect';
@@ -477,6 +478,17 @@ const n8nGrantFor = (project: string | undefined, agentId: string) => n8nSpawnGr
   grant: (id, p) => integrationBroker.grantN8n(id, p)
 }, readConfig().mcpDefaults?.n8n, project, agentId);
 
+const remoteGrantFor = (id: string, project: string | undefined, agentId: string) =>
+  remoteSpawnGrant(id, {
+    brokerRunning: () => integrationBroker.running(),
+    brokerUrl: () => integrationBroker.url(),
+    hasToken: (p) => {
+      const ref = remoteSecretRef(id, p);
+      return !!ref && integrations.hasSecret(ref);
+    },
+    grant: (a, p) => integrationBroker.grantRemote(id, a, p) ?? ''
+  }, readConfig().mcpDefaults?.[id], project, agentId);
+
 /** The loopback secret broker (Phase 2). Workers reach registered integrations through
  *  it without ever seeing a credential. getRecord/getSecret are injected so the broker
  *  stays electron-free + unit-testable. Started in bootstrapHiveServices; each worker is
@@ -487,6 +499,12 @@ const integrationBroker = new IntegrationBroker({
   n8nUpstream: (agentId, project) => {
     const up = resolveN8nProject(readConfig().mcpDefaults?.n8n, project, agentId);
     const token = up && integrations.getSecret(n8nSecretRef(project));
+    return up && token ? { url: up.url, token } : undefined;
+  },
+  remoteUpstream: (id, agentId, project) => {
+    const up = resolveRemoteProject(id, readConfig().mcpDefaults?.[id], project, agentId);
+    const ref = remoteSecretRef(id, project);
+    const token = up && ref && integrations.getSecret(ref);
     return up && token ? { url: up.url, token } : undefined;
   },
   getJiraBindings: () => ({
@@ -581,7 +599,7 @@ function teardownPty(id: string, opts: { hibernate?: boolean; keepWorktree?: boo
   // 1) Archive the agent — retained + flagged; only live-PTY agents are active.
   const agentId = ptyToAgent.get(id);
   if (agentId) {
-    try { integrationBroker.revokeN8n(agentId); } catch { /* best-effort */ }
+    try { integrationBroker.revokeN8n(agentId); integrationBroker.revoke(agentId); } catch { /* best-effort */ }
     ptyToAgent.delete(id);
     // Drop watchdog state so a dead agent can't get nudged or leak its grace.
     try { workerWake.forget(agentId, id); } catch { /* best-effort */ }
@@ -3441,6 +3459,8 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
     // True between minting the n8n grant and ensureAgent returning: the server is mounted
     // (--mcp-config comes only from ensureAgent's args) exactly when ensureAgent succeeded.
     let n8nUnmounted: string | undefined;
+    const remoteGrants: { id: string; agentId: string }[] = [];
+    const remoteBrokerUrls: Record<string, string> = {};
     try {
       // Resolve the shared project label BEFORE provisioning so registry.json is
       // born with it (fleet.json copies it every 8s). The registry row is the
@@ -3456,6 +3476,15 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       const n8nAgentId = hiveMeta.id;
       const n8n = n8nGrantFor(project, n8nAgentId);
       if (n8n) { opts.env = { ...(opts.env ?? {}), ...n8n.env }; n8nUnmounted = n8nAgentId; }
+      if (n8n) remoteBrokerUrls.n8n = n8n.url;
+      for (const remote of MCP_CATALOG) {
+        if (!remote.remote || remote.id === 'n8n') continue;
+        const grant = remoteGrantFor(remote.id, project, n8nAgentId);
+        if (!grant) continue;
+        opts.env = { ...(opts.env ?? {}), ...grant.env };
+        remoteBrokerUrls[remote.id] = grant.url;
+        remoteGrants.push({ id: remote.id, agentId: n8nAgentId });
+      }
       const inj = await hive.ensureAgent(
         hiveMeta,
         {
@@ -3478,6 +3507,7 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
           },
           vault: (await vaultMountForCwd(opts.cwd, opts.hive?.id)) ?? undefined,
           n8nBrokerUrl: n8n?.url,
+          remoteBrokerUrls: remoteBrokerUrls,
           skillsDir: skillsResourceDir(),
           // The shared palace is mutated by the agent's own `mempalace` calls, so
           // the OS sandbox must let it through (empty when memory is off).
@@ -3490,6 +3520,14 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       // The capability is only worth holding if THIS provider's spawn really carries the server
       // (OpenCode/pi/etc. have no MCP surface; codex may fail to write its config).
       if (n8n && !hive.n8nMounted(n8nAgentId)) { integrationBroker.revokeN8n(n8nAgentId); delete opts.env?.[N8N_BROKER_TOKEN_ENV]; }
+      for (const remote of remoteGrants) {
+        const remoteId = remote.id;
+        const remoteAgentId = remote.agentId;
+        if (hive.remoteMounted(remoteId, remoteAgentId)) continue;
+        integrationBroker.revokeRemote(remoteId, remoteAgentId);
+        delete opts.env?.[remoteBrokerEnv(remoteId)!];
+      }
+      remoteGrants.length = 0;
       opts.args = [...(opts.args ?? []), ...inj.args];
       if (provider === 'codex') {
         const cs = readConfig().codexSandbox;
@@ -3534,6 +3572,12 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       console.error('[hive] ensureAgent failed:', e);
       // No --mcp-config was passed, so no n8n server: don't leave its capability or env behind.
       if (n8nUnmounted) { integrationBroker.revokeN8n(n8nUnmounted); delete opts.env?.[N8N_BROKER_TOKEN_ENV]; }
+      for (const remote of remoteGrants) {
+        const remoteId = remote.id;
+        const remoteAgentId = remote.agentId;
+        integrationBroker.revokeRemote(remoteId, remoteAgentId);
+        delete opts.env?.[remoteBrokerEnv(remoteId)!];
+      }
     }
   }
   // Long-run guardrails + tiering (Lane A #6.4/#6.6). All additive to the args
@@ -4034,6 +4078,28 @@ ipcMain.handle('mcp:n8nTestToken', async (_evt, project: unknown): Promise<'miss
   if (!url) return 'unreachable';
   return checkN8nToken(url, token, app.getVersion());
 });
+
+const remoteTokens = createRemoteTokenOps({
+  setSecret: integrations.setSecret,
+  deleteSecret: integrations.deleteSecret,
+  hasSecret: integrations.hasSecret,
+  getSecret: integrations.getSecret,
+  urlFor: (id, project) => {
+    const projects = readConfig().mcpDefaults?.[id]?.projects;
+    return Object.prototype.hasOwnProperty.call(projects ?? {}, project) ? projects![project].url : undefined;
+  },
+  checkToken: (url, token) => checkN8nToken(url, token, app.getVersion())
+});
+ipcMain.handle('mcp:remoteSetToken', (_evt, payload: unknown) => {
+  const p = (payload ?? {}) as { id?: unknown; project?: unknown; token?: unknown };
+  return remoteTokens.set(String(p.id ?? ''), String(p.project ?? ''), String(p.token ?? ''));
+});
+ipcMain.handle('mcp:remoteClearToken', (_evt, id: unknown, project: unknown) =>
+  remoteTokens.clear(String(id ?? ''), String(project ?? '')));
+ipcMain.handle('mcp:remoteHasToken', (_evt, id: unknown, project: unknown) =>
+  remoteTokens.has(String(id ?? ''), String(project ?? '')));
+ipcMain.handle('mcp:remoteTestToken', (_evt, id: unknown, project: unknown) =>
+  remoteTokens.test(String(id ?? ''), String(project ?? '')));
 
 /** Startup migration: the single global n8n endpoint becomes one entry per project
  *  (agents placed by their registry project; unplaced agents are dropped), and the
