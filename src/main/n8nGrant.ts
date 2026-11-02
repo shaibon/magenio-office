@@ -1,4 +1,4 @@
-import { N8N_BROKER_TOKEN_ENV, isN8nProjectKey, resolveN8nProject, type McpConsentEntry } from '../shared/mcpCatalog';
+import { isN8nProjectKey, remoteBrokerEnv, remoteBrokerRoute, resolveRemoteProject, type McpConsentEntry } from '../shared/mcpCatalog';
 
 export interface N8nGrantDeps {
   brokerRunning: () => boolean;
@@ -16,6 +16,19 @@ export function n8nSpawnGrant(
   project: string | undefined,
   agentId: string
 ): { url: string; env: Record<string, string> } | undefined {
-  if (!isN8nProjectKey(project) || !deps.brokerRunning() || !deps.hasToken(project) || !resolveN8nProject(consent, project, agentId)) return undefined;
-  return { url: `${deps.brokerUrl()}/n8n-mcp`, env: { [N8N_BROKER_TOKEN_ENV]: deps.grant(agentId, project) } };
+  return remoteSpawnGrant('n8n', deps, consent, project, agentId);
+}
+
+export function remoteSpawnGrant(
+  id: string,
+  deps: N8nGrantDeps,
+  consent: McpConsentEntry | undefined,
+  project: string | undefined,
+  agentId: string
+): { url: string; env: Record<string, string> } | undefined {
+  const env = remoteBrokerEnv(id);
+  const route = remoteBrokerRoute(id);
+  if (!env || !route || !isN8nProjectKey(project) || !deps.brokerRunning()
+    || !deps.hasToken(project) || !resolveRemoteProject(id, consent, project, agentId)) return undefined;
+  return { url: `${deps.brokerUrl()}${route}`, env: { [env]: deps.grant(agentId, project) } };
 }

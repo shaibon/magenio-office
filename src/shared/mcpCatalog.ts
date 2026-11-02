@@ -47,11 +47,11 @@ export interface McpCatalogEntry {
    *  the user's own build): `spec` is a placeholder and the real values come
    *  from `config.mcpDefaults[id].command/args`. */
   userConfigured?: boolean;
-  /** A remote (HTTP) server rather than a local process: `config.mcpDefaults[id].url`
-   *  is the endpoint and a write-only bearer token lives in the encrypted secret
-   *  store under `N8N_SECRET_REF`. Mounted natively as
+  /** A remote (HTTP) server rather than a local process: each project's URL
+   *  is in consent and its write-only bearer lives in the encrypted secret
+   *  store under `remoteSecretRef(id, project)`. Mounted natively as
    *  `type: http` for Claude and `url` + `env_http_headers` for Codex, pointed at the
-   *  loopback broker's `/n8n-mcp` route (which adds the bearer). `spec` is unused. */
+   *  loopback broker's `remoteBrokerRoute(id)` (which adds the bearer). `spec` is unused. */
   remote?: boolean;
   /** Seed for `config.mcpDefaults[id].enabled`. Always === (tier === 'safe-readonly'). */
   defaultEnabled: boolean;
@@ -84,9 +84,9 @@ export interface McpConsentEntry {
   args?: string[];
   /** Legacy single global n8n endpoint; `migrateN8nConsent` folds it into `projects`. */
   url?: string;
-  /** Per-project n8n endpoints (`remote` entry), keyed by project (the key agents carry
+  /** Per-project remote endpoints, keyed by project (the key agents carry
    *  as `project`). Each has its own allow-list; its bearer is in the secret store under
-   *  `n8nSecretRef(project)`. */
+   *  `remoteSecretRef(id, project)`. */
   projects?: Record<string, N8nProjectEntry>;
 }
 
@@ -98,6 +98,8 @@ export interface N8nProjectEntry {
 
 /** Secret-store handle of a project's n8n MCP bearer token (same encrypted store as
  *  the integrations' `int:<id>` secrets, but a distinct namespace). */
+export const remoteSecretRef = (id: string, project: string): string | undefined =>
+  remoteBrokerEnv(id) && isN8nProjectKey(project) ? `mcp:${id}:${project}` : undefined;
 export const n8nSecretRef = (project: string): string => `mcp:n8n:${project}`;
 /** Outcome of a live token check against the project's n8n MCP endpoint. */
 export type N8nTokenCheck = 'valid' | 'invalid' | 'unreachable';
@@ -136,9 +138,20 @@ export function resolveN8nProject(
   project: string | undefined,
   agentId: string
 ): { url: string } | null {
+  return resolveRemoteProject('n8n', consent, project, agentId);
+}
+
+/** A remote is mounted only for a listed agent in its own configured project. */
+export function resolveRemoteProject(
+  id: string,
+  consent: McpConsentEntry | undefined,
+  project: string | undefined,
+  agentId: string
+): { url: string } | null {
+  if (!remoteBrokerEnv(id)) return null;
   if (!consent?.enabled || !isN8nProjectKey(project)) return null;
   const e = Object.prototype.hasOwnProperty.call(consent.projects ?? {}, project) ? consent.projects![project] : undefined;
-  const url = normalizeN8nUrl(e?.url);
+  const url = normalizeRemoteUrl(id, e?.url);
   return url && e?.agents?.includes(agentId) ? { url } : null;
 }
 
@@ -212,6 +225,15 @@ export function runN8nMigration(deps: {
  *  the agent's MCP config sends it in (value `${N8N_BROKER_TOKEN_ENV}`, expanded by
  *  Claude / codex at connect time). */
 export const N8N_BROKER_TOKEN_ENV = 'MD_N8N_MCP_TOKEN';
+export const REMOTE_BROKER_ENV = {
+  n8n: N8N_BROKER_TOKEN_ENV,
+  teamai: 'MD_TEAMAI_MCP_TOKEN'
+} as const;
+export const remoteBrokerEnv = (id: string): string | undefined =>
+  MCP_CATALOG.some((e) => e.id === id && e.remote)
+    ? REMOTE_BROKER_ENV[id as keyof typeof REMOTE_BROKER_ENV] : undefined;
+export const remoteBrokerRoute = (id: string): string | undefined =>
+  remoteBrokerEnv(id) ? `/${id}-mcp` : undefined;
 export const BROKER_TOKEN_HEADER = 'X-MD-Broker-Token';
 
 /** Validate an n8n MCP endpoint: https (http only for a loopback dev instance),
@@ -226,6 +248,31 @@ export function normalizeN8nUrl(raw: string | undefined | null): string | null {
   } catch {
     return null;
   }
+}
+
+/** Team AI additionally accepts literal private IPv4 over the office VPN. */
+export function normalizeRemoteUrl(id: string, raw: string | undefined | null): string | null {
+  if (id === 'n8n') return normalizeN8nUrl(raw);
+  if (id !== 'teamai') return null;
+  try {
+    const input = String(raw ?? '').trim();
+    const u = new URL(input);
+    if (u.username || u.password || u.hostname.includes(':')) return null;
+    if (u.protocol === 'https:') return u.toString();
+    if (u.protocol !== 'http:') return null;
+    // URL canonicalizes hexadecimal, octal and integer host forms. Require the
+    // original authority to have exactly the canonical dotted spelling.
+    const authority = /^http:\/\/([^/?#]+)/i.exec(input)?.[1];
+    const rawHost = authority?.replace(/:\d+$/, '');
+    if (rawHost !== u.hostname) return null;
+    if (u.hostname === 'localhost' || u.hostname === '127.0.0.1') return u.toString();
+    if (!/^(?:\d{1,3}\.){3}\d{1,3}$/.test(u.hostname)) return null;
+    const o = u.hostname.split('.').map(Number);
+    if (o.some((v) => v > 255)) return null;
+    const privateV4 = o[0] === 10 || (o[0] === 172 && o[1] >= 16 && o[1] <= 31)
+      || (o[0] === 192 && o[1] === 168) || (o[0] === 100 && o[1] >= 64 && o[1] <= 127);
+    return privateV4 ? u.toString() : null;
+  } catch { return null; }
 }
 
 /** The READ-ONLY tools of the pinned Trello MCP server build
@@ -472,6 +519,15 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
     // agents, and this server is meant for codex too. The safeguard is the
     // explicit enabled:true consent PLUS a mandatory non-empty agent allow-list
     // (an empty list means "nobody" here, never "everybody").
+    tier: 'secret',
+    defaultEnabled: false,
+    remote: true
+  },
+  {
+    id: 'teamai',
+    label: 'Team AI (read-only)',
+    description: 'Read-only Magenio fleet status: servers, updates, backups, security, incidents and knowledge base. Only listed agents receive it; the bearer is encrypted and never shown to agents.',
+    spec: { command: '', args: [] },
     tier: 'secret',
     defaultEnabled: false,
     remote: true
