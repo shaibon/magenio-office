@@ -87,8 +87,8 @@ import { checkMcpPresence, nodePresenceDeps, installTrelloMcp, nodeInstallDeps }
 import { secretRefFor, INTEGRATION_TEMPLATES } from '../shared/integrations';
 import { buildTempHistory, type TempHistoryInput, type TempLogEvent, type TempRequest, type TempRow } from '../shared/tempHistory';
 import { RosterStore } from './roster';
-import { lastActiveSecAgo, outputCountsAsActivity } from '../shared/fleetActivity';
-import { latestDeepcodeSession } from './deepcodeSession';
+import { fleetActivity } from '../shared/fleetActivity';
+import { latestDeepcodeSession, deepcodeActivity, type DeepcodeActivity } from './deepcodeSession';
 import { orphansToArchive, restorableRosterIds, shieldedButUnrestored, fallbackAction, batchState } from './bootSweep';
 import { buildWorkerLaunch } from './workerLaunch';
 import { ControlRegistry } from './control';
@@ -1538,12 +1538,14 @@ function runBreakerBeat(progressWindowMs: number): void {
  *  it cannot answer "what has this agent cost us". See costLifetime.ts. */
 const costTotals = new CostLedgerTotals();
 
-/** Last terminal output of an agent's live pty, if it has one (activity stand-in for telemetry-less providers). */
-function ptyOutputAtFor(agentId: string): number | undefined {
-  const p = ptyForAgent(agentId);
-  if (!p) return undefined;
-  const provider = hive.registry().agents[agentId]?.provider;
-  return outputCountsAsActivity(provider, workerWake.lastTurnWasStop(agentId)) ? ptyManager.lastOutputAt(p) : undefined;
+/** DeepCode's own live session files for an agent (its notify hook only fires at turn end). Null for
+ *  every other provider, or when nothing can be read. Cached on the files' mtimes by the caller's cadence. */
+function deepcodeActivityFor(agentId: string, a: { provider?: string; cwd?: string }): DeepcodeActivity | null {
+  if (a.provider !== 'deepcode') return null;
+  const recipe = hibernateRecipes.get(agentId)?.opts;
+  const cwd = recipe?.cwd ?? a.cwd;
+  if (!cwd) return null;
+  try { return deepcodeActivity(cwd, homedir(), hive.registry().agents[agentId]?.sessionId); } catch { return null; }
 }
 
 /** Build + write the live fleet snapshot Michael reads (`<hive>/fleet.json`).
@@ -1569,7 +1571,8 @@ function writeFleetSnapshot(): void {
       .map(([id, a]) => {
         const u = usageById.get(id);
         const spans = snap.spans[id] ?? [];
-        const tokens = u ? u.input + u.output + u.cacheRead + u.cacheCreation : 0;
+        const act = fleetActivity(now, { usageTs: u?.ts, usageTokens: u ? u.input + u.output + u.cacheRead + u.cacheCreation : undefined, lastSpanTool: spans.length ? spans[spans.length - 1].tool : null, deepcode: deepcodeActivityFor(id, a) });
+        const tokens = act.tokens ?? 0;
         // `usd` is LIFETIME (reset-corrected). Until the first fold completes we
         // fall back to the session figure rather than publishing a cold $0.
         const lifetime = costTotals.usdFor(id);
@@ -1585,8 +1588,8 @@ function writeFleetSnapshot(): void {
           tokens,
           usd: lifetime === null ? sessionUsd : Number(lifetime.toFixed(4)),
           sessionUsd,
-          lastTool: spans.length ? spans[spans.length - 1].tool : null,
-          lastActiveSecAgo: lastActiveSecAgo(now, u?.ts, ptyOutputAtFor(id)),
+          lastTool: act.lastTool,
+          lastActiveSecAgo: act.lastActiveSecAgo,
           inboxBacklog: hive.inboxBacklog(id),
           onHold: !!a.onHold,
           frozen: frozenIds.has(id),
@@ -5097,7 +5100,8 @@ ipcMain.handle('hive:agentDirectory', () => {
   const agents = Object.entries(reg.agents).map(([id, a]) => {
     const u = usageById.get(id);
     const spans = snap.spans[id] ?? [];
-    const tokens = u ? u.input + u.output + u.cacheRead + u.cacheCreation : 0;
+    const act = fleetActivity(now, { usageTs: u?.ts, usageTokens: u ? u.input + u.output + u.cacheRead + u.cacheCreation : undefined, lastSpanTool: spans.length ? spans[spans.length - 1].tool : null, deepcode: deepcodeActivityFor(id, a) });
+    const tokens = act.tokens ?? 0;
     const ctx = hookServer.contextFor(id);
     return {
       id,
@@ -5117,8 +5121,8 @@ ipcMain.handle('hive:agentDirectory', () => {
       breaker: breaker.levelFor(id),
       tokens,
       usd: u ? Number(u.usd.toFixed(4)) : 0,
-      lastTool: spans.length ? spans[spans.length - 1].tool : null,
-      lastActiveSecAgo: lastActiveSecAgo(now, u?.ts, ptyOutputAtFor(id)),
+      lastTool: act.lastTool,
+      lastActiveSecAgo: act.lastActiveSecAgo,
       contextTokens: ctx?.tokens ?? null,
       contextLimit: ctx?.limit ?? null,
       contextPct: ctx && ctx.limit > 0 ? Math.round((ctx.tokens / ctx.limit) * 100) : null

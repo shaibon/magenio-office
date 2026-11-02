@@ -7,7 +7,7 @@
  *  running. The project code mirrors the CLI's getProjectCode (legacy: path separators → '-', colons
  *  dropped; over 64 chars: sanitized basename prefix + sha256 of the resolved root). */
 import { createHash } from 'node:crypto';
-import { readdirSync, realpathSync, statSync } from 'node:fs';
+import { closeSync, fstatSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 
 const MAX_PROJECT_CODE_LENGTH = 64;
@@ -43,4 +43,67 @@ export function latestDeepcodeSession(cwd: string, home: string): string | undef
     }
   }
   return best?.id;
+}
+
+/** What a DeepCode agent is doing RIGHT NOW (t-296), from the CLI's own files, which it writes during the
+ *  turn (its notify hook only fires at the end of one):
+ *   - sessions-index.json entry: `status` (processing / waiting_for_user / completed / failed),
+ *     cumulative `usage` and `updateTime`, rewritten when a turn starts and after every model response;
+ *   - the session `<id>.jsonl`: one row appended per message; a `role:"tool"` row names the tool run
+ *     in `meta.function.name`. */
+export interface DeepcodeActivity {
+  status: string | null;
+  updatedAt: number | null;
+  totalTokens: number | null;
+  lastTool: string | null;
+}
+
+const TAIL_BYTES = 256 * 1024;
+
+/** The last tool name in the tail of a session file, or null. Reads only the end; rows are one JSON each. */
+export function lastToolInJsonl(file: string): string | null {
+  let fd: number | undefined;
+  try {
+    fd = openSync(file, 'r');
+    const size = fstatSync(fd).size;
+    const len = Math.min(size, TAIL_BYTES);
+    const buf = Buffer.alloc(len);
+    readSync(fd, buf, 0, len, size - len);
+    const lines = buf.toString('utf8').split('\n');
+    if (size > len) lines.shift(); // first line is cut
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const l = lines[i].trim();
+      if (!l) continue;
+      try {
+        const r = JSON.parse(l) as { role?: string; meta?: { function?: { name?: unknown } } };
+        const name = r.role === 'tool' ? r.meta?.function?.name : undefined;
+        if (typeof name === 'string' && name) return name;
+      } catch { /* partial or odd row */ }
+    }
+  } catch { /* no file */ } finally { if (fd !== undefined) try { closeSync(fd); } catch { /* noop */ } }
+  return null;
+}
+
+export function deepcodeActivity(cwd: string, home: string, sessionId?: string): DeepcodeActivity | null {
+  const roots = new Set<string>([cwd]);
+  try { roots.add(realpathSync(cwd)); } catch { /* gone */ }
+  for (const root of roots) {
+    const dir = join(home, '.deepcode', 'projects', deepcodeProjectCode(root));
+    let entries: Array<{ id?: string; status?: string; updateTime?: string; usage?: { total_tokens?: number } }>;
+    try {
+      const idx = JSON.parse(readFileSync(join(dir, 'sessions-index.json'), 'utf8')) as { entries?: unknown };
+      entries = Array.isArray(idx.entries) ? idx.entries : Object.values((idx.entries ?? {}) as object);
+    } catch { continue; }
+    const sid = sessionId && entries.some((e) => e?.id === sessionId) ? sessionId : latestDeepcodeSession(root, home);
+    const e = entries.find((x) => x?.id === sid);
+    if (!e || !sid) continue;
+    const t = typeof e.updateTime === 'string' ? Date.parse(e.updateTime) : NaN;
+    return {
+      status: typeof e.status === 'string' ? e.status : null,
+      updatedAt: Number.isFinite(t) ? t : null,
+      totalTokens: typeof e.usage?.total_tokens === 'number' ? e.usage.total_tokens : null,
+      lastTool: lastToolInJsonl(join(dir, `${sid}.jsonl`))
+    };
+  }
+  return null;
 }
