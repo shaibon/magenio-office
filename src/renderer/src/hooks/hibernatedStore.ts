@@ -12,6 +12,7 @@ export function createHibernatedStore(bridge: () => HibernationBridge) {
   const version = new Map<string, number>();
   const seeded = new Set<string>();
   let unsubscribeEvent: (() => void) | undefined;
+  let refreshTimer: ReturnType<typeof setInterval> | undefined;
 
   const setMember = (id: string, on: boolean): void => {
     if (hibernated.has(id) === on) return;
@@ -21,8 +22,20 @@ export function createHibernatedStore(bridge: () => HibernationBridge) {
     listeners.forEach((l) => l());
   };
 
+  /** Re-ask main about every member: bounds how long a missed wake event can leave a stale badge. */
+  const refresh = (): void => {
+    for (const id of hibernated) {
+      const v = version.get(id) ?? 0;
+      void Promise.resolve(bridge().hibernateState?.(id)).then((s) => {
+        if (s && (version.get(id) ?? 0) === v) setMember(id, !!s.hibernated);
+      }).catch(() => { /* keep what we have */ });
+    }
+  };
+
   const subscribe = (listener: () => void): (() => void) => {
     if (!listeners.size) {
+      refreshTimer = setInterval(refresh, 20_000);
+      (refreshTimer as { unref?: () => void }).unref?.();
       // Events were not heard while nobody was subscribed, so every id must be re-read on remount.
       seeded.clear();
       unsubscribeEvent = bridge().onHiveAgentHibernation?.((e) => {
@@ -33,7 +46,7 @@ export function createHibernatedStore(bridge: () => HibernationBridge) {
     listeners.add(listener);
     return () => {
       listeners.delete(listener);
-      if (!listeners.size) { unsubscribeEvent?.(); unsubscribeEvent = undefined; }
+      if (!listeners.size) { unsubscribeEvent?.(); unsubscribeEvent = undefined; if (refreshTimer) clearInterval(refreshTimer); refreshTimer = undefined; }
     };
   };
 
@@ -49,7 +62,7 @@ export function createHibernatedStore(bridge: () => HibernationBridge) {
     }
   };
 
-  return { subscribe, seed, snapshot: () => hibernated };
+  return { subscribe, seed, refresh, snapshot: () => hibernated };
 }
 
 /** The status to DISPLAY: once the process is gone the agent is hibernated whatever it last said. */

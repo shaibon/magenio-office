@@ -87,6 +87,7 @@ import { checkMcpPresence, nodePresenceDeps, installTrelloMcp, nodeInstallDeps }
 import { secretRefFor, INTEGRATION_TEMPLATES } from '../shared/integrations';
 import { buildTempHistory, type TempHistoryInput, type TempLogEvent, type TempRequest, type TempRow } from '../shared/tempHistory';
 import { RosterStore } from './roster';
+import { lastActiveSecAgo } from '../shared/fleetActivity';
 import { latestDeepcodeSession } from './deepcodeSession';
 import { orphansToArchive, restorableRosterIds, shieldedButUnrestored, fallbackAction, batchState } from './bootSweep';
 import { buildWorkerLaunch } from './workerLaunch';
@@ -1537,6 +1538,12 @@ function runBreakerBeat(progressWindowMs: number): void {
  *  it cannot answer "what has this agent cost us". See costLifetime.ts. */
 const costTotals = new CostLedgerTotals();
 
+/** Last terminal output of an agent's live pty, if it has one (activity stand-in for telemetry-less providers). */
+function ptyOutputAtFor(agentId: string): number | undefined {
+  const p = ptyForAgent(agentId);
+  return p ? ptyManager.lastOutputAt(p) : undefined;
+}
+
 /** Build + write the live fleet snapshot Michael reads (`<hive>/fleet.json`).
  *  Always-on (independent of the heartbeat) since `claude agents` can't see the
  *  hive's sibling sessions. PII-free; never throws (called from a timer). */
@@ -1577,7 +1584,7 @@ function writeFleetSnapshot(): void {
           usd: lifetime === null ? sessionUsd : Number(lifetime.toFixed(4)),
           sessionUsd,
           lastTool: spans.length ? spans[spans.length - 1].tool : null,
-          lastActiveSecAgo: u ? Math.round((now - u.ts) / 1000) : null,
+          lastActiveSecAgo: lastActiveSecAgo(now, u?.ts, ptyOutputAtFor(id)),
           inboxBacklog: hive.inboxBacklog(id),
           onHold: !!a.onHold,
           frozen: frozenIds.has(id),
@@ -5109,7 +5116,7 @@ ipcMain.handle('hive:agentDirectory', () => {
       tokens,
       usd: u ? Number(u.usd.toFixed(4)) : 0,
       lastTool: spans.length ? spans[spans.length - 1].tool : null,
-      lastActiveSecAgo: u ? Math.round((now - u.ts) / 1000) : null,
+      lastActiveSecAgo: lastActiveSecAgo(now, u?.ts, ptyOutputAtFor(id)),
       contextTokens: ctx?.tokens ?? null,
       contextLimit: ctx?.limit ?? null,
       contextPct: ctx && ctx.limit > 0 ? Math.round((ctx.tokens / ctx.limit) * 100) : null
@@ -6592,7 +6599,8 @@ const hibernator = new Hibernator<{ opts: AgentSpawnOptions; owner: Electron.Web
         const wc = recipe?.owner && !recipe.owner.isDestroyed() ? recipe.owner : liveWebContents();
         wc?.send(`pty:data:${ptyId}`, '\r\n\x1b[2m─ hibernated (idle) — wakes on mail, click or input ─\x1b[0m\r\n');
       }
-      liveWebContents()?.send('hive:agentHibernation', { id: agentId, hibernated });
+      // Every window: a floor in a second window must not keep a stale HIBERNATED badge (t-296).
+      for (const w of allWindows) { if (!w.isDestroyed() && !w.webContents.isDestroyed()) w.webContents.send('hive:agentHibernation', { id: agentId, hibernated }); }
     } catch { /* window gone */ }
   },
   // A frozen agent (operator: process alive, no automatic delivery) is never auto-woken by mail.
