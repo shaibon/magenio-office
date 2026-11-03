@@ -1449,6 +1449,14 @@ const api = {
   mcpN8nHasToken: (project: string): Promise<boolean> => ipcRenderer.invoke('mcp:n8nHasToken', project),
   /** Live check of a project's stored token (token never leaves main). */
   mcpN8nTestToken: (project: string): Promise<'missing' | 'valid' | 'invalid' | 'unreachable'> => ipcRenderer.invoke('mcp:n8nTestToken', project),
+  mcpRemoteSetToken: (id: string, project: string, token: string): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('mcp:remoteSetToken', { id, project, token }),
+  mcpRemoteClearToken: (id: string, project: string): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('mcp:remoteClearToken', id, project),
+  mcpRemoteHasToken: (id: string, project: string): Promise<boolean> =>
+    ipcRenderer.invoke('mcp:remoteHasToken', id, project),
+  mcpRemoteTestToken: (id: string, project: string): Promise<'missing' | 'valid' | 'invalid' | 'unreachable'> =>
+    ipcRenderer.invoke('mcp:remoteTestToken', id, project),
   mcpPresence: (id: string): Promise<{ ok: boolean; reason?: string; detail?: string; installDest?: string }> =>
     ipcRenderer.invoke('mcp:presence', { id }),
   /** Clone + build a user-configured MCP server. The destination is chosen by

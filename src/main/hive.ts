@@ -38,7 +38,7 @@ import {
   bridgeOf,
   type AgentProvider
 } from '../shared/agentProvider';
-import { MCP_CATALOG, N8N_BROKER_TOKEN_ENV, BROKER_TOKEN_HEADER, resolveN8nProject, isN8nProjectKey, trelloDeniedToolIds } from '../shared/mcpCatalog';
+import { MCP_CATALOG, BROKER_TOKEN_HEADER, remoteBrokerEnv, resolveRemoteProject, isN8nProjectKey, trelloDeniedToolIds } from '../shared/mcpCatalog';
 import { selectBroadcastTargets } from '../shared/broadcast';
 import { preferredAgentRole, isPmRole } from '../shared/agentRole';
 import { emptyRoleLedger, ledgerRole, normalizeRoleLedger, rememberLedgerRole, type RoleLedger } from '../shared/roleLedger';
@@ -465,6 +465,18 @@ export class HiveManager {
    *  codex config.toml carries it). The caller mints the capability env only on this. */
   private n8nMountedIds = new Set<string>();
   n8nMounted(agentId: string): boolean { return this.n8nMountedIds.has(agentId); }
+  private remoteMountedIds = new Map<string, Set<string>>();
+  remoteMounted(id: string, agentId: string): boolean {
+    return id === 'n8n' ? this.n8nMounted(agentId) : !!this.remoteMountedIds.get(id)?.has(agentId);
+  }
+  private noteRemoteMounted(id: string, agentId: string): void {
+    if (id === 'n8n') this.n8nMountedIds.add(agentId);
+    else {
+      const ids = this.remoteMountedIds.get(id) ?? new Set<string>();
+      ids.add(agentId);
+      this.remoteMountedIds.set(id, ids);
+    }
+  }
 
   /** agentId → the MCP servers we refused to mount because their own
    *  command line does not come up, with the reason. Kept per agent so the spawn
@@ -1059,6 +1071,7 @@ export class HiveManager {
       /** Broker route (`<MD_BROKER_URL>/n8n-mcp`) the n8n MCP is mounted on; set only when a token is stored and the broker runs.
        *  The bearer token itself never reaches the agent: the broker adds it upstream. */
       n8nBrokerUrl?: string;
+      remoteBrokerUrls?: Record<string, string>;
       /** App-resources `skills/` source dir (W3). The bundled read-only skills are
        *  copied into the agent's `.claude/skills/` per spawn; undefined or missing
        *  is a no-op (tolerated until Kevin populates the resource dir). */
@@ -1088,6 +1101,7 @@ export class HiveManager {
     // These records describe one spawn; a later attempt must get a fresh verdict.
     this.mcpMountFailures.delete(meta.id);
     this.n8nMountedIds.delete(meta.id);
+    for (const ids of this.remoteMountedIds.values()) ids.delete(meta.id);
     for (const key of this.mcpFailuresAnnounced) {
       if (key.startsWith(`${meta.id}\u0000`)) this.mcpFailuresAnnounced.delete(key);
     }
@@ -1245,7 +1259,10 @@ export class HiveManager {
             else if (desc.shim === 'deepcode') this.installDeepcodeSettings(meta, opts.autoMode ?? true, opts.model);
             else if (desc.shim === 'codex') {
               env.CODEX_HOME = this.installCodexHooks(dir, meta.id, this.codexMcpTables(meta, opts), meta.cwd);
-              try { if (readFileSync(join(env.CODEX_HOME, 'config.toml'), 'utf8').includes('[mcp_servers.munder-n8n')) this.n8nMountedIds.add(meta.id); } catch { /* not delivered */ }
+              try {
+                const configText = readFileSync(join(env.CODEX_HOME, 'config.toml'), 'utf8');
+                for (const entry of MCP_CATALOG) if (entry.remote && configText.includes(`[mcp_servers.munder-${entry.id}]`)) this.noteRemoteMounted(entry.id, meta.id);
+              } catch { /* not delivered */ }
               // Codex refuses to run hooks from a config dir without persisted
               // "hook trust" (normally an interactive gate). Our hooks.json is
               // hive-authored inside an isolated CODEX_HOME, so we bypass that gate
@@ -1378,7 +1395,7 @@ export class HiveManager {
       env.HIVE_SOCK = sock;
       { const tok = this.spawnHookToken(meta.id); if (tok) env.HIVE_HOOK_TOKEN = tok; else delete env.HIVE_HOOK_TOKEN; }
       const settingsPath = join(this.hookConfigDir(meta.id, dir), 'settings.json');
-      this.writeJson(settingsPath, this.hookSettings(shim, meta.id, meta.cwd, opts.mcpDefaults, opts.theme, this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs), meta, opts.magento, opts.vault, opts.n8nBrokerUrl));
+      this.writeJson(settingsPath, this.hookSettings(shim, meta.id, meta.cwd, opts.mcpDefaults, opts.theme, this.sandboxWritableDirs(meta, dir, root, opts.extraWritableDirs), meta, opts.magento, opts.vault, opts.n8nBrokerUrl, opts.remoteBrokerUrls));
       args.push('--settings', settingsPath);
       // Claude Code ignores `mcpServers` inside --settings (see hookSettings) —
       // it only reads MCP server definitions from a file passed via
@@ -1387,12 +1404,12 @@ export class HiveManager {
       // just handed to Claude through the flag it actually honors. Omitted
       // entirely when no server is enabled, so a plain worker spawns with no
       // --mcp-config at all.
-      const mcpServers = this.buildDefaultMcpServers(meta.cwd, opts.mcpDefaults, meta.id, meta, opts.magento?.config, opts.vault, opts.magento?.stageConfig, opts.n8nBrokerUrl, opts.magento?.gscConfig);
+      const mcpServers = this.buildDefaultMcpServers(meta.cwd, opts.mcpDefaults, meta.id, meta, opts.magento?.config, opts.vault, opts.magento?.stageConfig, opts.n8nBrokerUrl, opts.magento?.gscConfig, opts.remoteBrokerUrls);
       if (Object.keys(mcpServers).length) {
         const mcpConfigPath = join(dir, 'mcp.json');
         this.writeJson(mcpConfigPath, { mcpServers });
         args.push('--mcp-config', mcpConfigPath);
-        if (mcpServers['munder-n8n']) this.n8nMountedIds.add(meta.id);
+        for (const entry of MCP_CATALOG) if (entry.remote && mcpServers[`munder-${entry.id}`]) this.noteRemoteMounted(entry.id, meta.id);
       }
     }
     // A server we refused to mount is a degraded spawn, and the app already
@@ -1809,7 +1826,8 @@ export class HiveManager {
     roleMeta?: Pick<AgentMeta, 'role' | 'capabilities' | 'isGod' | 'provider' | 'project'>,
     magento?: { config?: string; stageConfig?: string; gscConfig?: string; denyRead: string[] },
     vault?: VaultMount,
-    n8nBrokerUrl?: string
+    n8nBrokerUrl?: string,
+    remoteBrokerUrls?: Record<string, string>
   ): unknown {
     // Bundled node, NOT bare `node` — see nodeLauncherPath(). Claude runs each of
     // these through `sh -c` with a stripped PATH, where `node` is often absent.
@@ -1818,7 +1836,7 @@ export class HiveManager {
       ...(matcher ? { matcher } : {}),
       hooks: [{ type: 'command', command: cmd }]
     });
-    const mcpServers = this.buildDefaultMcpServers(cwd, cfg, agentId, roleMeta, magento?.config, vault, magento?.stageConfig, n8nBrokerUrl, magento?.gscConfig);
+    const mcpServers = this.buildDefaultMcpServers(cwd, cfg, agentId, roleMeta, magento?.config, vault, magento?.stageConfig, n8nBrokerUrl, magento?.gscConfig, remoteBrokerUrls);
     // Credential isolation for the Magento MCP: no agent may read any project's
     // magento config or the SSH keys it names (the MCP process itself runs outside
     // the Bash sandbox). Bash children via sandbox.filesystem.denyRead, the Read
@@ -1925,7 +1943,8 @@ export class HiveManager {
     vault?: VaultMount,
     magentoStageConfig?: string,
     n8nBrokerUrl?: string,
-    gscConfig?: string
+    gscConfig?: string,
+    remoteBrokerUrls?: Record<string, string>
   ): Record<string, CodexMcpServer> {
     const out: Record<string, CodexMcpServer> = {};
     const presenceDeps = nodePresenceDeps();
@@ -1964,7 +1983,7 @@ export class HiveManager {
       // Claude only: its hookSettings denyRead keeps the key file away from the agent. Codex has
       // no read restriction, and the key path rides in its config.toml, so it never gets GSC.
       if (e.id === 'gsc' && (!gscConfig || (roleMeta?.provider ?? 'claude') !== 'claude')) continue;
-      // Remote (n8n): fail closed and PER PROJECT. The agent's project must have its own
+      // Remote MCP: fail closed and PER PROJECT. The agent's project must have its own
       // entry that lists the agent (an empty list means nobody, and the role path never
       // applies: this server can run workflows). A missing/invalid URL or token mounts
       // nothing, loudly. `n8nBrokerUrl` is set by the caller only when THIS project's
@@ -1972,15 +1991,19 @@ export class HiveManager {
       if (e.remote) {
         const project = roleMeta?.project;
         if (!isN8nProjectKey(project) || !consent?.projects?.[project]?.agents?.includes(agentId)) continue;
-        const missing = !resolveN8nProject(consent, project, agentId) ? 'a valid https URL' : !n8nBrokerUrl ? 'its bearer token (or the local broker)' : '';
+        const brokerUrl = remoteBrokerUrls?.[e.id] ?? (e.id === 'n8n' ? n8nBrokerUrl : undefined);
+        const missing = !resolveRemoteProject(e.id, consent, project, agentId)
+          ? (e.id === 'n8n' ? 'a valid https URL' : 'a valid MCP URL')
+          : !brokerUrl ? 'its bearer token (or the local broker)' : '';
         if (missing) {
           console.error(`[hive] MCP '${e.id}' not wired for ${agentId}: no ${missing} is configured for project ${project}`);
           this.noteMcpMountFailure(agentId, `munder-${e.id}`, `no ${missing} is configured for project ${project} (Settings → MCP defaults)`);
           continue;
         }
-        // The agent holds only a per-agent broker capability (env var N8N_BROKER_TOKEN_ENV, referenced
-        // here by name so no secret lands in the config file); the broker adds the n8n bearer.
-        out[`munder-${e.id}`] = { type: 'http', url: n8nBrokerUrl!, headers: { [BROKER_TOKEN_HEADER]: `\${${N8N_BROKER_TOKEN_ENV}}` } };
+        // The agent receives only the capability variable name; the broker adds the bearer.
+        const env = remoteBrokerEnv(e.id);
+        if (!env) continue;
+        out[`munder-${e.id}`] = { type: 'http', url: brokerUrl!, headers: { [BROKER_TOKEN_HEADER]: `\${${env}}` } };
         continue;
       }
       // Vault: fail closed. An agent whose repo does not map to a vault project
@@ -3101,9 +3124,9 @@ export class HiveManager {
    */
   private codexMcpTables(
     meta: Pick<AgentMeta, 'id' | 'cwd' | 'role' | 'capabilities' | 'isGod' | 'provider' | 'project'>,
-    opts: { mcpDefaults?: McpDefaultsMap; magento?: { config?: string; stageConfig?: string; gscConfig?: string }; vault?: VaultMount; n8nBrokerUrl?: string }
+    opts: { mcpDefaults?: McpDefaultsMap; magento?: { config?: string; stageConfig?: string; gscConfig?: string }; vault?: VaultMount; n8nBrokerUrl?: string; remoteBrokerUrls?: Record<string, string> }
   ): string {
-    const servers = this.buildDefaultMcpServers(meta.cwd, opts.mcpDefaults, meta.id, meta, opts.magento?.config, opts.vault, opts.magento?.stageConfig, opts.n8nBrokerUrl, opts.magento?.gscConfig);
+    const servers = this.buildDefaultMcpServers(meta.cwd, opts.mcpDefaults, meta.id, meta, opts.magento?.config, opts.vault, opts.magento?.stageConfig, opts.n8nBrokerUrl, opts.magento?.gscConfig, opts.remoteBrokerUrls);
     return codexMcpToml(codexMcpServers(servers, { isGod: !!meta.isGod }));
   }
 

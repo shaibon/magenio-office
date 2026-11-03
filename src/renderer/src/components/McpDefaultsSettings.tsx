@@ -3,7 +3,7 @@ import { useStore } from '@/store/store';
 import { jiraProjectsClient } from '@/jiraProjects/jiraProjectsClient';
 import { useTranslation } from 'react-i18next';
 import type { HarnessConfig } from '@/store/config';
-import { MCP_CATALOG, createConsentWriter, n8nProjectOps, removeN8nProjectFlow, normalizeN8nUrl, isN8nProjectKey, type McpTier, type N8nProjectEntry } from '@shared/mcpCatalog';
+import { MCP_CATALOG, createConsentWriter, n8nProjectOps, removeN8nProjectFlow, normalizeRemoteUrl, isN8nProjectKey, type McpTier, type N8nProjectEntry } from '@shared/mcpCatalog';
 import { canInstallMcp } from './mcpInstallRule';
 
 export interface McpDefaultsSettingsProps {
@@ -195,14 +195,17 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
     }
   };
 
-  // n8n is per project. Bearer tokens are write-only: main tells us only WHETHER one is
-  // stored for a project.
-  const n8nProjects = config.mcpDefaults?.n8n?.projects ?? {};
-  const n8nKeys = Object.keys(n8nProjects).sort().join('\n');
-  const [n8nHasToken, setN8nHasToken] = useState<Record<string, boolean>>({});
-  const [n8nNewProject, setN8nNewProject] = useState('');
-  const [n8nNewAgents, setN8nNewAgents] = useState<string[]>([]);
-  // Existing projects: Jira binding keys + the project tag of the agents in the roster.
+  // Remote settings are keyed by both server id and project, so n8n and Team AI
+  // can use the same project key without sharing a token badge or open row.
+  const remoteProjects = (id: string) => config.mcpDefaults?.[id]?.projects ?? {};
+  const remoteKey = (id: string, project: string) => `${id}:${project}`;
+  const remoteRows = MCP_CATALOG.filter((e) => e.remote).flatMap((e) =>
+    Object.keys(remoteProjects(e.id)).sort().map((project) => [e.id, project] as const));
+  const remoteRowsKey = remoteRows.map(([id, project]) => remoteKey(id, project)).join('\n');
+  const [remoteHasToken, setRemoteHasToken] = useState<Record<string, boolean>>({});
+  const [remoteNewProject, setRemoteNewProject] = useState<Record<string, string>>({});
+  const [remoteNewAgents, setRemoteNewAgents] = useState<Record<string, string[]>>({});
+  const [remoteOpen, setRemoteOpen] = useState<Record<string, boolean>>({});
   const liveAgents = useStore((s) => s.agents);
   const [jiraKeys, setJiraKeys] = useState<string[]>([]);
   useEffect(() => {
@@ -210,69 +213,88 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
     jiraProjectsClient.list().then((l) => { if (alive) setJiraKeys(l.map((b) => b.key)); }).catch(() => undefined);
     return () => { alive = false; };
   }, []);
-  const n8nProjectChoices = [...new Set([...jiraKeys, ...liveAgents.map((a) => a.project ?? '')])]
-    .filter((k) => isN8nProjectKey(k) && !Object.prototype.hasOwnProperty.call(n8nProjects, k)).sort();
-  // Rows are collapsed by default; only a just-added project opens.
-  const [n8nOpen, setN8nOpen] = useState<Record<string, boolean>>({});
+  const remoteProjectChoices = (id: string) => [...new Set([...jiraKeys, ...liveAgents.map((a) => a.project ?? '')])]
+    .filter((k) => isN8nProjectKey(k) && !Object.prototype.hasOwnProperty.call(remoteProjects(id), k)).sort();
   type TokenCheck = 'missing' | 'valid' | 'invalid' | 'unreachable' | 'checking';
-  const [n8nCheck, setN8nCheck] = useState<Record<string, TokenCheck>>({});
-  // Latest check per project wins: a late answer (or one overtaken by Clear / a URL edit) is dropped.
+  const [remoteCheck, setRemoteCheck] = useState<Record<string, TokenCheck>>({});
   const checkSeq = useRef<Record<string, number>>({});
-  const setCheck = (project: string, v: TokenCheck) => { checkSeq.current[project] = (checkSeq.current[project] ?? 0) + 1; setN8nCheck((c) => ({ ...c, [project]: v })); };
-  const checkN8nToken = (project: string) => {
-    setCheck(project, 'checking');
-    const mine = checkSeq.current[project];
-    const land = (v: TokenCheck) => { if (checkSeq.current[project] === mine) setN8nCheck((c) => ({ ...c, [project]: v })); };
-    window.cth.mcpN8nTestToken(project).then(land, () => land('unreachable'));
+  const setCheck = (id: string, project: string, value: TokenCheck) => {
+    const key = remoteKey(id, project);
+    checkSeq.current[key] = (checkSeq.current[key] ?? 0) + 1;
+    setRemoteCheck((c) => ({ ...c, [key]: value }));
+  };
+  const checkRemoteToken = (id: string, project: string) => {
+    const key = remoteKey(id, project);
+    setCheck(id, project, 'checking');
+    const mine = checkSeq.current[key];
+    const land = (value: TokenCheck) => {
+      if (checkSeq.current[key] === mine) setRemoteCheck((c) => ({ ...c, [key]: value }));
+    };
+    window.cth.mcpRemoteTestToken(id, project).then(land, () => land('unreachable'));
   };
   useEffect(() => {
-    const keys = n8nKeys ? n8nKeys.split('\n') : [];
-    void Promise.all(keys.map((k) => window.cth.mcpN8nHasToken(k))).then(
-      (r) => { setN8nHasToken(Object.fromEntries(keys.map((k, i) => [k, r[i]]))); keys.forEach((k, i) => { if (r[i]) checkN8nToken(k); else setCheck(k, 'missing'); }); }, () => undefined);
-  }, [n8nKeys]);
+    const rows = MCP_CATALOG.filter((e) => e.remote).flatMap((e) =>
+      Object.keys(config.mcpDefaults?.[e.id]?.projects ?? {}).map((k) => [e.id, k] as const));
+    void Promise.all(rows.map(([id, k]) => window.cth.mcpRemoteHasToken(id, k))).then(
+      (values) => {
+        setRemoteHasToken(Object.fromEntries(rows.map(([id, k], i) => [remoteKey(id, k), values[i]])));
+        rows.forEach(([id, k], i) => { if (values[i]) checkRemoteToken(id, k); else setCheck(id, k, 'missing'); });
+      }, () => undefined);
+  }, [remoteRowsKey]);
   const fail = () => { setNote(t('mcpDefaults.couldNotSave')); setTimeout(() => setNote(''), 2000); };
-  // Rejects on a failed config write (unlike patchConsent, which reports and swallows).
-  // Semantic edits (n8nProjectOps) applied by the writer to the last persisted state; a
-  // rejected write can never take another project's change with it.
-  const patchN8nProject = (project: string, p: N8nProjectEntry) =>
-    writeConsentPatch('n8n', n8nProjectOps.upsert(project, p)).catch(fail);
-  const saveN8nToken = async (project: string, token: string) => {
+  const patchRemoteProject = (id: string, project: string, value: N8nProjectEntry) =>
+    writeConsentPatch(id, n8nProjectOps.upsert(project, value)).catch(fail);
+  const saveRemoteToken = async (id: string, project: string, token: string) => {
     if (!token.trim()) return; // an empty blur never touches the stored token; Clear is explicit
     try {
-      const res = await window.cth.mcpN8nSetToken(project, token);
+      const res = await window.cth.mcpRemoteSetToken(id, project, token);
       if (!res.ok) throw new Error(res.error);
-      setN8nHasToken((h) => ({ ...h, [project]: true }));
-      checkN8nToken(project);
+      setRemoteHasToken((h) => ({ ...h, [remoteKey(id, project)]: true }));
+      checkRemoteToken(id, project);
     } catch { fail(); }
   };
-  /** True only when main verified the secret is gone; the UI flips to "no token" only then. */
-  const clearN8nToken = async (project: string): Promise<boolean> => {
+  const clearRemoteToken = async (id: string, project: string): Promise<boolean> => {
     try {
-      if (!(await window.cth.mcpN8nClearToken(project)).ok) throw new Error('not cleared');
-      setN8nHasToken((h) => ({ ...h, [project]: false }));
-      setCheck(project, 'missing');
+      if (!(await window.cth.mcpRemoteClearToken(id, project)).ok) throw new Error('not cleared');
+      setRemoteHasToken((h) => ({ ...h, [remoteKey(id, project)]: false }));
+      setCheck(id, project, 'missing');
       return true;
     } catch { fail(); return false; }
   };
-  // Remove: verified Clear first, then the config entry (see removeN8nProjectFlow).
+  // Keep the n8n IPC compatibility path and its verified-clear behavior.
+  const clearN8nToken = async (project: string): Promise<boolean> => {
+    try {
+      if (!(await window.cth.mcpN8nClearToken(project)).ok) throw new Error('not cleared');
+      setRemoteHasToken((h) => ({ ...h, [remoteKey('n8n', project)]: false }));
+      setCheck('n8n', project, 'missing');
+      return true;
+    } catch { fail(); return false; }
+  };
   const removeN8nProject = async (project: string) => {
     if (!(await removeN8nProjectFlow(project, () => clearN8nToken(project), (p) => writeConsentPatch('n8n', p)))) {
       if (!mcpDefaultsRef.current?.n8n?.projects?.[project]) return;
       fail();
     }
   };
-  const tokenBadge = (project: string): string => {
-    const c = n8nCheck[project] ?? (n8nHasToken[project] ? 'checking' : 'missing');
-    return t({ missing: 'mcpDefaults.n8nTokenBadgeMissing', valid: 'mcpDefaults.n8nTokenValid', invalid: 'mcpDefaults.n8nTokenInvalid', unreachable: 'mcpDefaults.n8nTokenUnreachable', checking: 'mcpDefaults.n8nTokenChecking' }[c]);
+  const removeRemoteProject = async (id: string, project: string) => {
+    if (!(await removeN8nProjectFlow(project, () => clearRemoteToken(id, project), (p) => writeConsentPatch(id, p)))) {
+      if (!mcpDefaultsRef.current?.[id]?.projects?.[project]) return;
+      fail();
+    }
   };
-  const addN8nProject = async () => {
-    const project = n8nNewProject.trim();
-    if (!isN8nProjectKey(project) || Object.prototype.hasOwnProperty.call(n8nProjects, project)) { fail(); return; }
-    const agents = n8nNewAgents;
-    setN8nNewProject('');
-    setN8nNewAgents([]);
-    setN8nOpen((o) => ({ ...o, [project]: true }));
-    await patchN8nProject(project, { url: '', agents });
+  const tokenBadge = (id: string, project: string): string => {
+    const key = remoteKey(id, project);
+    const c = remoteCheck[key] ?? (remoteHasToken[key] ? 'checking' : 'missing');
+    return t({ missing: 'mcpDefaults.n8nTokenBadgeMissing', valid: 'mcpDefaults.n8nTokenValid', invalid: 'mcpDefaults.n8nTokenInvalid', unreachable: id === 'n8n' ? 'mcpDefaults.n8nTokenUnreachable' : 'mcpDefaults.remoteTokenUnreachable', checking: 'mcpDefaults.n8nTokenChecking' }[c], { name: MCP_CATALOG.find((e) => e.id === id)?.label ?? id });
+  };
+  const addRemoteProject = async (id: string) => {
+    const project = (remoteNewProject[id] ?? '').trim();
+    if (!isN8nProjectKey(project) || Object.prototype.hasOwnProperty.call(remoteProjects(id), project)) { fail(); return; }
+    const agents = remoteNewAgents[id] ?? [];
+    setRemoteNewProject((v) => ({ ...v, [id]: '' }));
+    setRemoteNewAgents((v) => ({ ...v, [id]: [] }));
+    setRemoteOpen((v) => ({ ...v, [remoteKey(id, project)]: true }));
+    await patchRemoteProject(id, project, { url: '', agents });
   };
 
   const onInstall = async (id: string) => {
@@ -447,60 +469,60 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
 
                       {entry.remote && (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
-                          <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{t('mcpDefaults.n8nProjectsHint')}</span>
-                          {Object.entries(n8nProjects).sort(([a], [b]) => a.localeCompare(b)).map(([project, pe]) => (
+                          <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{t('mcpDefaults.remoteProjectsHint', { name: entry.label })}</span>
+                          {Object.entries(config.mcpDefaults?.[entry.id]?.projects ?? {}).sort(([a], [b]) => a.localeCompare(b)).map(([project, pe]) => (
                             <div key={project} style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: 8, boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)' }}>
                               <button
                                 type="button"
-                                aria-expanded={!!n8nOpen[project]}
-                                onClick={() => setN8nOpen((o) => ({ ...o, [project]: !o[project] }))}
+                                aria-expanded={!!remoteOpen[remoteKey(entry.id, project)]}
+                                onClick={() => setRemoteOpen((o) => ({ ...o, [remoteKey(entry.id, project)]: !o[remoteKey(entry.id, project)] }))}
                                 style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 0, background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', fontSize: 11, color: 'var(--cth-ink-500)' }}
                               >
-                                <span aria-hidden style={{ width: 10, display: 'inline-block', transform: n8nOpen[project] ? 'rotate(90deg)' : undefined, color: 'var(--cth-ink-700)' }}>▸</span>
+                                <span aria-hidden style={{ width: 10, display: 'inline-block', transform: remoteOpen[remoteKey(entry.id, project)] ? 'rotate(90deg)' : undefined, color: 'var(--cth-ink-700)' }}>▸</span>
                                 <span style={{ ...labelStyle, flex: 1 }}>{project}</span>
-                                <span>{normalizeN8nUrl(pe.url) ? t('mcpDefaults.n8nUrlOk') : pe.url ? t('mcpDefaults.n8nUrlInvalid') : t('mcpDefaults.n8nUrlMissing')}</span>
-                                <span>{tokenBadge(project)}</span>
+                                <span>{normalizeRemoteUrl(entry.id, pe.url) ? t('mcpDefaults.n8nUrlOk') : pe.url ? t('mcpDefaults.n8nUrlInvalid') : t('mcpDefaults.n8nUrlMissing')}</span>
+                                <span>{tokenBadge(entry.id, project)}</span>
                                 <span>{t('mcpDefaults.n8nAgentsCount', { n: (pe.agents ?? []).length })}</span>
                               </button>
-                              {n8nOpen[project] && (<>
-                              <label style={labelStyle}>{t('mcpDefaults.n8nUrl')}</label>
+                              {remoteOpen[remoteKey(entry.id, project)] && (<>
+                              <label style={labelStyle}>{t('mcpDefaults.remoteUrl', { name: entry.label })}</label>
                               <ConsentField
                                 value={pe.url ?? ''}
-                                onCommit={(v) => { if (n8nHasToken[project]) setCheck(project, 'checking'); void patchN8nProject(project, { url: v.trim() }).then(() => { if (n8nHasToken[project]) checkN8nToken(project); }); }}
-                                placeholder={t('mcpDefaults.n8nUrlPlaceholder')}
+                                onCommit={(v) => { if (remoteHasToken[remoteKey(entry.id, project)]) setCheck(entry.id, project, 'checking'); void patchRemoteProject(entry.id, project, { url: v.trim() }).then(() => { if (remoteHasToken[remoteKey(entry.id, project)]) checkRemoteToken(entry.id, project); }); }}
+                                placeholder={t(entry.id === 'teamai' ? 'mcpDefaults.teamaiUrlPlaceholder' : 'mcpDefaults.n8nUrlPlaceholder')}
                                 style={{ width: '100%', padding: '6px 8px', background: 'var(--cth-paper-100)', border: 'none', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)', fontSize: 12, color: 'var(--cth-ink-900)' }}
                               />
-                              <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{t('mcpDefaults.n8nUrlHint')}</span>
+                              <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{t(entry.id === 'teamai' ? 'mcpDefaults.teamaiUrlHint' : 'mcpDefaults.n8nUrlHint')}</span>
 
                               <label style={labelStyle}>{t('mcpDefaults.n8nToken')}</label>
                               <input
                                 type="password"
                                 autoComplete="off"
-                                key={`${project}:${!!n8nHasToken[project]}`}
-                                defaultValue={n8nHasToken[project] ? N8N_TOKEN_MASK : ''}
+                                key={`${project}:${!!remoteHasToken[remoteKey(entry.id, project)]}`}
+                                defaultValue={remoteHasToken[remoteKey(entry.id, project)] ? N8N_TOKEN_MASK : ''}
                                 onFocus={(e) => { if (e.target.value === N8N_TOKEN_MASK) e.target.select(); }}
-                                onBlur={(e) => { const v = e.target.value; if (v === N8N_TOKEN_MASK) return; e.target.value = n8nHasToken[project] ? N8N_TOKEN_MASK : ''; void saveN8nToken(project, v); }}
+                                onBlur={(e) => { const v = e.target.value; if (v === N8N_TOKEN_MASK) return; e.target.value = remoteHasToken[remoteKey(entry.id, project)] ? N8N_TOKEN_MASK : ''; void saveRemoteToken(entry.id, project, v); }}
                                 placeholder={t('mcpDefaults.n8nTokenPlaceholder')}
                                 style={{ width: '100%', padding: '6px 8px', background: 'var(--cth-paper-100)', border: 'none', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)', fontSize: 12, color: 'var(--cth-ink-900)' }}
                               />
                               <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>
-                                {n8nHasToken[project] ? t('mcpDefaults.n8nTokenSet') : t('mcpDefaults.n8nTokenHint')}
+                                {remoteHasToken[remoteKey(entry.id, project)] ? t('mcpDefaults.remoteTokenSet') : t('mcpDefaults.remoteTokenHint', { name: entry.label })}
                               </span>
-                              {n8nHasToken[project] && (
-                                <button type="button" onClick={() => { checkN8nToken(project); }} disabled={n8nCheck[project] === 'checking'} style={{ alignSelf: 'flex-start', padding: '3px 10px 1px', background: 'var(--cth-paper-100)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-700)', border: 'none', fontFamily: 'var(--cth-font-display)', fontSize: 8, lineHeight: '14px', color: 'var(--cth-ink-900)', cursor: 'pointer', textTransform: 'uppercase' }}>
+                              {remoteHasToken[remoteKey(entry.id, project)] && (
+                                <button type="button" onClick={() => { checkRemoteToken(entry.id, project); }} disabled={remoteCheck[remoteKey(entry.id, project)] === 'checking'} style={{ alignSelf: 'flex-start', padding: '3px 10px 1px', background: 'var(--cth-paper-100)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-700)', border: 'none', fontFamily: 'var(--cth-font-display)', fontSize: 8, lineHeight: '14px', color: 'var(--cth-ink-900)', cursor: 'pointer', textTransform: 'uppercase' }}>
                                   {t('mcpDefaults.n8nTokenVerify')}
                                 </button>
                               )}
-                              {n8nHasToken[project] && (
-                                <button type="button" onClick={() => { void clearN8nToken(project); }} style={{ alignSelf: 'flex-start', padding: '3px 10px 1px', background: 'var(--cth-paper-100)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-700)', border: 'none', fontFamily: 'var(--cth-font-display)', fontSize: 8, lineHeight: '14px', color: 'var(--cth-ink-900)', cursor: 'pointer', textTransform: 'uppercase' }}>
+                              {remoteHasToken[remoteKey(entry.id, project)] && (
+                                <button type="button" onClick={() => { void (entry.id === 'n8n' ? clearN8nToken(project) : clearRemoteToken(entry.id, project)); }} style={{ alignSelf: 'flex-start', padding: '3px 10px 1px', background: 'var(--cth-paper-100)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-700)', border: 'none', fontFamily: 'var(--cth-font-display)', fontSize: 8, lineHeight: '14px', color: 'var(--cth-ink-900)', cursor: 'pointer', textTransform: 'uppercase' }}>
                                   {t('mcpDefaults.n8nTokenClear')}
                                 </button>
                               )}
 
                               <label style={labelStyle}>{t('mcpDefaults.agents')}</label>
-                              <N8nAgentPicker project={project} value={pe.agents ?? []} onChange={(v) => { void patchN8nProject(project, { agents: v }); }} />
-                              <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{t('mcpDefaults.n8nAgentsHint')}</span>
-                              <button type="button" onClick={() => { void removeN8nProject(project); }} style={{ alignSelf: 'flex-start', padding: '3px 10px 1px', background: 'var(--cth-paper-100)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-700)', border: 'none', fontFamily: 'var(--cth-font-display)', fontSize: 8, lineHeight: '14px', color: 'var(--cth-ink-900)', cursor: 'pointer', textTransform: 'uppercase' }}>
+                              <N8nAgentPicker project={project} value={pe.agents ?? []} onChange={(v) => { void patchRemoteProject(entry.id, project, { agents: v }); }} />
+                              <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{t('mcpDefaults.remoteAgentsHint', { name: entry.label })}</span>
+                              <button type="button" onClick={() => { void (entry.id === 'n8n' ? removeN8nProject(project) : removeRemoteProject(entry.id, project)); }} style={{ alignSelf: 'flex-start', padding: '3px 10px 1px', background: 'var(--cth-paper-100)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-700)', border: 'none', fontFamily: 'var(--cth-font-display)', fontSize: 8, lineHeight: '14px', color: 'var(--cth-ink-900)', cursor: 'pointer', textTransform: 'uppercase' }}>
                                 {t('mcpDefaults.n8nProjectRemove')}
                               </button>
                               </>)}
@@ -508,16 +530,16 @@ export function McpDefaultsSettings({ config }: McpDefaultsSettingsProps) {
                           ))}
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                             <select
-                              value={n8nNewProject}
+                              value={remoteNewProject[entry.id] ?? ''}
                               aria-label={t('mcpDefaults.n8nProject')}
-                              onChange={(e) => { setN8nNewProject(e.target.value); setN8nNewAgents([]); }}
+                              onChange={(e) => { setRemoteNewProject((v) => ({ ...v, [entry.id]: e.target.value })); setRemoteNewAgents((v) => ({ ...v, [entry.id]: [] })); }}
                               style={{ width: '100%', padding: '6px 8px', background: 'var(--cth-paper-100)', border: 'none', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)', fontSize: 12, color: 'var(--cth-ink-900)' }}
                             >
                               <option value="">{t('mcpDefaults.n8nProjectPick')}</option>
-                              {n8nProjectChoices.map((k) => <option key={k} value={k}>{k}</option>)}
+                              {remoteProjectChoices(entry.id).map((k) => <option key={k} value={k}>{k}</option>)}
                             </select>
-                            <N8nAgentPicker project={n8nNewProject} value={n8nNewAgents} onChange={setN8nNewAgents} />
-                            <button type="button" disabled={!n8nNewProject} onClick={() => { void addN8nProject(); }} style={{ alignSelf: 'flex-start', padding: '3px 10px 1px', background: 'var(--cth-paper-100)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-700)', border: 'none', fontFamily: 'var(--cth-font-display)', fontSize: 8, lineHeight: '14px', color: 'var(--cth-ink-900)', cursor: 'pointer', textTransform: 'uppercase' }}>
+                            <N8nAgentPicker project={remoteNewProject[entry.id] ?? ''} value={remoteNewAgents[entry.id] ?? []} onChange={(agents) => setRemoteNewAgents((v) => ({ ...v, [entry.id]: agents }))} />
+                            <button type="button" disabled={!remoteNewProject[entry.id]} onClick={() => { void addRemoteProject(entry.id); }} style={{ alignSelf: 'flex-start', padding: '3px 10px 1px', background: 'var(--cth-paper-100)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-700)', border: 'none', fontFamily: 'var(--cth-font-display)', fontSize: 8, lineHeight: '14px', color: 'var(--cth-ink-900)', cursor: 'pointer', textTransform: 'uppercase' }}>
                               {t('mcpDefaults.n8nProjectAdd')}
                             </button>
                           </div>
