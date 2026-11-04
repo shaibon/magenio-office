@@ -398,7 +398,7 @@ export interface SlackReplyServerOptions {
   onReplied?: (thread_ts: string) => void;
   /** Alert channel configured for a project key (binding `slackAlertChannel`), or
    *  null; with no project, the global fallback. Absent = the /alert endpoint is disabled. */
-  alertChannelFor?: (project: string | undefined) => string | null;
+  alertChannelFor?: (project: string | undefined, opts?: { noFallback?: boolean }) => string | null;
   /** True when the presented broker token may write (god / MD_BROKER holders). */
   isBrokerWriter?: (token: string | undefined) => boolean;
   /** A PM token may alert, but only for a project it is bound to (needs `project`). */
@@ -419,7 +419,7 @@ export class SlackReplyServer {
   private readonly token: string;
   private readonly getBotToken: () => string | undefined;
   private readonly onReplied?: (thread_ts: string) => void;
-  private readonly alertChannelFor?: (project: string | undefined) => string | null;
+  private readonly alertChannelFor?: (project: string | undefined, opts?: { noFallback?: boolean }) => string | null;
   private readonly isBrokerWriter?: (token: string | undefined) => boolean;
   private readonly isPmForProject?: (token: string | undefined, project: string | undefined) => boolean;
 
@@ -495,7 +495,7 @@ export class SlackReplyServer {
         if (pmCandidate && !this.isPmForProject!(brokerTok, parsed.project?.trim() || undefined)) {
           res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'alert requires god, or a PM alerting its own project (--project)' })); return;
         }
-        const configured = this.alertChannelFor ? this.alertChannelFor(parsed.project?.trim() || undefined) : null;
+        const configured = this.alertChannelFor ? this.alertChannelFor(parsed.project?.trim() || undefined, { noFallback: pmCandidate }) : null;
         if (!parsed.text) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'text required' })); return; }
         if (!configured) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'no alert channel configured for this project (or no global fallback)' })); return; }
         // channel is optional; when given it must be exactly the configured one.

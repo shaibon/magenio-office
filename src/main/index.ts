@@ -540,6 +540,7 @@ const integrationBroker = new IntegrationBroker({
     },
     targetExists: (id) => id === 'broadcast' || id === 'god' || !!hive.registry().agents[id],
     isGod: (id) => hive.registry().godId === id,
+    godId: () => hive.registry().godId ?? null,
     log: (event) => hive.appendLog(event)
   }
 });
@@ -2106,7 +2107,7 @@ async function startSlackReplyServer(): Promise<void> {
     // An agent posted a DIRECT substantive reply into this thread → record it so the
     // done-summary poller skips it (the poller is a fallback, not a duplicator).
     onReplied: (thread_ts) => { directlyRepliedThreads.add(thread_ts); },
-    alertChannelFor: (project) => alertChannelFor(readConfig().jiraProjects, project, readConfig().slackAlertFallbackChannel),
+    alertChannelFor: (project, opts) => alertChannelFor(readConfig().jiraProjects, project, readConfig().slackAlertFallbackChannel, !!opts?.noFallback),
     isBrokerWriter: (tok) => integrationBroker.hasWritableCapability(tok),
     isPmForProject: (tok, project) => integrationBroker.pmMayAlert(tok, project)
   });

@@ -33,6 +33,8 @@ export interface AutomationHost {
   /** Target check: a registered agent id, or 'god' / 'broadcast'. */
   targetExists(id: string): boolean;
   isGod(agentId: string): boolean;
+  /** The real id of god, so the alias 'god' and that id count as ONE recipient. Optional. */
+  godId?(): string | null;
   log(event: Record<string, unknown>): void;
   now?: () => number;
 }
@@ -40,6 +42,8 @@ export interface AutomationHost {
 export interface AutomationResult { status: number; body: unknown }
 
 export const MAX_AUTOMATIONS_PER_AGENT = 10;
+/** Ceiling on dispatch triggers created by god in total (the per-recipient cap alone grows with the roster). */
+export const MAX_GOD_AUTOMATIONS_TOTAL = 100;
 export const MIN_INTERVAL_MINUTES = 5;
 export const MAX_INTERVAL_MINUTES = 7 * 24 * 60;
 const MAX_LABEL = 80;
@@ -119,9 +123,13 @@ export function createAutomation(host: AutomationHost, actor: string, raw: unkno
   // Non-god: the cap is per CREATOR. god sets triggers for the whole team, so its cap
   // is per RECIPIENT instead (10 for each agent it targets), not 10 in total.
   const god = host.isGod(actor);
-  const mine = all.filter((m) => (god ? m.createdBy === actor && m.to === fields.to : m.createdBy === actor));
+  const canon = (t: string): string => (t === 'god' ? (host.godId?.() ?? 'god') : t);
+  const mine = all.filter((m) => (god ? m.createdBy === actor && canon(m.to) === canon(fields.to!) : m.createdBy === actor));
   if (mine.length >= MAX_AUTOMATIONS_PER_AGENT) {
     return fail(429, 'cap_reached', `at most ${MAX_AUTOMATIONS_PER_AGENT} automations per ${god ? 'recipient' : 'agent'}; delete one first`);
+  }
+  if (god && all.filter((m) => (m.kind ?? 'dispatch') === 'dispatch' && m.createdBy && host.isGod(m.createdBy)).length >= MAX_GOD_AUTOMATIONS_TOTAL) {
+    return fail(429, 'cap_reached', `at most ${MAX_GOD_AUTOMATIONS_TOTAL} automations created by god in total; delete one first`);
   }
   const now = (host.now ?? Date.now)();
   const slug = fields.label!.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 24) || 'run';

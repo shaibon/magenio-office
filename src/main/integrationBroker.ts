@@ -417,8 +417,8 @@ export class IntegrationBroker {
    *  and ONLY when the issue key in the PATH (or `fields.project.key` of a create)
    *  belongs to a project the PM is bound to. Strict on purpose: no percent-escapes,
    *  dot-segments or numeric ids in the path (they could name another issue past the
-   *  check), no method-override headers, no `issuelinks` in the body (it would touch
-   *  an issue of another project). The body is read once, checked, then forwarded. */
+   *  check), no method-override headers, and a parsed, allow-listed JSON body (no links/parent/epic
+   *  at any depth) that is forwarded re-serialised. The real project of the issue is read from Jira first. */
   private async pmJiraWrite(req: IncomingMessage, res: ServerResponse, cap: Capability): Promise<void> {
     const deny = (why: string): void => IntegrationBroker.sendError(res, 403, 'forbidden', `PM Jira write: ${why}`);
     const projects = this.pmProjects(cap);
@@ -434,24 +434,76 @@ export class IntegrationBroker {
     const sub = m[2];
     const okMethod = !key ? method === 'POST' : !sub ? method === 'PUT' : (sub === 'assignee' ? method === 'PUT' : method === 'POST');
     if (!okMethod) return deny(`${method} not allowed on this path`);
+    const q = rawUrl.indexOf('?');
+    const qBad = vetPmJiraQuery(q < 0 ? '' : rawUrl.slice(q + 1));
+    if (qBad) return deny(qBad);
     if (key && !projects.includes(key.slice(0, key.lastIndexOf('-')).toUpperCase())) return deny('issue is not in a project bound to this agent');
-    let body: Buffer;
-    try { body = await readBodyCapped(req); } catch (e) {
+    // The body must arrive as plain UTF-8 JSON: any content-encoding or other charset would let the
+    // bytes mean one thing to this check and another to Jira.
+    const enc = req.headers['content-encoding'];
+    if (enc && String(enc).trim().toLowerCase() !== 'identity') return deny('content-encoding is not allowed');
+    const ct = String(req.headers['content-type'] ?? '');
+    const cs = /charset\s*=\s*"?([^";\s]+)/i.exec(ct)?.[1];
+    if (cs && !/^utf-?8$/i.test(cs)) return deny('only utf-8 bodies are allowed');
+    let raw: Buffer;
+    try { raw = await readBodyCapped(req); } catch (e) {
       return (e as Error).message === 'too_large'
         ? IntegrationBroker.sendError(res, 413, 'payload_too_large', 'request body too large')
         : IntegrationBroker.sendError(res, 400, 'bad_request', 'could not read request body');
     }
-    if (/issuelinks/i.test(body.toString('utf8'))) return deny('issue links are not allowed');
+    let parsed: unknown;
+    try { parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(raw)); } catch {
+      return IntegrationBroker.sendError(res, 400, 'bad_request', 'body must be valid UTF-8 JSON');
+    }
+    const kind = !key ? 'create' : !sub ? 'edit' : (sub as 'assignee' | 'transitions' | 'comment' | 'worklog');
+    const bad = vetPmJiraBody(kind, parsed);
+    if (bad) return deny(bad);
     if (!key) { // create: the project is named in the body
-      let proj: { key?: unknown; id?: unknown } | undefined;
-      try { proj = (JSON.parse(body.toString('utf8')) as { fields?: { project?: { key?: unknown; id?: unknown } } })?.fields?.project; } catch {
-        return IntegrationBroker.sendError(res, 400, 'bad_request', 'body must be valid JSON');
-      }
+      const proj = (parsed as { fields?: { project?: { key?: unknown; id?: unknown } } }).fields?.project;
       const pk = proj?.key;
       if (proj && proj.id !== undefined) return deny('fields.project.id is not allowed, use key');
       if (typeof pk !== 'string' || !projects.includes(pk.trim().toUpperCase())) return deny('fields.project.key is not a project bound to this agent');
+    } else {
+      // A moved issue keeps answering to its OLD key, so the prefix proves nothing: ask Jira where it lives now.
+      const real = await this.jiraProjectOf(key);
+      if (!real) return IntegrationBroker.sendError(res, 502, 'bad_gateway', 'PM Jira write: could not verify the issue project');
+      if (!projects.includes(real)) return deny('issue is not in a project bound to this agent');
     }
-    this.proxyIntegration(req, res, cap, rawUrl, body);
+    // Forward the document we vetted, re-serialised: not the original bytes.
+    req.headers['content-type'] = 'application/json';
+    delete req.headers['content-encoding'];
+    this.proxyIntegration(req, res, cap, rawUrl, Buffer.from(JSON.stringify(parsed), 'utf8'));
+  }
+
+  private readonly projectOfCache = new Map<string, { project: string; exp: number }>();
+
+  /** The project an issue key belongs to NOW (upper-case), read with the broker's own Jira credential;
+   *  null when it cannot be established (fail closed). Cached briefly. */
+  private async jiraProjectOf(key: string): Promise<string | null> {
+    const ck = key.toUpperCase();
+    const hit = this.projectOfCache.get(ck);
+    if (hit && hit.exp > Date.now()) return hit.project;
+    const rec = this.deps.getRecord('jira');
+    if (!rec || !rec.enabled) return null;
+    const upstream = resolveUpstreamUrl(rec.baseUrl, `issue/${encodeURIComponent(key)}?fields=project`);
+    if (!upstream) return null;
+    let secret: string | undefined;
+    if (authTypeNeedsSecret(rec.authType)) {
+      secret = this.deps.getSecret(rec.secretRef);
+      if (!secret) return null;
+    }
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), UPSTREAM_TIMEOUT_MS);
+    try {
+      const r = await fetch(upstream, { method: 'GET', headers: { accept: 'application/json', 'user-agent': DEFAULT_USER_AGENT, ...buildAuthHeaders(rec.authType, rec.authHeader, secret) }, redirect: 'manual', signal: ac.signal });
+      if (!r.ok) return null;
+      const pk = ((await r.json()) as { fields?: { project?: { key?: unknown } } })?.fields?.project?.key;
+      if (typeof pk !== 'string' || !pk) return null;
+      const project = pk.toUpperCase();
+      if (this.projectOfCache.size > 500) this.projectOfCache.clear();
+      this.projectOfCache.set(ck, { project, exp: Date.now() + 30_000 });
+      return project;
+    } catch { return null; } finally { clearTimeout(timer); }
   }
 
   private proxyIntegration(req: IncomingMessage, res: ServerResponse, cap: Capability, rawUrl: string, body?: Buffer): void {
@@ -580,6 +632,73 @@ export class IntegrationBroker {
       clearTimeout(timer);
     }
   }
+}
+
+/** PM Jira write — what a PM may send, as an ALLOW-list (a deny-list on raw bytes was bypassable
+ *  with JSON \u-escapes and UTF-16). The body is parsed once and the PARSED document is what is
+ *  checked and forwarded (re-serialised), so the check and Jira see the same thing. */
+const JIRA_FIELDS = new Set(['summary', 'description', 'labels', 'priority', 'assignee', 'reporter', 'components',
+  'duedate', 'fixVersions', 'versions', 'environment', 'resolution', 'timetracking']);
+const JIRA_CREATE_ONLY_FIELDS = new Set(['project', 'issuetype']);
+const JIRA_UPDATE_OPS = new Set(['comment', 'labels']);
+const JIRA_BODY_KEYS: Record<string, Set<string>> = {
+  create: new Set(['fields', 'update']),
+  edit: new Set(['fields', 'update']),
+  transitions: new Set(['transition', 'fields', 'update']),
+  comment: new Set(['body', 'visibility']),
+  worklog: new Set(['comment', 'started', 'timeSpent', 'timeSpentSeconds', 'visibility']),
+  assignee: new Set(['accountId', 'name', 'key'])
+};
+/** Keys that link or re-parent an issue (touching an issue of another project) — refused at any depth. */
+const JIRA_LINK_KEYS = new Set(['issuelinks', 'parent', 'inwardissue', 'outwardissue', 'epic', 'epiclink', 'epic link']);
+const JIRA_QUERY_PARAMS: Record<string, RegExp> = {
+  notifyUsers: /^(true|false)$/, returnIssue: /^(true|false)$/, updateHistory: /^(true|false)$/,
+  expand: /^[A-Za-z0-9_.,]{1,100}$/, overrideScreenSecurity: /^false$/, overrideEditableFlag: /^false$/
+};
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+
+function hasLinkKey(v: unknown, depth = 0): boolean {
+  if (depth > 50) return true; // absurd nesting: refuse
+  if (Array.isArray(v)) return v.some((x) => hasLinkKey(x, depth + 1));
+  if (isObj(v)) return Object.entries(v).some(([k, x]) => JIRA_LINK_KEYS.has(k.toLowerCase()) || hasLinkKey(x, depth + 1));
+  return false;
+}
+
+/** null = acceptable; otherwise the reason it is refused. */
+export function vetPmJiraBody(kind: 'create' | 'edit' | 'transitions' | 'comment' | 'worklog' | 'assignee', body: unknown): string | null {
+  if (!isObj(body)) return 'body must be a JSON object';
+  if (hasLinkKey(body)) return 'issue links, parent and epic changes are not allowed';
+  const top = JIRA_BODY_KEYS[kind];
+  for (const k of Object.keys(body)) if (!top.has(k)) return `field "${k}" is not allowed`;
+  if (body.fields !== undefined) {
+    if (!isObj(body.fields)) return 'fields must be an object';
+    for (const k of Object.keys(body.fields)) {
+      if (!JIRA_FIELDS.has(k) && !(kind === 'create' && JIRA_CREATE_ONLY_FIELDS.has(k))) return `fields.${k} is not allowed`;
+    }
+  }
+  if (body.update !== undefined) {
+    if (!isObj(body.update)) return 'update must be an object';
+    for (const k of Object.keys(body.update)) if (!JIRA_UPDATE_OPS.has(k)) return `update.${k} is not allowed`;
+  }
+  if (kind === 'transitions' && body.transition !== undefined) {
+    if (!isObj(body.transition)) return 'transition must be an object';
+    for (const k of Object.keys(body.transition)) if (k !== 'id' && k !== 'name') return `transition.${k} is not allowed`;
+  }
+  return null;
+}
+
+/** null = acceptable query string (or none). Unknown or repeated parameters are refused. */
+export function vetPmJiraQuery(query: string): string | null {
+  if (!query) return null;
+  const seen = new Set<string>();
+  for (const part of query.split('&')) {
+    const [k, v = ''] = part.split('=');
+    if (!Object.prototype.hasOwnProperty.call(JIRA_QUERY_PARAMS, k)) return `query parameter "${k}" is not allowed`;
+    if (seen.has(k)) return `query parameter "${k}" repeated`;
+    seen.add(k);
+    if (!JIRA_QUERY_PARAMS[k].test(v)) return `query parameter "${k}" has an invalid value`;
+  }
+  return null;
 }
 
 async function readJson(req: IncomingMessage): Promise<unknown> {

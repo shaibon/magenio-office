@@ -270,16 +270,18 @@ export function isSlackChannelId(v: string): boolean {
 export function alertChannelFor(
   bindings: JiraProjectBinding[] | undefined,
   projectKey: string | undefined,
-  fallback?: string
+  fallback?: string,
+  /** A PM alerts only into its OWN project's channel: never the global fallback. */
+  noFallback = false
 ): string | null {
   const valid = (v?: string): string | null => {
     const t = v?.trim();
     return t && isSlackChannelId(t) ? t : null;
   };
   const key = projectKey?.trim().toUpperCase();
-  if (!key) return valid(fallback);
+  if (!key) return noFallback ? null : valid(fallback);
   const b = (bindings ?? []).find((x) => x.key.toUpperCase() === key && x.enabled !== false);
   if (!b) return null;
   const own = b.slackAlertChannel?.trim() || b.slackChannels?.[0]?.trim();
-  return own ? valid(own) : valid(fallback);
+  return own ? valid(own) : noFallback ? null : valid(fallback);
 }
