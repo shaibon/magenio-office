@@ -2,6 +2,7 @@ import { gscConfigForProject, magentoConfigForProject, magentoStageConfigForProj
 import { checkN8nToken } from './n8nTokenCheck';
 import { shouldRetryWithoutResume } from '../shared/resumeFailure';
 import { alertChannelFor, isSlackChannelId } from '../shared/jiraProjects';
+import { brokerGrantPlan } from '../shared/brokerGrant';
 import { withCodexSandboxMode, withCodexSandboxCommand } from '../shared/codexSandbox';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
 import { execFileSync, spawn } from 'node:child_process';
@@ -493,7 +494,13 @@ const remoteGrantFor = (id: string, project: string | undefined, agentId: string
  *  it without ever seeing a credential. getRecord/getSecret are injected so the broker
  *  stays electron-free + unit-testable. Started in bootstrapHiveServices; each worker is
  *  granted a per-worker capability token at spawn (revoked in teardownPty). */
+/** Resolves when the first integrationBroker.start() settles (spawns wait on it). */
+let brokerStarted: Promise<unknown> = Promise.resolve();
 const integrationBroker = new IntegrationBroker({
+  // Writable Jira scope of a PM: the projects whose binding lists this agent
+  // EXPLICITLY (an empty `agents` means "all agents" for polling, not a write grant).
+  pmJiraProjects: (agentId) => jiraProjects.listBindings()
+    .filter((b) => b.enabled && b.agents?.includes(agentId)).map((b) => b.key.toUpperCase()),
   getRecord: integrations.getRecord,
   getSecret: integrations.getSecret,
   n8nUpstream: (agentId, project) => {
@@ -2100,7 +2107,8 @@ async function startSlackReplyServer(): Promise<void> {
     // done-summary poller skips it (the poller is a fallback, not a duplicator).
     onReplied: (thread_ts) => { directlyRepliedThreads.add(thread_ts); },
     alertChannelFor: (project) => alertChannelFor(readConfig().jiraProjects, project, readConfig().slackAlertFallbackChannel),
-    isBrokerWriter: (tok) => integrationBroker.hasWritableCapability(tok)
+    isBrokerWriter: (tok) => integrationBroker.hasWritableCapability(tok),
+    isPmForProject: (tok, project) => integrationBroker.pmMayAlert(tok, project)
   });
   const r = await slackReplyServer.start();
   if (!r.ok || r.port === undefined) {
@@ -3564,9 +3572,13 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       // is read from the app-owned role ledger (HiveManager.isPrivilegedPm), NOT
       // from registry.json: that file sits in a directory agents can write, and an
       // agent promoting itself to PM there must grant it nothing.
-      const isPm = hive.isPrivilegedPm(opts.id);
-      if ((opts.hive?.isGod || isPm) && integrationBroker.running()) {
-        const token = integrationBroker.grant(opts.id, integrations.enabledIds(), { readOnly: !opts.hive?.isGod });
+      // The ledger is keyed by the HIVE id; opts.id is the pty id, which differs on
+      // restore / restart / wake (that mismatch left restored PMs with no token).
+      // The broker binds in the background at app start, so wait for it here.
+      const plan = brokerGrantPlan(opts.hive, opts.id, (id) => hive.isPrivilegedPm(id));
+      if (plan) await brokerStarted;
+      if (plan && integrationBroker.running()) {
+        const token = integrationBroker.grant(opts.id, integrations.enabledIds(), plan);
         opts.env = { ...(opts.env ?? {}), MD_BROKER_URL: integrationBroker.url(), MD_BROKER_TOKEN: token };
       }
     } catch (e) {
@@ -6523,7 +6535,7 @@ function bootstrapHiveServices(): void {
   startEphemeralWorkerWatcher(); // poll HIVE_ROOT/spawn-requests → ephemeral workers
   // Phase 2: the loopback secret broker. Bind it BEFORE workers spawn so each spawn can
   // be granted a capability token + the broker URL in its env. Loopback-only, idempotent.
-  void integrationBroker.start().then((r) => {
+  brokerStarted = integrationBroker.start().then((r) => {
     if (r.ok) console.log('[broker] integration broker listening on', integrationBroker.url());
     else console.error('[broker] failed to start:', r.error);
   });

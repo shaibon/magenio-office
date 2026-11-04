@@ -14,7 +14,7 @@
  *   node md-slack-reply.cjs --channel C123 --thread 1700000000.000100 --text "..."
  *   (optional) --config /abs/path/to/slack-reply.json
  *
- * ALERT mode (god only — needs MD_BROKER_TOKEN with write access):
+ * ALERT mode (god, or a PM for its own --project only; needs MD_BROKER_TOKEN):
  *   node md-slack-reply.cjs --alert [--project BURD] --text "..." [--channel C123]
  *   Without --project the global fallback alert channel is used (alarms not tied to a project).
  *   Opens a NEW root message, and only in the project's configured

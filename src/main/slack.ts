@@ -401,6 +401,8 @@ export interface SlackReplyServerOptions {
   alertChannelFor?: (project: string | undefined) => string | null;
   /** True when the presented broker token may write (god / MD_BROKER holders). */
   isBrokerWriter?: (token: string | undefined) => boolean;
+  /** A PM token may alert, but only for a project it is bound to (needs `project`). */
+  isPmForProject?: (token: string | undefined, project: string | undefined) => boolean;
 }
 
 /**
@@ -419,6 +421,7 @@ export class SlackReplyServer {
   private readonly onReplied?: (thread_ts: string) => void;
   private readonly alertChannelFor?: (project: string | undefined) => string | null;
   private readonly isBrokerWriter?: (token: string | undefined) => boolean;
+  private readonly isPmForProject?: (token: string | undefined, project: string | undefined) => boolean;
 
   constructor(opts: SlackReplyServerOptions) {
     this.token = opts.token;
@@ -426,6 +429,7 @@ export class SlackReplyServer {
     this.onReplied = opts.onReplied;
     this.alertChannelFor = opts.alertChannelFor;
     this.isBrokerWriter = opts.isBrokerWriter;
+    this.isPmForProject = opts.isPmForProject;
   }
 
   /** Bind a loopback port (0 ⇒ OS-assigned). Resolves the actual bound port. */
@@ -464,7 +468,10 @@ export class SlackReplyServer {
     // /alert is the one root-post path: besides the reply token it needs a WRITABLE
     // broker capability (god / MD_BROKER holders), checked before the body is read.
     const brokerHdr = req.headers['x-md-broker-token'];
-    if (route === '/alert' && !(this.isBrokerWriter?.(typeof brokerHdr === 'string' ? brokerHdr : undefined))) {
+    const brokerTok = typeof brokerHdr === 'string' ? brokerHdr : undefined;
+    // A non-writer (PM) is vetted once the body names the project, below.
+    const pmCandidate = route === '/alert' && !this.isBrokerWriter?.(brokerTok) && !!this.isPmForProject && !!brokerTok;
+    if (route === '/alert' && !pmCandidate && !(this.isBrokerWriter?.(brokerTok))) {
       res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'alert requires a writable broker capability (god)' })); return;
     }
 
@@ -485,6 +492,9 @@ export class SlackReplyServer {
       const botToken = this.getBotToken();
       if (!botToken) { res.writeHead(503); res.end(JSON.stringify({ ok: false, error: 'no bot token' })); return; }
       if (route === '/alert') {
+        if (pmCandidate && !this.isPmForProject!(brokerTok, parsed.project?.trim() || undefined)) {
+          res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'alert requires god, or a PM alerting its own project (--project)' })); return;
+        }
         const configured = this.alertChannelFor ? this.alertChannelFor(parsed.project?.trim() || undefined) : null;
         if (!parsed.text) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'text required' })); return; }
         if (!configured) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'no alert channel configured for this project (or no global fallback)' })); return; }

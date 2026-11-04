@@ -116,8 +116,12 @@ export function createAutomation(host: AutomationHost, actor: string, raw: unkno
   if (error) return fail(400, 'bad_request', error);
   if (!host.targetExists(fields.to!)) return fail(400, 'unknown_target', `no agent "${fields.to}"`);
   const all = host.list();
-  if (all.filter((m) => m.createdBy === actor).length >= MAX_AUTOMATIONS_PER_AGENT) {
-    return fail(429, 'cap_reached', `at most ${MAX_AUTOMATIONS_PER_AGENT} automations per agent; delete one first`);
+  // Non-god: the cap is per CREATOR. god sets triggers for the whole team, so its cap
+  // is per RECIPIENT instead (10 for each agent it targets), not 10 in total.
+  const god = host.isGod(actor);
+  const mine = all.filter((m) => (god ? m.createdBy === actor && m.to === fields.to : m.createdBy === actor));
+  if (mine.length >= MAX_AUTOMATIONS_PER_AGENT) {
+    return fail(429, 'cap_reached', `at most ${MAX_AUTOMATIONS_PER_AGENT} automations per ${god ? 'recipient' : 'agent'}; delete one first`);
   }
   const now = (host.now ?? Date.now)();
   const slug = fields.label!.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 24) || 'run';

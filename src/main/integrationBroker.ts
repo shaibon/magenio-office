@@ -66,6 +66,11 @@ interface Capability {
   /** A PM's broker access is read-only — every non-GET request is
    *  rejected before route dispatch, regardless of which route it targets. */
   readOnly: boolean;
+  /** Hive agent id (workerId is the PTY id, which differs on restore). Set for a PM. */
+  agentId?: string;
+  /** A read-only PM token that may additionally WRITE Jira, but only on the Jira
+   *  projects `pmJiraProjects(agentId)` returns (see `pmJiraWriteAllows`). */
+  pmJira?: boolean;
   /** Token minted by `grantN8n`: valid ONLY on `/n8n-mcp`, rejected on every other
    *  route (it is carried in an agent's MCP config env, so it must not also open
    *  automations / agent control). `workerId` is the agent id. */
@@ -106,6 +111,9 @@ export interface IntegrationBrokerDeps {
    *  boundary is the loopback bind plus the token. Optional: absent means the
    *  host did not wire agent control (e.g. a unit-test broker), not an error. */
   setAgentFrozen?: (agentId: string, frozen: boolean) => void;
+  /** Jira project keys this PM agent may WRITE (upper-case; live, from the bindings
+   *  that list the agent). Absent/empty ⇒ the PM's token stays strictly read-only. */
+  pmJiraProjects?: (agentId: string) => string[];
   /** Storage + roster behind `/automations` (scheduled triggers). Same trust
    *  class as agent control: any valid, non-read-only token; ownership and caps are
    *  enforced in shared/agentAutomations. Optional: absent ⇒ 501. */
@@ -186,10 +194,13 @@ export class IntegrationBroker {
    *  token for this worker is revoked first. The token is a random handle — never a
    *  secret, never persisted. `readOnly` restricts the token to GET only,
    *  across every route — used for a PM's broker access. */
-  grant(workerId: string, allowedIds: string[], opts?: { readOnly?: boolean }): string {
+  grant(workerId: string, allowedIds: string[], opts?: { readOnly?: boolean; agentId?: string; pmJira?: boolean }): string {
     this.revokeKey(workerId);
     const token = randomBytes(32).toString('base64url');
-    this.byToken.set(token, { workerId, allowedIds: new Set(allowedIds), grantedAt: Date.now(), readOnly: !!opts?.readOnly });
+    this.byToken.set(token, {
+      workerId, allowedIds: new Set(allowedIds), grantedAt: Date.now(), readOnly: !!opts?.readOnly,
+      agentId: opts?.agentId, pmJira: !!opts?.pmJira && !!opts?.readOnly
+    });
     this.byWorker.set(workerId, token);
     return token;
   }
@@ -239,6 +250,18 @@ export class IntegrationBroker {
     return !!cap && !cap.readOnly && !cap.remoteId;
   }
 
+  /** May this token post a Slack ALERT for `project`? Only a PM token, only for a
+   *  project it is bound to (same set as its Jira write scope). */
+  pmMayAlert(provided: string | undefined, project: string | undefined): boolean {
+    const cap = this.resolveCapability(provided);
+    const key = (project ?? '').trim().toUpperCase();
+    return !!cap?.pmJira && !!cap.agentId && !!key && this.pmProjects(cap).includes(key);
+  }
+
+  private pmProjects(cap: Capability): string[] {
+    return cap.agentId ? (this.deps.pmJiraProjects?.(cap.agentId) ?? []).map((k) => k.toUpperCase()) : [];
+  }
+
   /** Constant-time-ish lookup of a presented token against live capabilities. */
   private resolveCapability(provided: string | undefined): Capability | undefined {
     if (!provided) return undefined;
@@ -263,7 +286,7 @@ export class IntegrationBroker {
     // The proxy forwards headers verbatim, and a downstream server that honours
     // X-HTTP-Method-Override would execute the OVERRIDDEN verb — a write dressed
     // as a permitted GET. A read-only token may not carry the header at all.
-    if (req.headers['x-http-method-override']) return false;
+    if (req.headers['x-http-method-override'] || req.headers['x-http-method'] || req.headers['x-method-override']) return false;
     if (req.method === 'GET') return true;
     if (req.method !== 'POST') return false;
     return /^\/agents\/[^/?#]+\/thaw\/?(\?[^#]*)?$/.test(rawUrl);
@@ -306,6 +329,8 @@ export class IntegrationBroker {
     // proxy forwards headers verbatim, and a downstream server that honours the
     // override would turn a permitted GET into a write.
     if (cap.readOnly && !IntegrationBroker.readOnlyAllows(req, req.url ?? '')) {
+      // A PM token may write Jira on its own projects, and nothing else.
+      if (cap.pmJira) { void this.pmJiraWrite(req, res, cap); return; }
       return IntegrationBroker.sendError(res, 403, 'forbidden', 'read-only capability: GET only (thaw excepted)');
     }
 
@@ -380,10 +405,56 @@ export class IntegrationBroker {
       try { id = auto[1] ? decodeURIComponent(auto[1]) : undefined; } catch {
         return IntegrationBroker.sendError(res, 400, 'bad_request', 'malformed automation id');
       }
-      void this.automations(req, res, cap.workerId, id);
+      void this.automations(req, res, cap.agentId ?? cap.workerId, id);
       return;
     }
 
+    this.proxyIntegration(req, res, cap, rawUrl);
+  }
+
+  /** Jira WRITE for a PM token. Allow-list, nothing else: create issue / edit /
+   *  assignee / transitions / comment / worklog on `/i/jira/issue…`,
+   *  and ONLY when the issue key in the PATH (or `fields.project.key` of a create)
+   *  belongs to a project the PM is bound to. Strict on purpose: no percent-escapes,
+   *  dot-segments or numeric ids in the path (they could name another issue past the
+   *  check), no method-override headers, no `issuelinks` in the body (it would touch
+   *  an issue of another project). The body is read once, checked, then forwarded. */
+  private async pmJiraWrite(req: IncomingMessage, res: ServerResponse, cap: Capability): Promise<void> {
+    const deny = (why: string): void => IntegrationBroker.sendError(res, 403, 'forbidden', `PM Jira write: ${why}`);
+    const projects = this.pmProjects(cap);
+    if (!projects.length) return deny('no Jira project bound to this agent');
+    for (const h of ['x-http-method-override', 'x-http-method', 'x-method-override']) if (req.headers[h]) return deny('method override not allowed');
+    const method = req.method ?? '';
+    const rawUrl = req.url ?? '';
+    // The Jira record's baseUrl normally ends in /rest/api/3, so paths are `issue…`;
+    // a root-based record would carry the `rest/api/N/` prefix: accept both.
+    const m = /^\/i\/jira\/(?:rest\/api\/[23]\/)?issue(?:\/([A-Za-z][A-Za-z0-9_]*-\d+)(?:\/(assignee|transitions|comment|worklog))?)?(?:\?[A-Za-z0-9_=&.,-]*)?$/.exec(rawUrl);
+    if (!m || !cap.allowedIds.has('jira')) return deny('only issue create/edit/assignee/transitions/comment/worklog on /i/jira');
+    const key = m[1];
+    const sub = m[2];
+    const okMethod = !key ? method === 'POST' : !sub ? method === 'PUT' : (sub === 'assignee' ? method === 'PUT' : method === 'POST');
+    if (!okMethod) return deny(`${method} not allowed on this path`);
+    if (key && !projects.includes(key.slice(0, key.lastIndexOf('-')).toUpperCase())) return deny('issue is not in a project bound to this agent');
+    let body: Buffer;
+    try { body = await readBodyCapped(req); } catch (e) {
+      return (e as Error).message === 'too_large'
+        ? IntegrationBroker.sendError(res, 413, 'payload_too_large', 'request body too large')
+        : IntegrationBroker.sendError(res, 400, 'bad_request', 'could not read request body');
+    }
+    if (/issuelinks/i.test(body.toString('utf8'))) return deny('issue links are not allowed');
+    if (!key) { // create: the project is named in the body
+      let proj: { key?: unknown; id?: unknown } | undefined;
+      try { proj = (JSON.parse(body.toString('utf8')) as { fields?: { project?: { key?: unknown; id?: unknown } } })?.fields?.project; } catch {
+        return IntegrationBroker.sendError(res, 400, 'bad_request', 'body must be valid JSON');
+      }
+      const pk = proj?.key;
+      if (proj && proj.id !== undefined) return deny('fields.project.id is not allowed, use key');
+      if (typeof pk !== 'string' || !projects.includes(pk.trim().toUpperCase())) return deny('fields.project.key is not a project bound to this agent');
+    }
+    this.proxyIntegration(req, res, cap, rawUrl, body);
+  }
+
+  private proxyIntegration(req: IncomingMessage, res: ServerResponse, cap: Capability, rawUrl: string, body?: Buffer): void {
     // 3) Parse /i/<integrationId>/<path...>.
     const m = /^\/i\/([^/?#]+)(?:\/([^?#]*))?(\?[^#]*)?$/.exec(rawUrl);
     if (!m) return IntegrationBroker.sendError(res, 404, 'not_found', 'expected /i/<integrationId>/<path>');
@@ -411,7 +482,7 @@ export class IntegrationBroker {
       if (!secret) return IntegrationBroker.sendError(res, 503, 'no_secret', 'no secret configured for this integration');
     }
 
-    void this.forward(req, res, upstream, buildAuthHeaders(rec.authType, rec.authHeader, secret));
+    void this.forward(req, res, upstream, buildAuthHeaders(rec.authType, rec.authHeader, secret), false, body);
   }
 
   private async automations(req: IncomingMessage, res: ServerResponse, actor: string, id: string | undefined): Promise<void> {
@@ -440,13 +511,14 @@ export class IntegrationBroker {
     upstream: URL,
     injected: Record<string, string>,
     /** Long-lived responses (MCP SSE): the timeout bounds the wait for headers only. */
-    streaming = false
+    streaming = false,
+    preRead?: Buffer
   ): Promise<void> {
     // Buffer the request body with a hard cap (write methods).
     const method = (req.method ?? 'GET').toUpperCase();
     const hasBody = method !== 'GET' && method !== 'HEAD';
-    let body: Buffer | undefined;
-    if (hasBody) {
+    let body: Buffer | undefined = preRead;
+    if (hasBody && !preRead) {
       try {
         body = await readBodyCapped(req);
       } catch (e) {
