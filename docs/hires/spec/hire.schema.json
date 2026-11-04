@@ -109,10 +109,16 @@
           "github-token",
           "db",
           "email-calendar",
-          "search-with-key"
+          "search-with-key",
+          "trello",
+          "magento",
+          "gsc",
+          "n8n",
+          "teamai",
+          "vault"
         ]
       },
-      "description": "Default MCP catalog ids to enable for this agent. References into the MCP_CATALOG allowlist only — never raw specs. Safe-readonly entries (sequential-thinking, time, fetch, context7, filesystem, git) are pre-filled; write/secret entries (github-token, db, email-calendar, search-with-key) are surfaced for human consent at import and never auto-enabled."
+      "description": "Default MCP catalog ids to enable for this agent. References into the MCP_CATALOG allowlist only — never raw specs. Safe-readonly entries (sequential-thinking, time, fetch, context7, filesystem, git, vault) are pre-filled; write/secret entries (github-token, db, email-calendar, search-with-key, trello, magento, gsc, n8n, teamai) are surfaced for human consent at import and never auto-enabled."
     }
   }
 }
