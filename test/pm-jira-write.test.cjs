@@ -295,3 +295,20 @@ test('wiring: the token broker still revokes alert for a PM whose binding is gon
   assert.equal(broker.pmMayAlert(pm, 'BRAVI'), false, 'binding revoked => alert revoked, same token');
   broker.stop();
 });
+
+test('coexistence with Team AI remote capabilities: a PM token and a remote token for the same agent stay in their lanes', async () => {
+  const { broker, pm, call, seen, done } = await setup();
+  const remote = broker.grantRemote('n8n', 'pam-bravi', 'BRAVI');
+  assert.ok(remote);
+  assert.notEqual(remote, pm);
+  // the PM token is still valid after the remote one was minted, and still writes its project
+  assert.equal((await call(pm, 'POST', 'issue/BRAVI-1/comment', { body: 'x' })).status, 200);
+  // the PM token cannot use the remote route; the remote token cannot reach Jira
+  assert.equal((await fetch(`${broker.url()}/n8n-mcp`, { method: 'POST', headers: { 'x-md-broker-token': pm } })).status, 403);
+  assert.equal((await call(remote, 'POST', 'issue/BRAVI-1/comment', { body: 'x' })).status, 403);
+  assert.equal(seen.length, 1, 'only the PM comment reached Jira');
+  // revoking the remote capability leaves the PM token alone
+  broker.revokeRemote('n8n', 'pam-bravi');
+  assert.equal((await call(pm, 'POST', 'issue/BRAVI-1/comment', { body: 'y' })).status, 200);
+  done();
+});
