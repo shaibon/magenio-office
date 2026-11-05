@@ -475,14 +475,10 @@ export class IntegrationBroker {
     this.proxyIntegration(req, res, cap, rawUrl, Buffer.from(JSON.stringify(parsed), 'utf8'));
   }
 
-  private readonly projectOfCache = new Map<string, { project: string; exp: number }>();
-
   /** The project an issue key belongs to NOW (upper-case), read with the broker's own Jira credential;
-   *  null when it cannot be established (fail closed). Cached briefly. */
+   *  null when it cannot be established (fail closed). Never cached: a move between
+   *  lookup and write would let a stale answer authorise a write into another project. */
   private async jiraProjectOf(key: string): Promise<string | null> {
-    const ck = key.toUpperCase();
-    const hit = this.projectOfCache.get(ck);
-    if (hit && hit.exp > Date.now()) return hit.project;
     const rec = this.deps.getRecord('jira');
     if (!rec || !rec.enabled) return null;
     const upstream = resolveUpstreamUrl(rec.baseUrl, `issue/${encodeURIComponent(key)}?fields=project`);
@@ -499,10 +495,7 @@ export class IntegrationBroker {
       if (!r.ok) return null;
       const pk = ((await r.json()) as { fields?: { project?: { key?: unknown } } })?.fields?.project?.key;
       if (typeof pk !== 'string' || !pk) return null;
-      const project = pk.toUpperCase();
-      if (this.projectOfCache.size > 500) this.projectOfCache.clear();
-      this.projectOfCache.set(ck, { project, exp: Date.now() + 30_000 });
-      return project;
+      return pk.toUpperCase();
     } catch { return null; } finally { clearTimeout(timer); }
   }
 

@@ -489,6 +489,13 @@ export class SlackReplyServer {
       let parsed: { channel?: string; thread_ts?: string; text?: string; project?: string };
       try { parsed = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
       catch { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'bad json' })); return; }
+      if (route === '/alert') {
+        const o = parsed as unknown;
+        const okStr = (v: unknown) => v === undefined || typeof v === 'string';
+        if (!o || typeof o !== 'object' || Array.isArray(o) || !okStr(parsed.project) || !okStr(parsed.channel) || !okStr(parsed.text)) {
+          res.writeHead(400, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'body must be a JSON object with string fields' })); return;
+        }
+      }
       const botToken = this.getBotToken();
       if (!botToken) { res.writeHead(503); res.end(JSON.stringify({ ok: false, error: 'no bot token' })); return; }
       if (route === '/alert') {

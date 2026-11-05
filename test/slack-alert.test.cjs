@@ -125,3 +125,24 @@ test('/alert rejects an n8n-only broker capability (403, nothing posted)', async
   assert.equal((await call(port, '/alert', hdr(broker.grant('god', [])), body)).status, 200, 'a god capability still works');
   assert.equal(posts.length, 1);
 });
+
+test('M1: /alert with a body that is not a JSON object of strings is a 400, never a crash (god and PM)', async (t) => {
+  const posts = fakeSlack(t);
+  const srv = new SlackReplyServer({
+    token: 'rt', getBotToken: () => 'xoxb-secret',
+    alertChannelFor: (p) => alertChannelFor(bindings, p),
+    isBrokerWriter: (tok) => tok === 'god-cap',
+    isPmForProject: (tok, p) => tok === 'pm-cap' && p === 'BURD'
+  });
+  const { port } = await srv.start();
+  t.after(() => srv.stop());
+  for (const tok of ['god-cap', 'pm-cap']) {
+    const H = { 'x-md-reply-token': 'rt', 'x-md-broker-token': tok };
+    for (const bad of [null, [], 7, 'str', true, { project: 5, text: 'x' }, { project: 'BURD', text: {} }, { project: 'BURD', text: 'x', channel: [] }]) {
+      assert.equal((await call(port, '/alert', H, bad)).status, 400, `${tok} ${JSON.stringify(bad)}`);
+    }
+  }
+  assert.equal(posts.length, 0);
+  // the server survived: a good request still works
+  assert.equal((await call(port, '/alert', { 'x-md-reply-token': 'rt', 'x-md-broker-token': 'god-cap' }, { project: 'BURD', text: 'ok' })).status, 200);
+});

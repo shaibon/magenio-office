@@ -212,14 +212,24 @@ test('H1: what is forwarded is the RE-SERIALISED parsed document (duplicate keys
   done();
 });
 
-test('M1: an issue MOVED to another project is refused even though its old key has our prefix; lookups are cached', async () => {
+test('M1: an issue MOVED to another project is refused even though its old key has our prefix', async () => {
   const { pm, call, seen, lookups, done } = await setup(['BRAVI'], { 'BRAVI-12': 'OTHER', 'BRAVI-13': 'BRAVI' });
   assert.equal((await call(pm, 'PUT', 'issue/BRAVI-12', { fields: { summary: 'x' } })).status, 403, 'BRAVI-12 now lives in OTHER');
   assert.equal((await call(pm, 'POST', 'issue/BRAVI-12/comment', { body: 'x' })).status, 403);
   assert.equal(seen.length, 0);
   assert.equal((await call(pm, 'PUT', 'issue/BRAVI-13', { fields: { summary: 'x' } })).status, 200);
   assert.equal((await call(pm, 'POST', 'issue/BRAVI-13/comment', { body: 'x' })).status, 200);
-  assert.equal(lookups.filter((k) => k === 'BRAVI-13').length, 1, 'second write used the cache');
+  done();
+});
+
+test('H1: the project is re-verified on EVERY write: an issue moved between two writes is refused (no cache)', async () => {
+  const moved = {};
+  const { pm, call, seen, lookups, done } = await setup(['BRAVI'], moved);
+  assert.equal((await call(pm, 'POST', 'issue/BRAVI-20/comment', { body: 'a' })).status, 200);
+  moved['BRAVI-20'] = 'OTHER'; // moved to another project while the old key still resolves
+  assert.equal((await call(pm, 'POST', 'issue/BRAVI-20/comment', { body: 'b' })).status, 403);
+  assert.equal(lookups.filter((k) => k === 'BRAVI-20').length, 2, 'one lookup per write');
+  assert.equal(seen.length, 1, 'only the first comment reached Jira');
   done();
 });
 
