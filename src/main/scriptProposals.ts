@@ -86,7 +86,8 @@ export function replaceableTrigger(host: ProposalHost, id: unknown, missions: Mi
   if (!m) return `no trigger "${id}"`;
   if (host.isBuiltIn?.(id)) return 'a built-in trigger cannot be replaced by a proposal';
   if ((m.kind ?? 'dispatch') !== 'dispatch') return 'only a dispatch trigger can be replaced (not a built-in, heartbeat, compact or script one)';
-  if (m.createdBy && !host.isGod(m.createdBy)) return 'that trigger belongs to another agent and cannot be switched off by a proposal';
+  // Older builds stamped the PTY id ("pty-<agentId>") as creator; strip it so god's own triggers still count as god's.
+  if (m.createdBy && !host.isGod(m.createdBy.replace(/^pty-/, '')) && !host.isGod(m.createdBy)) return 'that trigger belongs to another agent and cannot be switched off by a proposal';
   return m;
 }
 

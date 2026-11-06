@@ -79,6 +79,8 @@ test('replaces: only a dispatch trigger that is not another agent\'s; built-in, 
   const s = setup(t, [
     { id: 'op', label: 'Operator trigger', kind: 'dispatch', enabled: true, to: 'god-1', body: 'b', intervalMs: 1 },
     { id: 'by-god', label: 'God trigger', enabled: true, to: 'god-1', body: 'b', intervalMs: 1, createdBy: 'god-1' },
+    { id: 'by-pty-god', label: 'Legacy god trigger', enabled: true, to: 'god-1', body: 'b', intervalMs: 1, createdBy: 'pty-god-1' },
+    { id: 'by-pty-agent', label: 'Legacy agent trigger', enabled: true, to: 'agent-x', body: 'b', intervalMs: 1, createdBy: 'pty-agent-x' },
     { id: 'by-agent', label: 'Agent-only trigger', enabled: true, to: 'agent-x', body: 'b', intervalMs: 1, createdBy: 'agent-x' },
     { id: 'hb', label: 'Heartbeat', kind: 'heartbeat', enabled: true, to: 'god-1', body: '', intervalMs: 1 },
     { id: 'sc', label: 'A script', kind: 'script', enabled: true, to: '', body: '', intervalMs: 1 },
@@ -88,6 +90,8 @@ test('replaces: only a dispatch trigger that is not another agent\'s; built-in, 
   const code = (replaces) => P.propose(s.host, 'god-1', { ...s.base(p, { label: `L${replaces}` }), replaces }).status;
   assert.equal(code('op'), 201);
   assert.equal(code('by-god'), 201);
+  assert.equal(code('by-pty-god'), 201, 'legacy pty-<godId> creator');
+  assert.equal(code('by-pty-agent'), 403, 'legacy pty-<other agent>');
   assert.equal(code('by-agent'), 403, 'agent-only trigger');
   assert.equal(code('hb'), 403, 'not a dispatch trigger');
   assert.equal(code('sc'), 403);
