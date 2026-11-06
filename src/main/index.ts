@@ -14,7 +14,8 @@ import {
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { join, resolve, relative, sep, basename, dirname, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
-import { createScriptRunner, sha256Hex, readRegularFile, approvalSignature, verifyApproval, missionSignature, verifyMissionSig, alertSignature, resolveAlertAgent, type ApprovedScript } from './scriptAutomation';
+import { createScriptRunner, readRegularFile, verifyApproval, verifyMissionSig, signedScriptMission, alertSignature, resolveAlertAgent } from './scriptAutomation';
+import { propose as proposeScript, listProposals, rejectProposal, approveProposal, finishApproval, type ProposalHost, type MissionLike } from './scriptProposals';
 import { request as httpsRequest } from 'node:https';
 import { PtyManager, type SpawnOptions } from './pty';
 import { reapHiveMcp } from './mcpReap';
@@ -532,6 +533,12 @@ const integrationBroker = new IntegrationBroker({
   },
   // Agent-managed schedules: same store and re-arm as the `missions:save` IPC, so
   // the Schedules panel shows (and the scheduler runs) whatever an agent made.
+  scriptProposals: {
+    propose: (actor, raw) => proposeScript(proposalHost, actor, raw),
+    pending: (actor) => (proposalHost.isGod(actor)
+      ? { status: 200, body: { pending: listProposals(proposalHost).map((p) => ({ id: p.id, label: p.label, createdAt: p.createdAt, updates: p.updates ?? null })) } }
+      : { status: 403, body: { error: 'only god may list script proposals', code: 'forbidden' } })
+  },
   automations: {
     list: () => readConfig().missions ?? [],
     save: (next) => {
@@ -891,6 +898,18 @@ function scriptApprovalKey(create: boolean): string | null {
     return key;
   } catch { return null; }
 }
+
+/** Pending script proposals live in main's private dir (userData), signed with the approval key. */
+const proposalHost: ProposalHost = {
+  dir: join(app.getPath('userData'), 'script-proposals'),
+  isGod: (id) => hive.registry().godId === id,
+  key: (create) => scriptApprovalKey(create),
+  missions: () => (readConfig().missions ?? []) as MissionLike[],
+  log: (event) => {
+    hive.appendLog(event);
+    if (event.kind === 'script-proposed') { try { liveWebContents()?.send('scripts:proposalsUpdated'); } catch { /* window gone */ } }
+  }
+};
 
 const scriptRunner = createScriptRunner({
   approved: () => readConfig().approvedScripts ?? [],
@@ -5355,7 +5374,7 @@ ipcMain.handle('missions:save', (_evt, missions) => {
     (readConfig().missions ?? []).map((m) => [m.id, m] as const)
   );
   // Script missions are not editable, creatable or revivable through this generic save: the persisted record is kept
-  // verbatim (only `scripts:saveMission`, which signs, can change one) and an incoming script mission with no persisted
+  // verbatim (only the signed `scripts:approveProposal` and `scripts:setMissionEnabled` can change one) and an incoming script mission with no persisted
   // script twin is dropped. Deleting one is simply leaving it out.
   const merged = incoming.filter((m) => m.kind !== 'script' || persistedById.get(m.id)?.kind === 'script').map((m) => {
     const keep = persistedById.get(m.id);
@@ -5364,82 +5383,58 @@ ipcMain.handle('missions:save', (_evt, missions) => {
     const lastFiredAt = Math.max(m.lastFiredAt ?? 0, prevLastFired) || undefined;
     return { ...m, lastFiredAt };
   });
-  writeConfig({ missions: merged });
+  // An approval nothing refers to any more (its script mission was deleted) is dropped with it.
+  const used = new Set(merged.filter((m) => m.kind === 'script').map((m) => m.scriptId));
+  const approved = readConfig().approvedScripts ?? [];
+  writeConfig({ missions: merged, ...(approved.some((a) => !used.has(a.id)) ? { approvedScripts: approved.filter((a) => used.has(a.id)) } : {}) });
   syncMissions();
   return { ok: true };
 });
 
-// ─── IPC: approved scripts (script automations) ─────────────────────────────
-// The ONLY way a script becomes runnable: the human picks the file in a native dialog.
-// There is deliberately no path argument, so nothing in the renderer (let alone an agent) can name one.
-function approvedScriptsView(): Array<ApprovedScript & { current: boolean }> {
-  return (readConfig().approvedScripts ?? []).map((a) => {
-    // `current` = the file still matches AND the record is authentic; a FIFO or a huge file reads as not current.
-    let current = false;
-    try { current = verifyApproval(scriptApprovalKey(false), a) && sha256Hex(readRegularFile(a.path)) === a.sha256; } catch { /* missing / not a regular file */ }
-    return { ...a, current };
-  });
-}
-ipcMain.handle('scripts:list', () => approvedScriptsView());
-ipcMain.handle('scripts:approve', async () => {
-  const res = await dialog.showOpenDialog(mainWindow ?? (undefined as unknown as BrowserWindow), { properties: ['openFile'], title: 'Approve a script for scheduled checks' });
-  if (res.canceled || !res.filePaths[0]) return { ok: false, scripts: approvedScriptsView() };
-  try {
-    const key = scriptApprovalKey(true);
-    if (!key) return { ok: false, error: 'the macOS Keychain (safeStorage) is not available: cannot sign an approval', scripts: approvedScriptsView() };
-    const path = realpathSync(res.filePaths[0]);
-    const sha256 = sha256Hex(readRegularFile(path)); // regular file only, bounded, never blocks on a FIFO
-    const list = readConfig().approvedScripts ?? [];
-    const prev = list.find((a) => a.path === path);
-    const base = { id: prev?.id ?? `s_${Date.now().toString(36)}`, path, sha256, approvedAt: Date.now() };
-    const entry: ApprovedScript = { ...base, sig: approvalSignature(key, base) };
-    writeConfig({ approvedScripts: prev ? list.map((a) => (a.path === path ? entry : a)) : [...list, entry] });
-    hive.appendLog({ kind: 'script-approved', id: entry.id, path, sha256 });
-    return { ok: true, scripts: approvedScriptsView() };
-  } catch (e) { return { ok: false, error: (e as Error).message, scripts: approvedScriptsView() }; }
+// ─── IPC: script automations (proposals, one-click approval) ─────────────────
+// god PROPOSES a script through the broker; these handlers are the Boss's side. They answer only the app window
+// (never an agent), and they act on what main stored, not on what the renderer sends back.
+const fromUi = (evt: Electron.IpcMainInvokeEvent): boolean => !!mainWindow && evt.sender === mainWindow.webContents;
+ipcMain.handle('scripts:proposals', (evt) => (fromUi(evt) ? listProposals(proposalHost) : []));
+ipcMain.handle('scripts:rejectProposal', (evt, id: unknown) => (fromUi(evt) && typeof id === 'string' ? rejectProposal(proposalHost, id) : false));
+ipcMain.handle('scripts:approveProposal', (evt, id: unknown) => {
+  if (!fromUi(evt) || typeof id !== 'string') return { ok: false, error: 'not allowed' };
+  const cfg = readConfig();
+  // Script, mission and the switched-off trigger are all computed first; one config write applies them together.
+  const r = approveProposal(proposalHost, id, { approvedScripts: cfg.approvedScripts ?? [], missions: (cfg.missions ?? []) as MissionLike[] });
+  if (!r.ok) return r;
+  try { writeConfig({ approvedScripts: r.approvedScripts, missions: r.missions as ScheduledMission[] }); }
+  catch (e) { return { ok: false, error: `could not save: ${(e as Error).message}` }; }
+  finishApproval(proposalHost, id, { label: r.label, replaced: r.replaced });
+  syncMissions();
+  try { liveWebContents()?.send('missions:updated'); } catch { /* window gone */ }
+  return { ok: true, label: r.label, replaced: r.replaced ?? null };
 });
-// The ONLY writer of a script mission (and of its signature): the Settings UI, for what the human just added, edited
-// or switched on/off. The record is rebuilt field by field, so nothing else can ride along; it has no recipient.
-ipcMain.handle('scripts:saveMission', (_evt, raw: unknown) => {
+// On/off of an approved script mission: the mission is re-signed with the new `enabled` (it is part of the signature).
+ipcMain.handle('scripts:setMissionEnabled', (evt, id: unknown, enabled: unknown) => {
   const key = scriptApprovalKey(false);
-  const m = raw as ScheduledMission | null;
-  if (!key || !m || typeof m !== 'object' || m.kind !== 'script' || typeof m.id !== 'string' || typeof m.scriptId !== 'string') {
-    return { ok: false, error: 'invalid script mission (or Keychain unavailable)' };
-  }
-  const entry = (readConfig().approvedScripts ?? []).find((a) => a.id === m.scriptId);
-  if (!entry || !verifyApproval(key, entry)) return { ok: false, error: 'the script is not approved' };
-  const cur = readConfig().missions ?? [];
-  const prev = cur.find((x) => x.id === m.id);
-  const rec: ScheduledMission = {
-    id: m.id, label: String(m.label ?? '').slice(0, 80) || 'Script check', kind: 'script', scriptId: m.scriptId,
-    intervalMs: m.intervalMs, weekly: m.weekly, activeWindow: m.activeWindow, scriptTimeoutMs: m.scriptTimeoutMs,
-    enabled: !!m.enabled, to: '', body: '',
-    lastFiredAt: Math.max(m.lastFiredAt ?? 0, prev?.lastFiredAt ?? 0) || Date.now()
-  };
-  rec.sig = missionSignature(key, rec);
-  writeConfig({ missions: prev ? cur.map((x) => (x.id === rec.id ? rec : x)) : [...cur, rec] });
-  hive.appendLog({ kind: 'script-mission-saved', id: rec.id, scriptId: rec.scriptId, enabled: rec.enabled });
+  const cur = (readConfig().missions ?? []).find((m) => m.id === id);
+  if (!fromUi(evt) || !key || typeof enabled !== 'boolean' || !cur || cur.kind !== 'script' || !verifyMissionSig(key, cur)) return { ok: false };
+  const rec = signedScriptMission(key, {
+    id: cur.id, label: cur.label, scriptId: String(cur.scriptId), intervalMs: cur.intervalMs, weekly: cur.weekly,
+    scriptTimeoutMs: cur.scriptTimeoutMs, enabled, lastFiredAt: cur.lastFiredAt ?? Date.now()
+  });
+  writeConfig({ missions: (readConfig().missions ?? []).map((m) => (m.id === cur.id ? (rec as ScheduledMission) : m)) });
+  hive.appendLog({ kind: 'script-mission-enabled', id: cur.id, enabled });
   syncMissions();
   try { liveWebContents()?.send('missions:updated'); } catch { /* window gone */ }
   return { ok: true };
 });
 // The one recipient of every script outcome. Absent, unsigned or unknown = god.
 ipcMain.handle('scripts:getAlertAgent', () => resolveAlertAgent(scriptApprovalKey(false), readConfig().scriptAlert, hive.registry().godId ?? 'god', (id) => !!hive.registry().agents[id]));
-ipcMain.handle('scripts:setAlertAgent', (_evt, agent: unknown) => {
+ipcMain.handle('scripts:setAlertAgent', (evt, agent: unknown) => {
   const key = scriptApprovalKey(true);
   const godId = hive.registry().godId ?? 'god';
-  if (!key || typeof agent !== 'string' || (agent !== 'god' && agent !== godId && !hive.registry().agents[agent])) return { ok: false, agent: godId };
+  if (!fromUi(evt) || !key || typeof agent !== 'string' || (agent !== 'god' && agent !== godId && !hive.registry().agents[agent])) return { ok: false, agent: godId };
   const id = agent === 'god' ? godId : agent;
   writeConfig({ scriptAlert: { agent: id, sig: alertSignature(key, id) } });
   hive.appendLog({ kind: 'script-alert-agent', agent: id });
   return { ok: true, agent: id };
-});
-ipcMain.handle('scripts:remove', (_evt, id: unknown) => {
-  if (typeof id === 'string') {
-    writeConfig({ approvedScripts: (readConfig().approvedScripts ?? []).filter((a) => a.id !== id) });
-    hive.appendLog({ kind: 'script-removed', id });
-  }
-  return approvedScriptsView();
 });
 
 // ─── IPC: full-text search across hive files (board, tasks, memory) ──────────

@@ -342,20 +342,18 @@ test('the broker /automations cannot create, change or delete a script automatio
   assert.equal(recs.filter((m) => m.kind === 'script').length, 1);
 });
 
-test('wiring: fire() runs script missions through the runner; approval takes no path from the renderer', () => {
+test('wiring: fire() runs script missions through the runner; approval is a single IPC acting on stored data', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'src/main/index.ts'), 'utf8');
   assert.match(src, /if \(m\.kind === 'script'\) \{[^}]*scriptRunner\.run\(m\)/s);
   assert.match(src, /verify: \(e\) => verifyApproval\(scriptApprovalKey\(false\), e\)/);
-  assert.match(src, /sig: approvalSignature\(key, base\)/);
   assert.match(src, /verifyMission: \(m\) => verifyMissionSig\(scriptApprovalKey\(false\), m\)/);
-  assert.match(src, /ipcMain\.handle\('scripts:saveMission'/);
-  assert.match(src, /rec\.sig = missionSignature\(key, rec\)/);
+  assert.match(src, /ipcMain\.handle\('scripts:approveProposal'/);
+  assert.match(src, /ipcMain\.handle\('scripts:setMissionEnabled'/);
+  assert.doesNotMatch(src, /scripts:approve'|scripts:saveMission|showOpenDialog\(mainWindow \?\? \(undefined/);
   // the generic missions:save can neither edit nor create a script mission
   assert.match(src, /m\.kind !== 'script' \|\| persistedById\.get\(m\.id\)\?\.kind === 'script'/);
   assert.match(src, /if \(keep\?\.kind === 'script'\) return keep;/);
   assert.match(src, /alertAgent: \(\) => resolveAlertAgent\(/);
   assert.match(src, /scripts:setAlertAgent/);
-  assert.match(src, /ipcMain\.handle\('scripts:approve', async \(\) =>/);
-  assert.match(src, /dialog\.showOpenDialog\(mainWindow/);
   assert.match(src, /integrationBroker\.grant\(`script:\$\{id\}`, integrations\.enabledIds\(\), \{ readOnly: true \}\)/);
 });

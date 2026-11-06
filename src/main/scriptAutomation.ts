@@ -99,6 +99,23 @@ export function missionSignature(key: string, m: ScriptMission): string {
 }
 export const verifyMissionSig = (key: string | null, m: ScriptMission): boolean => sigOk(key, m.sig, (k) => missionSignature(k, m));
 
+/** The one way a script mission record is built and signed (approval of a proposal, and the on/off switch). It has no
+ *  recipient (`to` is ''), and nothing but these fields can ride along. */
+export function signedScriptMission(key: string, f: {
+  id: string; label: string; scriptId: string; intervalMs: number; weekly?: { days: number[]; minute: number };
+  scriptTimeoutMs?: number; enabled: boolean; lastFiredAt: number;
+}): ScriptMission & { kind: 'script'; to: string; body: string } {
+  const rec = {
+    id: f.id, label: f.label.slice(0, 80), kind: 'script' as const, scriptId: f.scriptId, intervalMs: f.intervalMs,
+    weekly: f.weekly, scriptTimeoutMs: f.scriptTimeoutMs, enabled: f.enabled, to: '', body: '', lastFiredAt: f.lastFiredAt
+  };
+  return { ...rec, sig: missionSignature(key, rec) };
+}
+
+/** A pending proposal is signed too, so its stored copy and fields cannot be swapped at rest before the Boss clicks. */
+export const proposalSignature = (key: string, p: { sig?: string }): string => { const { sig: _s, ...rest } = p; return hmacHex(key, ['script-proposal-v1', canon(rest)]); };
+export const verifyProposalSig = (key: string | null, p: { sig?: string }): boolean => sigOk(key, p.sig, (k) => proposalSignature(k, p));
+
 /** The single recipient of every script outcome, chosen in Settings and signed like the rest. */
 export interface ScriptAlertRecord { agent: string; sig: string }
 export const alertSignature = (key: string, agent: string): string => hmacHex(key, ['script-alert-v1', agent]);

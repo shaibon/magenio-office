@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { ApprovedScriptView } from '../../../../preload';
+import type { ScriptProposalView } from '../../../../preload';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { PixelButton } from '../PixelButton';
@@ -72,17 +72,19 @@ export function SchedulesSection({ onSummary }: { onSummary?: (s: string) => voi
   const [mWeekly, setMWeekly] = useState<WeeklyDraft | null>(null);
   const [mTo, setMTo] = useState<string>('god');
   const [mBody, setMBody] = useState('');
-  const [mScript, setMScript] = useState('');
-  const [scripts, setScripts] = useState<ApprovedScriptView[]>([]);
+  const [proposals, setProposals] = useState<ScriptProposalView[]>([]);
   const [alertAgent, setAlertAgent] = useState('');
 
   useEffect(() => {
     const load = () => { window.cth.listMissions().then(setMissions).catch(() => { /* noop */ }); };
     load();
-    window.cth.listApprovedScripts().then(setScripts).catch(() => { /* noop */ });
+    const loadProposals = () => { window.cth.listScriptProposals().then(setProposals).catch(() => { /* noop */ }); };
+    loadProposals();
     window.cth.getScriptAlertAgent().then(setAlertAgent).catch(() => { /* noop */ });
-    // Refresh "last fired" when the scheduler stamps a beat/dispatch.
-    return window.cth.onMissionsUpdated(load);
+    // Refresh "last fired" when the scheduler stamps a beat/dispatch; proposals when god sends one.
+    const offMissions = window.cth.onMissionsUpdated(() => { load(); loadProposals(); });
+    const offProposals = window.cth.onScriptProposalsUpdated(loadProposals);
+    return () => { offMissions(); offProposals(); };
   }, []);
 
   useEffect(() => {
@@ -103,23 +105,19 @@ export function SchedulesSection({ onSummary }: { onSummary?: (s: string) => voi
   const remove = (id: string) => persist(missions.filter((m) => m.id !== id));
 
   const add = () => {
-    if (!mLabel.trim() || (!mScript && !mBody.trim()) || !whenIsUsable) return;
-    const created: ScheduledMission = {
+    if (!mLabel.trim() || !mBody.trim() || !whenIsUsable) return;
+    persist([...missions, {
       id: `m_${Date.now().toString(36)}`,
       label: mLabel.trim(),
       // The interval rides along even in weekly mode, so flipping back to
       // "every…" later restores the cadence rather than a default.
       intervalMs: mInterval,
       ...(mWeekly ? { weekly: mWeekly } : {}),
-      to: mScript ? '' : mTo, // a script mission has no recipient of its own (see the alert agent)
-      body: mScript ? '' : mBody.trim(),
-      ...(mScript ? { kind: 'script' as const, scriptId: mScript } : {}),
+      to: mTo,
+      body: mBody.trim(),
       enabled: true
-    };
-    // A script mission is signed by the main process (script, recipient and schedule are what you chose here).
-    if (mScript) void window.cth.saveScriptMission(created).then(() => window.cth.listMissions().then(setMissions));
-    else persist([...missions, created]);
-    setMScript(''); setMLabel(''); setMBody(''); setMWeekly(null); setAdding(false);
+    }]);
+    setMLabel(''); setMBody(''); setMWeekly(null); setAdding(false);
   };
   /** A weekly draft with no days picked would never fire, so it cannot be saved. */
   const whenIsUsable = !mWeekly || weeklyIsUsable(mWeekly);
@@ -132,42 +130,36 @@ export function SchedulesSection({ onSummary }: { onSummary?: (s: string) => voi
   return (
     <>
       {missions.length === 0 && <Muted>{t('schedulesSection.nothingScheduled')}</Muted>}
-      {missions.map((m) => (
-        <MissionRow
-          key={m.id}
-          mission={m}
-          targetName={targetName}
-          agents={agents}
-          onPatch={(fields) => {
-            // Every change to a script mission (schedule, timeout, on/off) goes through the main process, which re-signs it.
-            if (m.kind === 'script') void window.cth.saveScriptMission({ ...m, ...fields }).then(() => window.cth.listMissions().then(setMissions));
-            else patch(m.id, fields);
-          }}
-          onDelete={() => remove(m.id)}
-        />
+      {proposals.map((p) => (
+        <ProposalCard key={p.id} proposal={p} onDone={() => { void window.cth.listScriptProposals().then(setProposals); void window.cth.listMissions().then(setMissions); }} />
+      ))}
+      {missions.map((m) => (m.kind === 'script'
+        ? (
+          <ScriptRow
+            key={m.id}
+            mission={m}
+            onToggle={() => { void window.cth.setScriptMissionEnabled(m.id, !m.enabled).then(() => window.cth.listMissions().then(setMissions)); }}
+            onDelete={() => remove(m.id)}
+          />
+        )
+        : (
+          <MissionRow
+            key={m.id}
+            mission={m}
+            targetName={targetName}
+            agents={agents}
+            onPatch={(fields) => patch(m.id, fields)}
+            onDelete={() => remove(m.id)}
+          />
+        )
       ))}
 
       <SubCard>
-        <div style={{ fontFamily: 'var(--cth-font-display)', fontSize: 8, color: 'var(--cth-ink-500)' }}>{t('schedulesSection.scriptsTitle', { defaultValue: 'Approved scripts (run with no agent)' })}</div>
-        <Hint>{t('schedulesSection.scriptsHint', { defaultValue: 'A script runs outside the agent sandbox. Only a file you pick here is runnable, pinned by its hash: if it changes, it stops running until you approve it again. Exit 0 = nothing to report, exit 10 = message the recipient with its output, anything else = an error message.' })}</Hint>
-        {scripts.map((sc) => (
-          <div key={sc.id} style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 4, fontFamily: 'var(--cth-font-mono)', fontSize: 11 }}>
-            <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={sc.path}>{sc.path}</span>
-            <span>{sc.sha256.slice(0, 8)}</span>
-            <Chip tone={sc.current ? 'on' : 'off'}>{sc.current ? t('schedulesSection.scriptOk', { defaultValue: 'unchanged' }) : t('schedulesSection.scriptChanged', { defaultValue: 'CHANGED' })}</Chip>
-            <MiniButton tone="danger" onClick={() => { void window.cth.removeApprovedScript(sc.id).then(setScripts); }}>{t('common.delete')}</MiniButton>
-          </div>
-        ))}
-        <Field label={t('schedulesSection.scriptAlertTo', { defaultValue: 'Script results and errors go to' })}>
+        <Field label={t('schedulesSection.scriptAlertTo')}>
           <Select value={alertAgent} onChange={(v) => { void window.cth.setScriptAlertAgent(v).then((r) => setAlertAgent(r.agent)); }} style={{ width: '100%' }}>
             {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
           </Select>
         </Field>
-        <div style={{ marginTop: 6 }}>
-          <PixelButton variant="secondary" size="sm" onClick={() => { void window.cth.approveScript().then((r) => setScripts(r.scripts)); }}>
-            {t('schedulesSection.approveScript', { defaultValue: 'Approve a script…' })}
-          </PixelButton>
-        </div>
       </SubCard>
 
       {!adding && (
@@ -186,13 +178,13 @@ export function SchedulesSection({ onSummary }: { onSummary?: (s: string) => voi
               style={inputStyle}
             />
           </Field>
-          {!mScript && <Field label={t('schedulesSection.goesTo')}>
+          <Field label={t('schedulesSection.goesTo')}>
             <Select value={mTo} onChange={setMTo} style={{ width: '100%' }}>
               <option value="broadcast">{t('schedulesSection.everyone')}</option>
               <option value="god">{agents.find((a) => a.isGod)?.name ?? 'the orchestrator'}</option>
               {agents.filter((a) => !a.isGod).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
             </Select>
-          </Field>}
+          </Field>
           <Field label={t('schedulesSection.when')}>
             <SchedulePicker
               intervalMs={mInterval}
@@ -201,15 +193,7 @@ export function SchedulesSection({ onSummary }: { onSummary?: (s: string) => voi
               onWeekly={setMWeekly}
             />
           </Field>
-          {scripts.length > 0 && (
-            <Field label={t('schedulesSection.runScript', { defaultValue: 'Run a script instead of an agent' })}>
-              <Select value={mScript} onChange={setMScript} style={{ width: '100%' }}>
-                <option value="">{t('schedulesSection.noScript', { defaultValue: 'No, send the prompt below' })}</option>
-                {scripts.map((sc) => <option key={sc.id} value={sc.id}>{sc.path}</option>)}
-              </Select>
-            </Field>
-          )}
-          {!mScript && <Field label={t('schedulesSection.prompt')}>
+          <Field label={t('schedulesSection.prompt')}>
             <textarea
               dir={rtl ? 'auto' : undefined}
               value={mBody}
@@ -218,9 +202,9 @@ export function SchedulesSection({ onSummary }: { onSummary?: (s: string) => voi
               placeholder={t('schedulesSection.promptPlaceholder')}
               style={textareaStyle}
             />
-          </Field>}
+          </Field>
           <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
-            <PixelButton variant="primary" size="sm" onClick={add} disabled={!mLabel.trim() || (!mScript && !mBody.trim()) || !whenIsUsable}>
+            <PixelButton variant="primary" size="sm" onClick={add} disabled={!mLabel.trim() || !mBody.trim() || !whenIsUsable}>
               {t('common.add')}
             </PixelButton>
             <PixelButton variant="ghost" size="sm" onClick={() => { setAdding(false); setMLabel(''); setMBody(''); setMWeekly(null); }}>
@@ -326,7 +310,7 @@ function MissionRow({ mission, targetName, agents, onPatch, onDelete }: {
             </span>
           </span>
         }
-        sub={<>{mission.kind === 'script' ? t('schedulesSection.scriptSub', { defaultValue: '→ script alert agent' }) : `→ ${targetName(mission.to)}`} · {fired}{next}{mission.createdBy ? ` · ${t('schedulesSection.createdBy', { agent: targetName(mission.createdBy) })}` : ''}</>}
+        sub={<>{`→ ${targetName(mission.to)}`} · {fired}{next}{mission.createdBy ? ` · ${t('schedulesSection.createdBy', { agent: targetName(mission.createdBy) })}` : ''}</>}
         right={<Toggle on={mission.enabled} onClick={() => onPatch({ enabled: !mission.enabled })} />}
       />
 
@@ -338,7 +322,7 @@ function MissionRow({ mission, targetName, agents, onPatch, onDelete }: {
           background: 'var(--cth-paper-100)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)',
           fontFamily: 'var(--cth-font-mono)', fontSize: 11, lineHeight: '15px',
           color: 'var(--cth-ink-700)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
-        }}>{mission.kind === 'script' ? `script ${mission.scriptId ?? ''}` : mission.body.trim() || t('schedulesSection.noPrompt')}</div>
+        }}>{mission.body.trim() || t('schedulesSection.noPrompt')}</div>
       )}
 
       {open && (
@@ -346,13 +330,13 @@ function MissionRow({ mission, targetName, agents, onPatch, onDelete }: {
           <Field label={t('schedulesSection.label')}>
             <input value={label} onChange={(e) => setLabel(e.target.value)} style={inputStyle} />
           </Field>
-          {mission.kind !== 'script' && <Field label={t('schedulesSection.goesTo')}>
+          <Field label={t('schedulesSection.goesTo')}>
             <Select value={to} onChange={setTo} style={{ width: '100%' }}>
               <option value="broadcast">{t('schedulesSection.everyone')}</option>
               <option value="god">{agents.find((a) => a.isGod)?.name ?? 'the orchestrator'}</option>
               {agents.filter((a) => !a.isGod).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
             </Select>
-          </Field>}
+          </Field>
           <Field label={t('schedulesSection.when')}>
             {/* The heartbeat has no calendar: it is a cadence that adapts to how
                 busy the floor is, so pinning it to Tuesdays would be a lie. */}
@@ -362,7 +346,7 @@ function MissionRow({ mission, targetName, agents, onPatch, onDelete }: {
             {heartbeat && <Hint>{t('schedulesSection.beatCeiling')}</Hint>}
             {!heartbeat && !weekly && <ActiveWindowPicker value={win} onChange={setWin} />}
           </Field>
-          {mission.kind !== 'script' && <Field label={t('schedulesSection.prompt')}>
+          <Field label={t('schedulesSection.prompt')}>
             <textarea
               dir={rtl ? 'auto' : undefined}
               value={body}
@@ -371,7 +355,7 @@ function MissionRow({ mission, targetName, agents, onPatch, onDelete }: {
               placeholder={t('schedulesSection.promptPlaceholder')}
               style={textareaStyle}
             />
-          </Field>}
+          </Field>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8 }}>
             <PixelButton variant="primary" size="sm" onClick={save} disabled={!dirty || !label.trim() || !whenIsUsable}>
               {saved && !dirty ? t('schedulesSection.saved') : t('common.save')}
@@ -381,6 +365,73 @@ function MissionRow({ mission, targetName, agents, onPatch, onDelete }: {
           </div>
         </div>
       )}
+    </SubCard>
+  );
+}
+
+/* ───────────────────────── script proposals (one-click approval) ───────────────────────── */
+
+/** An approved script mission. Nothing here is editable: a change of schedule, timeout or file is a new proposal. */
+function ScriptRow({ mission, onToggle, onDelete }: { mission: ScheduledMission; onToggle: () => void; onDelete: () => void }) {
+  const { t } = useTranslation();
+  const storedWeekly = weeklyDraft(mission.weekly);
+  const fired = mission.lastFiredAt
+    ? t('schedulesSection.fired', { time: relTime(Date.now() - mission.lastFiredAt, t) })
+    : t('schedulesSection.notFired');
+  return (
+    <SubCard>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <Chip tone={mission.enabled ? 'on' : 'off'}>{storedWeekly ? formatWeekly(storedWeekly) : fmtInterval(mission.intervalMs)}</Chip>
+        <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{mission.label}</span>
+        <Toggle on={mission.enabled} onClick={onToggle} />
+      </div>
+      <Hint>{t('schedulesSection.scriptSub')} · {fired}</Hint>
+      <div style={{ marginTop: 6 }}>
+        <MiniButton tone="danger" onClick={onDelete}>{t('common.delete')}</MiniButton>
+      </div>
+    </SubCard>
+  );
+}
+
+/** A script god proposed. Everything shown (label, description, path, file content) is untrusted text: it is rendered
+ *  as plain React text nodes, never as HTML, and nothing interprets it. Approve/Reject act on what main stored. */
+function ProposalCard({ proposal: p, onDone }: { proposal: ScriptProposalView; onDone: () => void }) {
+  const { t } = useTranslation();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const when = p.weekly ? formatWeekly(p.weekly) : fmtInterval(p.intervalMs);
+  const approve = () => {
+    setBusy(true); setError('');
+    void window.cth.approveScriptProposal(p.id)
+      .then((r) => { if (!r.ok) setError(t('schedulesSection.proposalFailed', { error: r.error ?? '' })); onDone(); })
+      .catch(() => setError(t('schedulesSection.proposalFailed', { error: '?' })))
+      .finally(() => setBusy(false));
+  };
+  const reject = () => { setBusy(true); void window.cth.rejectScriptProposal(p.id).then(onDone).finally(() => setBusy(false)); };
+  return (
+    <SubCard>
+      <div style={{ fontFamily: 'var(--cth-font-display)', fontSize: 8, color: 'var(--cth-ink-500)' }}>{p.updates ? t('schedulesSection.proposalUpdateTitle') : t('schedulesSection.proposalTitle')}</div>
+      <div style={{ marginTop: 4, fontWeight: 600, overflowWrap: 'anywhere' }}>{p.label}</div>
+      <div style={{ marginTop: 4, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{p.description}</div>
+      <Field label={t('schedulesSection.proposalWhen')}><span>{when}{p.scriptTimeoutMs ? ` · ${t('schedulesSection.proposalTimeout', { seconds: Math.round(p.scriptTimeoutMs / 1000) })}` : ''}</span></Field>
+      {p.replaces && <Field label={t('schedulesSection.proposalReplaces')}><span>{p.replacesLabel ?? p.replaces}</span></Field>}
+      {p.updates && <Field label={t('schedulesSection.proposalUpdates')}><span>{p.updatesLabel ?? p.updates}</span></Field>}
+      <Field label={t('schedulesSection.proposalFile')}>
+        <span style={{ fontFamily: 'var(--cth-font-mono)', fontSize: 11, overflowWrap: 'anywhere' }}>{p.path} · {p.sha256.slice(0, 12)} · {p.size} B</span>
+      </Field>
+      <Field label={t('schedulesSection.proposalContent')}>
+        <pre style={{
+          margin: 0, padding: 6, maxHeight: 240, overflow: 'auto', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
+          background: 'var(--cth-paper-100)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)',
+          fontFamily: 'var(--cth-font-mono)', fontSize: 11, lineHeight: '15px'
+        }}>{p.content}</pre>
+      </Field>
+      {!p.intact && <Hint>{t('schedulesSection.proposalChanged')}</Hint>}
+      {error && <Hint>{error}</Hint>}
+      <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+        <PixelButton variant="primary" size="sm" onClick={approve} disabled={busy || !p.intact}>{t('schedulesSection.proposalApprove')}</PixelButton>
+        <PixelButton variant="ghost" size="sm" onClick={reject} disabled={busy}>{t('schedulesSection.proposalReject')}</PixelButton>
+      </div>
     </SubCard>
   );
 }

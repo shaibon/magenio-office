@@ -246,8 +246,13 @@ export interface SpawnPtyOptions {
 
 export interface PtyExit { exitCode: number; signal?: number | undefined }
 
-/** A script the human approved in Settings (sha256-pinned); `current` = the file still matches. */
-export interface ApprovedScriptView { id: string; path: string; sha256: string; approvedAt: number; current: boolean }
+/** A script god proposed, waiting for the Boss's click (all text is untrusted data). */
+export interface ScriptProposalView {
+  id: string; label: string; description: string; path: string; sha256: string; size: number;
+  intervalMs: number; weekly?: { days: number[]; minute: number }; scriptTimeoutMs?: number;
+  replaces?: string; replacesLabel?: string; updates?: string; updatesLabel?: string;
+  proposedBy: string; createdAt: number; content: string; intact: boolean;
+}
 
 /** A recurring auto-dispatched mission fired on an interval by the scheduler. */
 export interface ScheduledMission {
@@ -261,7 +266,7 @@ export interface ScheduledMission {
   lastFiredAt?: number;
   /** Mission flavor; 'heartbeat' (Lane A #1) is a context-aware adaptive beat. */
   kind?: 'dispatch' | 'heartbeat' | 'compact' | 'script';
-  /** `script` only: id of an approved script (see ApprovedScriptView). */
+  /** `script` only: id of an approved script (approved from a proposal in Settings). */
   scriptId?: string;
   scriptTimeoutMs?: number;
   /** `script` only: signature written by the main process; the UI just passes it back. */
@@ -1240,13 +1245,18 @@ const api = {
 
   // ─── Scheduled missions (recurring auto-dispatch) ──────────────────────────
   listMissions: (): Promise<ScheduledMission[]> => ipcRenderer.invoke('missions:list'),
-  // Approved scripts for `script` automations (the human picks the file in a native dialog).
-  listApprovedScripts: (): Promise<ApprovedScriptView[]> => ipcRenderer.invoke('scripts:list'),
-  approveScript: (): Promise<{ ok: boolean; error?: string; scripts: ApprovedScriptView[] }> => ipcRenderer.invoke('scripts:approve'),
-  saveScriptMission: (m: ScheduledMission): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('scripts:saveMission', m),
+  // Script automations: god proposes, the Boss approves. Nothing here takes a path or a mission from the UI.
+  listScriptProposals: (): Promise<ScriptProposalView[]> => ipcRenderer.invoke('scripts:proposals'),
+  approveScriptProposal: (id: string): Promise<{ ok: boolean; error?: string; label?: string; replaced?: string | null }> => ipcRenderer.invoke('scripts:approveProposal', id),
+  rejectScriptProposal: (id: string): Promise<boolean> => ipcRenderer.invoke('scripts:rejectProposal', id),
+  setScriptMissionEnabled: (id: string, enabled: boolean): Promise<{ ok: boolean }> => ipcRenderer.invoke('scripts:setMissionEnabled', id, enabled),
+  onScriptProposalsUpdated: (cb: () => void): (() => void) => {
+    const listener = () => cb();
+    ipcRenderer.on('scripts:proposalsUpdated', listener);
+    return () => ipcRenderer.removeListener('scripts:proposalsUpdated', listener);
+  },
   getScriptAlertAgent: (): Promise<string> => ipcRenderer.invoke('scripts:getAlertAgent'),
   setScriptAlertAgent: (agent: string): Promise<{ ok: boolean; agent: string }> => ipcRenderer.invoke('scripts:setAlertAgent', agent),
-  removeApprovedScript: (id: string): Promise<ApprovedScriptView[]> => ipcRenderer.invoke('scripts:remove', id),
   saveMissions: (missions: ScheduledMission[]): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke('missions:save', missions),
   /** Fires when the scheduler stamps a mission's lastFiredAt (a beat/dispatch),

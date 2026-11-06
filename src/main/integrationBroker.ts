@@ -118,6 +118,12 @@ export interface IntegrationBrokerDeps {
    *  class as agent control: any valid, non-read-only token; ownership and caps are
    *  enforced in shared/agentAutomations. Optional: absent ⇒ 501. */
   automations?: AutomationHost;
+  /** `/script-proposals`: god proposes a check script; only the Boss's click in Settings approves it. The host enforces
+   *  that the caller is god. Optional: absent ⇒ 501. */
+  scriptProposals?: {
+    propose(actor: string, raw: unknown): { status: number; body: unknown };
+    pending(actor: string): { status: number; body: unknown };
+  };
   /** Upstream of the n8n MCP route for this agent: its endpoint and the decrypted
    *  bearer, or undefined when n8n is off / the agent is not allow-listed / no token
    *  is stored. Evaluated per request so consent changes apply without a respawn. */
@@ -409,7 +415,33 @@ export class IntegrationBroker {
       return;
     }
 
+    // 2e) /script-proposals — god proposes, the Boss approves in Settings. The actor is the capability's own id.
+    if (/^\/script-proposals\/?(\?[^#]*)?$/.test(rawUrl)) {
+      if (!this.deps.scriptProposals) {
+        return IntegrationBroker.sendError(res, 501, 'not_supported', 'script proposals not wired');
+      }
+      void this.scriptProposals(req, res, cap.agentId ?? cap.workerId);
+      return;
+    }
+
     this.proxyIntegration(req, res, cap, rawUrl);
+  }
+
+  private async scriptProposals(req: IncomingMessage, res: ServerResponse, actor: string): Promise<void> {
+    const host = this.deps.scriptProposals!;
+    let result: { status: number; body: unknown };
+    try {
+      if (req.method === 'GET') result = host.pending(actor);
+      else if (req.method === 'POST') result = host.propose(actor, await readJson(req));
+      else return IntegrationBroker.sendError(res, 405, 'method_not_allowed', 'GET|POST /script-proposals');
+    } catch (e) {
+      const m = (e as Error).message;
+      return m === 'too_large'
+        ? IntegrationBroker.sendError(res, 413, 'payload_too_large', 'request body too large')
+        : IntegrationBroker.sendError(res, 400, 'bad_request', m === 'bad_json' ? 'body must be valid JSON' : 'could not read request body');
+    }
+    res.writeHead(result.status, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(result.body));
   }
 
   /** Jira WRITE for a PM token. Allow-list, nothing else: create issue / edit /
