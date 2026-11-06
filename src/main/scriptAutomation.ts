@@ -67,30 +67,54 @@ export function readRegularFile(path: string, max = SCRIPT_MAX_FILE_BYTES): Buff
   } finally { closeSync(fd); }
 }
 
-/** The slice of a mission this runner reads. `sig` authenticates what a human authorised: which script
- *  runs, who receives the output, and when (see missionSignature). */
+/** A `script` mission as stored. It has NO recipient: every outcome goes to the one global alert agent. */
 export interface ScriptMission {
-  id: string; label: string; to: string; scriptId?: string; scriptTimeoutMs?: number;
+  id: string; label: string; scriptId?: string; scriptTimeoutMs?: number;
   intervalMs?: number; weekly?: { days: number[]; minute: number };
   activeWindow?: { days: number[]; fromMinute: number; toMinute: number; outsideIntervalMs?: number; outsideMinutes?: number[] };
+  enabled?: boolean;
+  lastFiredAt?: number;
   sig?: string;
 }
 
-/** HMAC over everything that decides WHAT runs, WHO gets the output and WHEN: script, recipient, calendar, timeout.
- *  Not `enabled` (a signed mission may be switched on or off), not `label`/`lastFiredAt`. Fields are joined with NUL
- *  so no value can bleed into its neighbour. Same Keychain key as the script approvals. */
+/** Stable JSON: keys sorted, undefined dropped, so the same record always serialises the same way and no value can
+ *  bleed into a neighbour. */
+const canon = (v: unknown): string => {
+  if (Array.isArray(v)) return `[${v.map(canon).join(',')}]`;
+  if (v && typeof v === 'object') {
+    const o = v as Record<string, unknown>;
+    return `{${Object.keys(o).filter((k) => o[k] !== undefined).sort().map((k) => `${JSON.stringify(k)}:${canon(o[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(v) ?? 'null';
+};
+const hmacHex = (key: string, parts: string[]): string => createHmac('sha256', key).update(parts.join('\0')).digest('hex');
+const sigOk = (key: string | null, sig: unknown, expected: (k: string) => string): boolean =>
+  !!key && typeof sig === 'string' && /^[0-9a-f]{64}$/.test(sig) && timingSafeEqual(Buffer.from(expected(key), 'hex'), Buffer.from(sig, 'hex'));
+
+/** HMAC over the WHOLE mission record except `label`, `lastFiredAt` and `sig` itself: script, calendar, timeout,
+ *  `enabled`, and any field somebody adds. Only the Settings IPC signs it. Same Keychain key as the approvals. */
 export function missionSignature(key: string, m: ScriptMission): string {
-  const w = m.weekly ? `${[...m.weekly.days].sort((a, b) => a - b).join(',')}@${m.weekly.minute}` : '';
-  const a = m.activeWindow
-    ? [[...m.activeWindow.days].sort((x, y) => x - y).join(','), m.activeWindow.fromMinute, m.activeWindow.toMinute, m.activeWindow.outsideIntervalMs ?? '', (m.activeWindow.outsideMinutes ?? []).join(',')].join('|')
-    : '';
-  return createHmac('sha256', key)
-    .update(['script-mission-v1', m.id, m.scriptId ?? '', m.to, String(m.intervalMs ?? ''), w, a, String(m.scriptTimeoutMs ?? '')].join('\0'))
-    .digest('hex');
+  const { label: _l, lastFiredAt: _f, sig: _s, ...rest } = m;
+  return hmacHex(key, ['script-mission-v2', canon(rest)]);
 }
-export function verifyMissionSig(key: string | null, m: ScriptMission): boolean {
-  if (!key || typeof m.sig !== 'string' || !/^[0-9a-f]{64}$/.test(m.sig)) return false;
-  return timingSafeEqual(Buffer.from(missionSignature(key, m), 'hex'), Buffer.from(m.sig, 'hex'));
+export const verifyMissionSig = (key: string | null, m: ScriptMission): boolean => sigOk(key, m.sig, (k) => missionSignature(k, m));
+
+/** The single recipient of every script outcome, chosen in Settings and signed like the rest. */
+export interface ScriptAlertRecord { agent: string; sig: string }
+export const alertSignature = (key: string, agent: string): string => hmacHex(key, ['script-alert-v1', agent]);
+/** The configured alert agent if its signature verifies and it still exists, otherwise god. */
+export function resolveAlertAgent(key: string | null, rec: ScriptAlertRecord | undefined, godId: string, exists: (id: string) => boolean): string {
+  if (rec && typeof rec.agent === 'string' && sigOk(key, rec.sig, (k) => alertSignature(k, rec.agent)) && exists(rec.agent)) return rec.agent;
+  return godId;
+}
+
+/** The shortest gap the signed calendar can legitimately leave between two starts. A start sooner than this after
+ *  the previous one is refused (a weekly mission is held to one start a minute). */
+export function minGapMs(m: ScriptMission): number {
+  if (m.weekly) return 60_000;
+  const iv = typeof m.intervalMs === 'number' && m.intervalMs > 0 ? m.intervalMs : 60_000;
+  const out = m.activeWindow?.outsideIntervalMs;
+  return Math.min(iv, typeof out === 'number' && out > 0 ? out : iv);
 }
 
 export interface ScriptOutcome {
@@ -104,16 +128,18 @@ export interface ScriptRunnerDeps {
   approved(): ApprovedScript[];
   /** Is this approval record authentic (signed by the app)? An unverifiable record is refused. */
   verify(entry: ApprovedScript): boolean;
-  /** Is this mission (script, recipient, calendar, timeout) exactly what a human signed in Settings? */
+  /** Is this mission record exactly what a human signed in Settings? */
   verifyMission(m: ScriptMission): boolean;
-  /** Where to report a mission whose own `to` cannot be trusted (an unsigned or altered record): god, not the record's `to`. */
+  /** Recipient of every outcome (found and error): the signed global alert agent, or god. */
+  alertAgent(): string;
+  /** Where a REFUSED (unauthentic) mission is reported: always god. */
   fixedRecipient(): string;
   /** Private (0700) directory where the verified copy is executed from. */
   cacheDir: string;
   /** A read-only broker capability for this run, or null when the broker is down. */
   grant(missionId: string): { url: string; token: string } | null;
   revoke(missionId: string): void;
-  /** Deliver to the mission's recipient. Returns false when it could not be delivered. */
+  /** Deliver a message. Returns false when it could not be delivered. */
   send(to: string, subject: string, body: string): boolean;
   log(event: Record<string, unknown>): void;
   spawn?: typeof nodeSpawn;
@@ -124,6 +150,8 @@ const trunc = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n)
 
 export function createScriptRunner(deps: ScriptRunnerDeps) {
   const running = new Set<string>();
+  /** Last start per mission, in memory: config.json's lastFiredAt is agent-writable, so it never decides whether a run is due. */
+  const lastStart = new Map<string, number>();
   const spawnFn = deps.spawn ?? nodeSpawn;
   const now = deps.now ?? Date.now;
 
@@ -138,7 +166,7 @@ export function createScriptRunner(deps: ScriptRunnerDeps) {
     try {
       const fail = (reason: string, exitCode: number | null = null, stderr = ''): ScriptOutcome => {
         const body = `The scheduled script check "${m.label}" did NOT run to a result: ${reason}.${stderr ? `\n\nstderr:\n${trunc(stderr.trim(), 500)}` : ''}\n\nThis is an automated message (no agent ran). Treat the check as broken, not as "all ok".`;
-        const delivered = deps.send(m.to, `${m.label}: script check FAILED`, body);
+        const delivered = deps.send(deps.alertAgent(), `${m.label}: script check FAILED`, body);
         return { status: 'error', exitCode, reason, delivered };
       };
       const finish = (o: ScriptOutcome, extra: Record<string, unknown> = {}): ScriptOutcome => {
@@ -149,11 +177,17 @@ export function createScriptRunner(deps: ScriptRunnerDeps) {
       // FIRST, before any token or file access: is this mission what a human authorised? If not, nothing is
       // granted or run, and the report goes to a recipient the record cannot choose.
       if (!deps.verifyMission(m)) {
-        const reason = 'the mission is not authentic (missing or invalid signature: its script, recipient or schedule was not set in Settings)';
+        const reason = 'the mission is not authentic (missing or invalid signature: the record was not saved from Settings, or was edited since)';
         const to = deps.fixedRecipient();
-        const delivered = deps.send(to, `${m.label}: script check REFUSED`, `A scheduled script mission "${m.label}" (${m.id}) was NOT run: ${reason}. It claimed recipient "${m.to}" and script "${m.scriptId}". Re-save it in Settings > Schedules if it is yours; otherwise something edited the app config.`);
+        const delivered = deps.send(to, `${m.label}: script check REFUSED`, `A scheduled script mission "${m.label}" (${m.id}) was NOT run: ${reason}. It named script "${m.scriptId}". Re-save it in Settings > Schedules if it is yours; otherwise something edited the app config.`);
         return finish({ status: 'error', exitCode: null, reason, delivered });
       }
+      const prev = lastStart.get(m.id);
+      if (prev !== undefined && started - prev < minGapMs(m) - 1000) {
+        deps.log({ kind: 'script-automation', id: m.id, label: m.label, outcome: 'skipped', reason: 'too soon after the previous start' });
+        return { status: 'skipped', exitCode: null, reason: 'too soon after the previous start', delivered: false };
+      }
+      lastStart.set(m.id, started);
       const entry = deps.approved().find((s) => s.id === m.scriptId);
       if (!entry) return finish(fail('the script is not approved (approve it in Settings)'));
       if (!deps.verify(entry)) return finish(fail('the approval record is not authentic (missing or invalid signature); approve the script again in Settings'));
@@ -207,14 +241,14 @@ export function createScriptRunner(deps: ScriptRunnerDeps) {
       if (res.code === 0) return finish({ status: 'ok', exitCode: 0, delivered: false });
       if (res.code === SCRIPT_EXIT_FOUND) {
         const text = trunc(res.out.trim(), SCRIPT_MAX_MESSAGE) || '(the script reported something but printed nothing)';
-        const delivered = deps.send(m.to, m.label, text);
+        const delivered = deps.send(deps.alertAgent(), m.label, text);
         return finish({ status: 'found', exitCode: SCRIPT_EXIT_FOUND, delivered });
       }
       return finish(fail(res.signal ? `killed by signal ${res.signal}` : `exited with code ${res.code}`, res.code, res.err));
     } catch (e) {
       // Never let a failure here read as "nothing to report".
       const reason = `internal error (${(e as Error).message})`;
-      const delivered = deps.send(m.to, `${m.label}: script check FAILED`, `The scheduled script check "${m.label}" did NOT run to a result: ${reason}.`);
+      const delivered = deps.send(deps.alertAgent(), `${m.label}: script check FAILED`, `The scheduled script check "${m.label}" did NOT run to a result: ${reason}.`);
       deps.log({ kind: 'script-automation', id: m.id, label: m.label, outcome: 'error', reason, delivered });
       return { status: 'error', exitCode: null, reason, delivered };
     } finally {

@@ -14,7 +14,7 @@ import {
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { join, resolve, relative, sep, basename, dirname, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
-import { createScriptRunner, sha256Hex, readRegularFile, approvalSignature, verifyApproval, missionSignature, verifyMissionSig, type ApprovedScript } from './scriptAutomation';
+import { createScriptRunner, sha256Hex, readRegularFile, approvalSignature, verifyApproval, missionSignature, verifyMissionSig, alertSignature, resolveAlertAgent, type ApprovedScript } from './scriptAutomation';
 import { request as httpsRequest } from 'node:https';
 import { PtyManager, type SpawnOptions } from './pty';
 import { reapHiveMcp } from './mcpReap';
@@ -896,6 +896,7 @@ const scriptRunner = createScriptRunner({
   approved: () => readConfig().approvedScripts ?? [],
   verify: (e) => verifyApproval(scriptApprovalKey(false), e),
   verifyMission: (m) => verifyMissionSig(scriptApprovalKey(false), m),
+  alertAgent: () => resolveAlertAgent(scriptApprovalKey(false), readConfig().scriptAlert, hive.registry().godId ?? 'god', (id) => !!hive.registry().agents[id]),
   fixedRecipient: () => hive.registry().godId ?? 'god',
   cacheDir: join(app.getPath('userData'), 'automation-scripts'),
   grant: (id) => (integrationBroker.running()
@@ -5353,16 +5354,14 @@ ipcMain.handle('missions:save', (_evt, missions) => {
   const persistedById = new Map(
     (readConfig().missions ?? []).map((m) => [m.id, m] as const)
   );
-  const merged = incoming.map((m) => {
+  // Script missions are not editable, creatable or revivable through this generic save: the persisted record is kept
+  // verbatim (only `scripts:saveMission`, which signs, can change one) and an incoming script mission with no persisted
+  // script twin is dropped. Deleting one is simply leaving it out.
+  const merged = incoming.filter((m) => m.kind !== 'script' || persistedById.get(m.id)?.kind === 'script').map((m) => {
+    const keep = persistedById.get(m.id);
+    if (keep?.kind === 'script') return keep;
     const prevLastFired = persistedById.get(m.id)?.lastFiredAt ?? 0;
     const lastFiredAt = Math.max(m.lastFiredAt ?? 0, prevLastFired) || undefined;
-    // A script mission's signature is only ever written by `scripts:saveMission`. Here the persisted one wins, so
-    // this generic save can neither mint a signature nor launder a record an agent edited: a changed record keeps
-    // the OLD signature, fails verification and does not run.
-    if (m.kind === 'script') {
-      const sig = persistedById.get(m.id)?.sig;
-      return { ...m, lastFiredAt, sig };
-    }
     return { ...m, lastFiredAt };
   });
   writeConfig({ missions: merged });
@@ -5399,24 +5398,41 @@ ipcMain.handle('scripts:approve', async () => {
     return { ok: true, scripts: approvedScriptsView() };
   } catch (e) { return { ok: false, error: (e as Error).message, scripts: approvedScriptsView() }; }
 });
-// The ONLY writer of a script mission's signature: the Settings UI, for a mission the human just added or edited.
+// The ONLY writer of a script mission (and of its signature): the Settings UI, for what the human just added, edited
+// or switched on/off. The record is rebuilt field by field, so nothing else can ride along; it has no recipient.
 ipcMain.handle('scripts:saveMission', (_evt, raw: unknown) => {
   const key = scriptApprovalKey(false);
   const m = raw as ScheduledMission | null;
-  if (!key || !m || typeof m !== 'object' || m.kind !== 'script' || typeof m.id !== 'string' || typeof m.to !== 'string' || typeof m.scriptId !== 'string') {
+  if (!key || !m || typeof m !== 'object' || m.kind !== 'script' || typeof m.id !== 'string' || typeof m.scriptId !== 'string') {
     return { ok: false, error: 'invalid script mission (or Keychain unavailable)' };
   }
   const entry = (readConfig().approvedScripts ?? []).find((a) => a.id === m.scriptId);
   if (!entry || !verifyApproval(key, entry)) return { ok: false, error: 'the script is not approved' };
-  const prev = (readConfig().missions ?? []).find((x) => x.id === m.id);
-  const rec: ScheduledMission = { ...m, kind: 'script', body: '', lastFiredAt: Math.max(m.lastFiredAt ?? 0, prev?.lastFiredAt ?? 0) || Date.now(), sig: undefined };
-  rec.sig = missionSignature(key, rec);
   const cur = readConfig().missions ?? [];
+  const prev = cur.find((x) => x.id === m.id);
+  const rec: ScheduledMission = {
+    id: m.id, label: String(m.label ?? '').slice(0, 80) || 'Script check', kind: 'script', scriptId: m.scriptId,
+    intervalMs: m.intervalMs, weekly: m.weekly, activeWindow: m.activeWindow, scriptTimeoutMs: m.scriptTimeoutMs,
+    enabled: !!m.enabled, to: '', body: '',
+    lastFiredAt: Math.max(m.lastFiredAt ?? 0, prev?.lastFiredAt ?? 0) || Date.now()
+  };
+  rec.sig = missionSignature(key, rec);
   writeConfig({ missions: prev ? cur.map((x) => (x.id === rec.id ? rec : x)) : [...cur, rec] });
-  hive.appendLog({ kind: 'script-mission-saved', id: rec.id, scriptId: rec.scriptId, to: rec.to });
+  hive.appendLog({ kind: 'script-mission-saved', id: rec.id, scriptId: rec.scriptId, enabled: rec.enabled });
   syncMissions();
   try { liveWebContents()?.send('missions:updated'); } catch { /* window gone */ }
   return { ok: true };
+});
+// The one recipient of every script outcome. Absent, unsigned or unknown = god.
+ipcMain.handle('scripts:getAlertAgent', () => resolveAlertAgent(scriptApprovalKey(false), readConfig().scriptAlert, hive.registry().godId ?? 'god', (id) => !!hive.registry().agents[id]));
+ipcMain.handle('scripts:setAlertAgent', (_evt, agent: unknown) => {
+  const key = scriptApprovalKey(true);
+  const godId = hive.registry().godId ?? 'god';
+  if (!key || typeof agent !== 'string' || (agent !== 'god' && agent !== godId && !hive.registry().agents[agent])) return { ok: false, agent: godId };
+  const id = agent === 'god' ? godId : agent;
+  writeConfig({ scriptAlert: { agent: id, sig: alertSignature(key, id) } });
+  hive.appendLog({ kind: 'script-alert-agent', agent: id });
+  return { ok: true, agent: id };
 });
 ipcMain.handle('scripts:remove', (_evt, id: unknown) => {
   if (typeof id === 'string') {

@@ -1244,6 +1244,8 @@ const api = {
   listApprovedScripts: (): Promise<ApprovedScriptView[]> => ipcRenderer.invoke('scripts:list'),
   approveScript: (): Promise<{ ok: boolean; error?: string; scripts: ApprovedScriptView[] }> => ipcRenderer.invoke('scripts:approve'),
   saveScriptMission: (m: ScheduledMission): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('scripts:saveMission', m),
+  getScriptAlertAgent: (): Promise<string> => ipcRenderer.invoke('scripts:getAlertAgent'),
+  setScriptAlertAgent: (agent: string): Promise<{ ok: boolean; agent: string }> => ipcRenderer.invoke('scripts:setAlertAgent', agent),
   removeApprovedScript: (id: string): Promise<ApprovedScriptView[]> => ipcRenderer.invoke('scripts:remove', id),
   saveMissions: (missions: ScheduledMission[]): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke('missions:save', missions),

@@ -74,7 +74,7 @@ export interface ScheduledMission {
   scriptId?: string;
   /** `script` only: kill the run after this long (default 60s, max 10 min). */
   scriptTimeoutMs?: number;
-  /** `script` only: HMAC of script, recipient, calendar and timeout, written only by the Settings IPC `scripts:saveMission`. A mission whose signature does not verify does not run. */
+  /** `script` only: HMAC of the whole record but label and lastFiredAt, written only by the Settings IPC `scripts:saveMission`. A mission whose signature does not verify does not run. A script mission has no recipient (`to` is ''); see `scriptAlert`. */
   sig?: string;
   /** Heartbeat only: a floor is "quiet" when no tracked signal (log.jsonl mtime,
    *  inbox/outbox mtimes, any PTY output) has moved in this many ms. Default
@@ -380,6 +380,8 @@ export interface HarnessConfig {
   missions?: ScheduledMission[];
   /** Scripts the human approved in Settings, pinned by sha256. Agents cannot write the app config. */
   approvedScripts?: ApprovedScript[];
+  /** The single recipient of every script automation outcome, signed with the approval key. Absent or invalid = god. */
+  scriptAlert?: { agent: string; sig: string };
   /** One-time guard: has the built-in hourly ops standup been seeded into an
    *  existing install's missions? Prevents re-adding it after a user deletes it. */
   opsStandupSeeded?: boolean;

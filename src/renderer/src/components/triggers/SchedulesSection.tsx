@@ -74,11 +74,13 @@ export function SchedulesSection({ onSummary }: { onSummary?: (s: string) => voi
   const [mBody, setMBody] = useState('');
   const [mScript, setMScript] = useState('');
   const [scripts, setScripts] = useState<ApprovedScriptView[]>([]);
+  const [alertAgent, setAlertAgent] = useState('');
 
   useEffect(() => {
     const load = () => { window.cth.listMissions().then(setMissions).catch(() => { /* noop */ }); };
     load();
     window.cth.listApprovedScripts().then(setScripts).catch(() => { /* noop */ });
+    window.cth.getScriptAlertAgent().then(setAlertAgent).catch(() => { /* noop */ });
     // Refresh "last fired" when the scheduler stamps a beat/dispatch.
     return window.cth.onMissionsUpdated(load);
   }, []);
@@ -109,7 +111,7 @@ export function SchedulesSection({ onSummary }: { onSummary?: (s: string) => voi
       // "every…" later restores the cadence rather than a default.
       intervalMs: mInterval,
       ...(mWeekly ? { weekly: mWeekly } : {}),
-      to: mTo,
+      to: mScript ? '' : mTo, // a script mission has no recipient of its own (see the alert agent)
       body: mScript ? '' : mBody.trim(),
       ...(mScript ? { kind: 'script' as const, scriptId: mScript } : {}),
       enabled: true
@@ -137,10 +139,8 @@ export function SchedulesSection({ onSummary }: { onSummary?: (s: string) => voi
           targetName={targetName}
           agents={agents}
           onPatch={(fields) => {
-            // Changing a script mission's recipient, schedule or timeout re-signs it in the main process;
-            // a plain on/off toggle does not need to.
-            const touches = ['to', 'intervalMs', 'weekly', 'activeWindow', 'scriptTimeoutMs', 'label'].some((k) => k in fields);
-            if (m.kind === 'script' && touches) void window.cth.saveScriptMission({ ...m, ...fields }).then(() => window.cth.listMissions().then(setMissions));
+            // Every change to a script mission (schedule, timeout, on/off) goes through the main process, which re-signs it.
+            if (m.kind === 'script') void window.cth.saveScriptMission({ ...m, ...fields }).then(() => window.cth.listMissions().then(setMissions));
             else patch(m.id, fields);
           }}
           onDelete={() => remove(m.id)}
@@ -158,6 +158,11 @@ export function SchedulesSection({ onSummary }: { onSummary?: (s: string) => voi
             <MiniButton tone="danger" onClick={() => { void window.cth.removeApprovedScript(sc.id).then(setScripts); }}>{t('common.delete')}</MiniButton>
           </div>
         ))}
+        <Field label={t('schedulesSection.scriptAlertTo', { defaultValue: 'Script results and errors go to' })}>
+          <Select value={alertAgent} onChange={(v) => { void window.cth.setScriptAlertAgent(v).then((r) => setAlertAgent(r.agent)); }} style={{ width: '100%' }}>
+            {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+          </Select>
+        </Field>
         <div style={{ marginTop: 6 }}>
           <PixelButton variant="secondary" size="sm" onClick={() => { void window.cth.approveScript().then((r) => setScripts(r.scripts)); }}>
             {t('schedulesSection.approveScript', { defaultValue: 'Approve a script…' })}
@@ -181,13 +186,13 @@ export function SchedulesSection({ onSummary }: { onSummary?: (s: string) => voi
               style={inputStyle}
             />
           </Field>
-          <Field label={t('schedulesSection.goesTo')}>
+          {!mScript && <Field label={t('schedulesSection.goesTo')}>
             <Select value={mTo} onChange={setMTo} style={{ width: '100%' }}>
               <option value="broadcast">{t('schedulesSection.everyone')}</option>
               <option value="god">{agents.find((a) => a.isGod)?.name ?? 'the orchestrator'}</option>
               {agents.filter((a) => !a.isGod).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
             </Select>
-          </Field>
+          </Field>}
           <Field label={t('schedulesSection.when')}>
             <SchedulePicker
               intervalMs={mInterval}
@@ -321,7 +326,7 @@ function MissionRow({ mission, targetName, agents, onPatch, onDelete }: {
             </span>
           </span>
         }
-        sub={<>{`→ ${targetName(mission.to)}`} · {fired}{next}{mission.createdBy ? ` · ${t('schedulesSection.createdBy', { agent: targetName(mission.createdBy) })}` : ''}</>}
+        sub={<>{mission.kind === 'script' ? t('schedulesSection.scriptSub', { defaultValue: '→ script alert agent' }) : `→ ${targetName(mission.to)}`} · {fired}{next}{mission.createdBy ? ` · ${t('schedulesSection.createdBy', { agent: targetName(mission.createdBy) })}` : ''}</>}
         right={<Toggle on={mission.enabled} onClick={() => onPatch({ enabled: !mission.enabled })} />}
       />
 
@@ -341,13 +346,13 @@ function MissionRow({ mission, targetName, agents, onPatch, onDelete }: {
           <Field label={t('schedulesSection.label')}>
             <input value={label} onChange={(e) => setLabel(e.target.value)} style={inputStyle} />
           </Field>
-          <Field label={t('schedulesSection.goesTo')}>
+          {mission.kind !== 'script' && <Field label={t('schedulesSection.goesTo')}>
             <Select value={to} onChange={setTo} style={{ width: '100%' }}>
               <option value="broadcast">{t('schedulesSection.everyone')}</option>
               <option value="god">{agents.find((a) => a.isGod)?.name ?? 'the orchestrator'}</option>
               {agents.filter((a) => !a.isGod).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
             </Select>
-          </Field>
+          </Field>}
           <Field label={t('schedulesSection.when')}>
             {/* The heartbeat has no calendar: it is a cadence that adapts to how
                 busy the floor is, so pinning it to Tuesdays would be a lie. */}
