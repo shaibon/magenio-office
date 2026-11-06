@@ -37,6 +37,8 @@ interface ScheduledMission {
   /** `script` only: id of an approved script (see ApprovedScriptView). */
   scriptId?: string;
   scriptTimeoutMs?: number;
+  /** `script` only: signature written by the main process; the UI just passes it back. */
+  sig?: string;
   quietThresholdMs?: number;
   createdBy?: string;
   /** Day-of-week + time. Present ⇒ this replaces intervalMs (main/config.ts). */
@@ -100,7 +102,7 @@ export function SchedulesSection({ onSummary }: { onSummary?: (s: string) => voi
 
   const add = () => {
     if (!mLabel.trim() || (!mScript && !mBody.trim()) || !whenIsUsable) return;
-    persist([...missions, {
+    const created: ScheduledMission = {
       id: `m_${Date.now().toString(36)}`,
       label: mLabel.trim(),
       // The interval rides along even in weekly mode, so flipping back to
@@ -111,7 +113,10 @@ export function SchedulesSection({ onSummary }: { onSummary?: (s: string) => voi
       body: mScript ? '' : mBody.trim(),
       ...(mScript ? { kind: 'script' as const, scriptId: mScript } : {}),
       enabled: true
-    }]);
+    };
+    // A script mission is signed by the main process (script, recipient and schedule are what you chose here).
+    if (mScript) void window.cth.saveScriptMission(created).then(() => window.cth.listMissions().then(setMissions));
+    else persist([...missions, created]);
     setMScript(''); setMLabel(''); setMBody(''); setMWeekly(null); setAdding(false);
   };
   /** A weekly draft with no days picked would never fire, so it cannot be saved. */
@@ -131,7 +136,13 @@ export function SchedulesSection({ onSummary }: { onSummary?: (s: string) => voi
           mission={m}
           targetName={targetName}
           agents={agents}
-          onPatch={(fields) => patch(m.id, fields)}
+          onPatch={(fields) => {
+            // Changing a script mission's recipient, schedule or timeout re-signs it in the main process;
+            // a plain on/off toggle does not need to.
+            const touches = ['to', 'intervalMs', 'weekly', 'activeWindow', 'scriptTimeoutMs', 'label'].some((k) => k in fields);
+            if (m.kind === 'script' && touches) void window.cth.saveScriptMission({ ...m, ...fields }).then(() => window.cth.listMissions().then(setMissions));
+            else patch(m.id, fields);
+          }}
           onDelete={() => remove(m.id)}
         />
       ))}

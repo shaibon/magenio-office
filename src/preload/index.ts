@@ -264,6 +264,8 @@ export interface ScheduledMission {
   /** `script` only: id of an approved script (see ApprovedScriptView). */
   scriptId?: string;
   scriptTimeoutMs?: number;
+  /** `script` only: signature written by the main process; the UI just passes it back. */
+  sig?: string;
   /** Heartbeat only: floor-quiet threshold in ms. */
   quietThresholdMs?: number;
   /** Agent id that created this schedule via the broker; absent otherwise. */
@@ -1241,6 +1243,7 @@ const api = {
   // Approved scripts for `script` automations (the human picks the file in a native dialog).
   listApprovedScripts: (): Promise<ApprovedScriptView[]> => ipcRenderer.invoke('scripts:list'),
   approveScript: (): Promise<{ ok: boolean; error?: string; scripts: ApprovedScriptView[] }> => ipcRenderer.invoke('scripts:approve'),
+  saveScriptMission: (m: ScheduledMission): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('scripts:saveMission', m),
   removeApprovedScript: (id: string): Promise<ApprovedScriptView[]> => ipcRenderer.invoke('scripts:remove', id),
   saveMissions: (missions: ScheduledMission[]): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke('missions:save', missions),

@@ -74,6 +74,8 @@ export interface ScheduledMission {
   scriptId?: string;
   /** `script` only: kill the run after this long (default 60s, max 10 min). */
   scriptTimeoutMs?: number;
+  /** `script` only: HMAC of script, recipient, calendar and timeout, written only by the Settings IPC `scripts:saveMission`. A mission whose signature does not verify does not run. */
+  sig?: string;
   /** Heartbeat only: a floor is "quiet" when no tracked signal (log.jsonl mtime,
    *  inbox/outbox mtimes, any PTY output) has moved in this many ms. Default
    *  ~5 min. NOT derived from registry.status (which never transitions in main). */

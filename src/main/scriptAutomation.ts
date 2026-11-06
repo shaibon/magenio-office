@@ -67,8 +67,31 @@ export function readRegularFile(path: string, max = SCRIPT_MAX_FILE_BYTES): Buff
   } finally { closeSync(fd); }
 }
 
-/** The slice of a mission this runner reads. */
-export interface ScriptMission { id: string; label: string; to: string; scriptId?: string; scriptTimeoutMs?: number }
+/** The slice of a mission this runner reads. `sig` authenticates what a human authorised: which script
+ *  runs, who receives the output, and when (see missionSignature). */
+export interface ScriptMission {
+  id: string; label: string; to: string; scriptId?: string; scriptTimeoutMs?: number;
+  intervalMs?: number; weekly?: { days: number[]; minute: number };
+  activeWindow?: { days: number[]; fromMinute: number; toMinute: number; outsideIntervalMs?: number; outsideMinutes?: number[] };
+  sig?: string;
+}
+
+/** HMAC over everything that decides WHAT runs, WHO gets the output and WHEN: script, recipient, calendar, timeout.
+ *  Not `enabled` (a signed mission may be switched on or off), not `label`/`lastFiredAt`. Fields are joined with NUL
+ *  so no value can bleed into its neighbour. Same Keychain key as the script approvals. */
+export function missionSignature(key: string, m: ScriptMission): string {
+  const w = m.weekly ? `${[...m.weekly.days].sort((a, b) => a - b).join(',')}@${m.weekly.minute}` : '';
+  const a = m.activeWindow
+    ? [[...m.activeWindow.days].sort((x, y) => x - y).join(','), m.activeWindow.fromMinute, m.activeWindow.toMinute, m.activeWindow.outsideIntervalMs ?? '', (m.activeWindow.outsideMinutes ?? []).join(',')].join('|')
+    : '';
+  return createHmac('sha256', key)
+    .update(['script-mission-v1', m.id, m.scriptId ?? '', m.to, String(m.intervalMs ?? ''), w, a, String(m.scriptTimeoutMs ?? '')].join('\0'))
+    .digest('hex');
+}
+export function verifyMissionSig(key: string | null, m: ScriptMission): boolean {
+  if (!key || typeof m.sig !== 'string' || !/^[0-9a-f]{64}$/.test(m.sig)) return false;
+  return timingSafeEqual(Buffer.from(missionSignature(key, m), 'hex'), Buffer.from(m.sig, 'hex'));
+}
 
 export interface ScriptOutcome {
   status: 'ok' | 'found' | 'error' | 'skipped';
@@ -81,6 +104,10 @@ export interface ScriptRunnerDeps {
   approved(): ApprovedScript[];
   /** Is this approval record authentic (signed by the app)? An unverifiable record is refused. */
   verify(entry: ApprovedScript): boolean;
+  /** Is this mission (script, recipient, calendar, timeout) exactly what a human signed in Settings? */
+  verifyMission(m: ScriptMission): boolean;
+  /** Where to report a mission whose own `to` cannot be trusted (an unsigned or altered record): god, not the record's `to`. */
+  fixedRecipient(): string;
   /** Private (0700) directory where the verified copy is executed from. */
   cacheDir: string;
   /** A read-only broker capability for this run, or null when the broker is down. */
@@ -119,6 +146,14 @@ export function createScriptRunner(deps: ScriptRunnerDeps) {
         return o;
       };
 
+      // FIRST, before any token or file access: is this mission what a human authorised? If not, nothing is
+      // granted or run, and the report goes to a recipient the record cannot choose.
+      if (!deps.verifyMission(m)) {
+        const reason = 'the mission is not authentic (missing or invalid signature: its script, recipient or schedule was not set in Settings)';
+        const to = deps.fixedRecipient();
+        const delivered = deps.send(to, `${m.label}: script check REFUSED`, `A scheduled script mission "${m.label}" (${m.id}) was NOT run: ${reason}. It claimed recipient "${m.to}" and script "${m.scriptId}". Re-save it in Settings > Schedules if it is yours; otherwise something edited the app config.`);
+        return finish({ status: 'error', exitCode: null, reason, delivered });
+      }
       const entry = deps.approved().find((s) => s.id === m.scriptId);
       if (!entry) return finish(fail('the script is not approved (approve it in Settings)'));
       if (!deps.verify(entry)) return finish(fail('the approval record is not authentic (missing or invalid signature); approve the script again in Settings'));

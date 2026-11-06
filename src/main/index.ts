@@ -14,7 +14,7 @@ import {
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { join, resolve, relative, sep, basename, dirname, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
-import { createScriptRunner, sha256Hex, readRegularFile, approvalSignature, verifyApproval, type ApprovedScript } from './scriptAutomation';
+import { createScriptRunner, sha256Hex, readRegularFile, approvalSignature, verifyApproval, missionSignature, verifyMissionSig, type ApprovedScript } from './scriptAutomation';
 import { request as httpsRequest } from 'node:https';
 import { PtyManager, type SpawnOptions } from './pty';
 import { reapHiveMcp } from './mcpReap';
@@ -895,6 +895,8 @@ function scriptApprovalKey(create: boolean): string | null {
 const scriptRunner = createScriptRunner({
   approved: () => readConfig().approvedScripts ?? [],
   verify: (e) => verifyApproval(scriptApprovalKey(false), e),
+  verifyMission: (m) => verifyMissionSig(scriptApprovalKey(false), m),
+  fixedRecipient: () => hive.registry().godId ?? 'god',
   cacheDir: join(app.getPath('userData'), 'automation-scripts'),
   grant: (id) => (integrationBroker.running()
     ? { url: integrationBroker.url(), token: integrationBroker.grant(`script:${id}`, integrations.enabledIds(), { readOnly: true }) }
@@ -5354,6 +5356,13 @@ ipcMain.handle('missions:save', (_evt, missions) => {
   const merged = incoming.map((m) => {
     const prevLastFired = persistedById.get(m.id)?.lastFiredAt ?? 0;
     const lastFiredAt = Math.max(m.lastFiredAt ?? 0, prevLastFired) || undefined;
+    // A script mission's signature is only ever written by `scripts:saveMission`. Here the persisted one wins, so
+    // this generic save can neither mint a signature nor launder a record an agent edited: a changed record keeps
+    // the OLD signature, fails verification and does not run.
+    if (m.kind === 'script') {
+      const sig = persistedById.get(m.id)?.sig;
+      return { ...m, lastFiredAt, sig };
+    }
     return { ...m, lastFiredAt };
   });
   writeConfig({ missions: merged });
@@ -5389,6 +5398,25 @@ ipcMain.handle('scripts:approve', async () => {
     hive.appendLog({ kind: 'script-approved', id: entry.id, path, sha256 });
     return { ok: true, scripts: approvedScriptsView() };
   } catch (e) { return { ok: false, error: (e as Error).message, scripts: approvedScriptsView() }; }
+});
+// The ONLY writer of a script mission's signature: the Settings UI, for a mission the human just added or edited.
+ipcMain.handle('scripts:saveMission', (_evt, raw: unknown) => {
+  const key = scriptApprovalKey(false);
+  const m = raw as ScheduledMission | null;
+  if (!key || !m || typeof m !== 'object' || m.kind !== 'script' || typeof m.id !== 'string' || typeof m.to !== 'string' || typeof m.scriptId !== 'string') {
+    return { ok: false, error: 'invalid script mission (or Keychain unavailable)' };
+  }
+  const entry = (readConfig().approvedScripts ?? []).find((a) => a.id === m.scriptId);
+  if (!entry || !verifyApproval(key, entry)) return { ok: false, error: 'the script is not approved' };
+  const prev = (readConfig().missions ?? []).find((x) => x.id === m.id);
+  const rec: ScheduledMission = { ...m, kind: 'script', body: '', lastFiredAt: Math.max(m.lastFiredAt ?? 0, prev?.lastFiredAt ?? 0) || Date.now(), sig: undefined };
+  rec.sig = missionSignature(key, rec);
+  const cur = readConfig().missions ?? [];
+  writeConfig({ missions: prev ? cur.map((x) => (x.id === rec.id ? rec : x)) : [...cur, rec] });
+  hive.appendLog({ kind: 'script-mission-saved', id: rec.id, scriptId: rec.scriptId, to: rec.to });
+  syncMissions();
+  try { liveWebContents()?.send('missions:updated'); } catch { /* window gone */ }
+  return { ok: true };
 });
 ipcMain.handle('scripts:remove', (_evt, id: unknown) => {
   if (typeof id === 'string') {

@@ -42,6 +42,8 @@ export interface ScheduledMission {
   /** `script` only: id of an approved script (see ApprovedScriptView). */
   scriptId?: string;
   scriptTimeoutMs?: number;
+  /** `script` only: signature written by the main process; the UI just passes it back. */
+  sig?: string;
   quietThresholdMs?: number;
   /** Agent id that created this schedule via the broker; absent otherwise. */
   createdBy?: string;

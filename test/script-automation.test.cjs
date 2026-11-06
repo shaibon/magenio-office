@@ -8,7 +8,7 @@ const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
 
-const { createScriptRunner, sha256Hex, approvalSignature, verifyApproval, readRegularFile } = loadTs('src/main/scriptAutomation.ts');
+const { createScriptRunner, sha256Hex, approvalSignature, verifyApproval, readRegularFile, missionSignature, verifyMissionSig } = loadTs('src/main/scriptAutomation.ts');
 const A = loadTs('src/shared/agentAutomations.ts');
 
 const KEY = 'test-approval-key';
@@ -22,6 +22,8 @@ function setup(t, extra = {}) {
   const runner = createScriptRunner({
     approved: () => approved,
     verify: (e) => verifyApproval(KEY, e),
+    verifyMission: (m) => verifyMissionSig(KEY, m),
+    fixedRecipient: () => 'god-fixed',
     cacheDir: path.join(dir, 'cache'),
     grant: (id) => { grants.push(id); return { url: 'http://127.0.0.1:1', token: 'tok-ro' }; },
     revoke: (id) => revoked.push(id),
@@ -34,7 +36,8 @@ function setup(t, extra = {}) {
     const p = path.join(dir, name);
     fs.writeFileSync(p, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
     approved.push(signed({ id: name, path: p, sha256: sha256Hex(fs.readFileSync(p)), approvedAt: 1 }));
-    return { id: `m-${name}`, label: `check ${name}`, to: 'god', scriptId: name, ...opts, p };
+    const mission = { id: `m-${name}`, label: `check ${name}`, to: 'god', scriptId: name, intervalMs: 300000, ...opts, p };
+    return { ...mission, sig: missionSignature(KEY, mission) };
   };
   return { dir, sent, logs, grants, revoked, runner, make, approved };
 }
@@ -90,7 +93,8 @@ test('a script that cannot start (no shebang) is an error message', async (t) =>
   const p = path.join(s.dir, 'noshebang');
   fs.writeFileSync(p, 'echo hi\n', { mode: 0o755 });
   s.approved.push(signed({ id: 'ns', path: p, sha256: sha256Hex(fs.readFileSync(p)), approvedAt: 1 }));
-  const r = await s.runner.run({ id: 'm-ns', label: 'ns', to: 'god', scriptId: 'ns' });
+  const nm = { id: 'm-ns', label: 'ns', to: 'god', scriptId: 'ns' };
+  const r = await s.runner.run({ ...nm, sig: missionSignature(KEY, nm) });
   assert.equal(r.status, 'error');
   assert.equal(s.sent.length, 1);
 });
@@ -110,7 +114,8 @@ test('hash changed since approval: refused, NOT executed, error delivered', asyn
 
 test('unapproved or missing script: error message, nothing runs', async (t) => {
   const s = setup(t);
-  assert.equal((await s.runner.run({ id: 'm1', label: 'x', to: 'god', scriptId: 'nope' })).status, 'error');
+  const um = { id: 'm1', label: 'x', to: 'god', scriptId: 'nope', intervalMs: 1 };
+  assert.equal((await s.runner.run({ ...um, sig: missionSignature(KEY, um) })).status, 'error');
   const m = s.make('gone.sh', 'exit 0');
   fs.rmSync(m.p);
   assert.equal((await s.runner.run(m)).status, 'error');
@@ -152,7 +157,8 @@ test('H1: a forged approval record (agent edited config.json) is refused and nev
   const p = path.join(s.dir, 'forged.sh');
   fs.writeFileSync(p, `#!/bin/sh\ntouch ${marker}\n`, { mode: 0o755 });
   const sha256 = sha256Hex(fs.readFileSync(p));
-  const m = { id: 'm-f', label: 'f', to: 'god', scriptId: 'f' };
+  const fm = { id: 'm-f', label: 'f', to: 'god', scriptId: 'f' };
+  const m = { ...fm, sig: missionSignature(KEY, fm) };
   for (const forged of [
     { id: 'f', path: p, sha256, approvedAt: 1 },                                        // no signature
     { id: 'f', path: p, sha256, approvedAt: 1, sig: 'a'.repeat(64) },                   // made-up signature
@@ -180,7 +186,8 @@ test('H2: a FIFO (or symlink, or oversized file) in place of the script never bl
   assert.throws(() => readRegularFile(fifo), /not a regular file/);
   s.approved.push(signed({ id: 'fifo', path: fifo, sha256: 'c'.repeat(64), approvedAt: 1 }));
   const t0 = Date.now();
-  const r = await s.runner.run({ id: 'm-fifo', label: 'fifo', to: 'god', scriptId: 'fifo' });
+  const fim = { id: 'm-fifo', label: 'fifo', to: 'god', scriptId: 'fifo' };
+  const r = await s.runner.run({ ...fim, sig: missionSignature(KEY, fim) });
   assert.ok(Date.now() - t0 < 2000, 'returned immediately, did not block on the pipe');
   assert.equal(r.status, 'error');
   assert.equal(s.sent.length, 1);
@@ -216,6 +223,51 @@ test('M1: at the timeout the run ends and the broker token is revoked even if a 
   assert.equal(s.runner.isRunning(m.id), false, 'a later tick is not blocked as overlap');
 });
 
+test('H1b: a script mission edited or added by an agent is refused BEFORE any grant or spawn, and reported to god, not to its own `to`', async (t) => {
+  const s = setup(t);
+  const marker = path.join(s.dir, 'other-ran');
+  const good = s.make('good.sh', 'exit 10', { to: 'god', intervalMs: 300000, weekly: { days: [1, 2], minute: 540 } });
+  s.make('other.sh', `touch ${marker}; exit 10`); // a DIFFERENT script the Boss also approved
+  assert.equal(verifyMissionSig(KEY, good), true, 'the signed mission itself is accepted');
+  const forged = [
+    ['scriptId repointed', { scriptId: 'other.sh' }],
+    ['recipient changed to the attacker', { to: 'agent-evil' }],
+    ['interval changed', { intervalMs: 400000 }],
+    ['weekly changed', { weekly: { days: [0, 1, 2, 3, 4, 5, 6], minute: 540 } }],
+    ['weekly removed', { weekly: undefined }],
+    ['active window added', { activeWindow: { days: [1], fromMinute: 0, toMinute: 60 } }],
+    ['timeout changed', { scriptTimeoutMs: 600000 }],
+    ['id changed (copied signature)', { id: 'm-new' }],
+    ['signature removed', { sig: undefined }],
+    ['signature made up', { sig: 'e'.repeat(64) }]
+  ];
+  for (const [what, patch] of forged) {
+    const before = s.sent.length;
+    const r = await s.runner.run({ ...good, ...patch });
+    assert.equal(r.status, 'error', what);
+    assert.match(r.reason, /not authentic/, what);
+    assert.equal(s.sent.length, before + 1, what);
+    assert.equal(s.sent.at(-1).to, 'god-fixed', `${what}: reported to the fixed recipient`);
+    assert.match(s.sent.at(-1).subject, /REFUSED/);
+  }
+  // a mission an agent ADDED outright (never signed), pointing at an approved script, receiver = itself
+  const added = await s.runner.run({ id: 'm-added', label: 'x', to: 'agent-evil', scriptId: 'other.sh', intervalMs: 300000 });
+  assert.equal(added.status, 'error');
+  assert.equal(s.sent.at(-1).to, 'god-fixed');
+  assert.equal(s.grants.length, 0, 'no broker token was ever granted');
+  assert.equal(fs.existsSync(marker), false, 'no script ran');
+  assert.ok(s.logs.every((l) => l.outcome === 'error'), 'every refusal is logged');
+  // an unrelated field (enabled / label) does not invalidate a signed mission
+  assert.equal(verifyMissionSig(KEY, { ...good, enabled: false, label: 'renamed', lastFiredAt: 5 }), true);
+  // separators are unambiguous: moving a character between neighbouring fields changes the signature
+  const a = missionSignature(KEY, { id: 'ab', scriptId: 'c', to: 'd' });
+  const b = missionSignature(KEY, { id: 'a', scriptId: 'bc', to: 'd' });
+  assert.notEqual(a, b);
+  // and the signature is bound to the key
+  assert.equal(verifyMissionSig('other-key', good), false);
+  assert.equal(verifyMissionSig(null, good), false);
+});
+
 // ── no agent may create or change a script automation ─────────────────────────
 function host(records) {
   return {
@@ -247,6 +299,11 @@ test('wiring: fire() runs script missions through the runner; approval takes no 
   assert.match(src, /if \(m\.kind === 'script'\) \{[^}]*scriptRunner\.run\(m\)/s);
   assert.match(src, /verify: \(e\) => verifyApproval\(scriptApprovalKey\(false\), e\)/);
   assert.match(src, /sig: approvalSignature\(key, base\)/);
+  assert.match(src, /verifyMission: \(m\) => verifyMissionSig\(scriptApprovalKey\(false\), m\)/);
+  assert.match(src, /ipcMain\.handle\('scripts:saveMission'/);
+  assert.match(src, /rec\.sig = missionSignature\(key, rec\)/);
+  // the generic missions:save can never mint a signature: the persisted one is kept
+  assert.match(src, /const sig = persistedById\.get\(m\.id\)\?\.sig;/);
   assert.match(src, /ipcMain\.handle\('scripts:approve', async \(\) =>/);
   assert.match(src, /dialog\.showOpenDialog\(mainWindow/);
   assert.match(src, /integrationBroker\.grant\(`script:\$\{id\}`, integrations\.enabledIds\(\), \{ readOnly: true \}\)/);
