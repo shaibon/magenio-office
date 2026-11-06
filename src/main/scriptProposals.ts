@@ -34,6 +34,8 @@ export interface ProposalHost {
   /** Directory for the pending list and the file copies (0700, outside every agent's reach). */
   dir: string;
   isGod(actor: string): boolean;
+  /** Is this one of the app's shipped missions (ops-standup, jira-poll, ...)? They have no kind or createdBy, so only the id tells. */
+  isBuiltIn?(id: string): boolean;
   key(create: boolean): string | null;
   missions(): MissionLike[];
   log(event: Record<string, unknown>): void;
@@ -82,6 +84,7 @@ export function replaceableTrigger(host: ProposalHost, id: unknown, missions: Mi
   if (typeof id !== 'string' || !id) return 'replaces must be a trigger id';
   const m = missions.find((x) => x.id === id);
   if (!m) return `no trigger "${id}"`;
+  if (host.isBuiltIn?.(id)) return 'a built-in trigger cannot be replaced by a proposal';
   if ((m.kind ?? 'dispatch') !== 'dispatch') return 'only a dispatch trigger can be replaced (not a built-in, heartbeat, compact or script one)';
   if (m.createdBy && !host.isGod(m.createdBy)) return 'that trigger belongs to another agent and cannot be switched off by a proposal';
   return m;

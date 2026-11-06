@@ -21,6 +21,7 @@ function setup(t, missions = []) {
   const host = {
     dir: path.join(dir, 'proposals'),
     isGod: (id) => id === 'god-1',
+    isBuiltIn: (id) => id === 'ops-standup',
     key: () => KEY,
     missions: () => state.missions,
     log: (e) => logs.push(e)
@@ -80,7 +81,8 @@ test('replaces: only a dispatch trigger that is not another agent\'s; built-in, 
     { id: 'by-god', label: 'God trigger', enabled: true, to: 'god-1', body: 'b', intervalMs: 1, createdBy: 'god-1' },
     { id: 'by-agent', label: 'Agent-only trigger', enabled: true, to: 'agent-x', body: 'b', intervalMs: 1, createdBy: 'agent-x' },
     { id: 'hb', label: 'Heartbeat', kind: 'heartbeat', enabled: true, to: 'god-1', body: '', intervalMs: 1 },
-    { id: 'sc', label: 'A script', kind: 'script', enabled: true, to: '', body: '', intervalMs: 1 }
+    { id: 'sc', label: 'A script', kind: 'script', enabled: true, to: '', body: '', intervalMs: 1 },
+    { id: 'ops-standup', label: 'Ops standup', enabled: true, to: 'god-1', body: 'b', intervalMs: 1 }
   ]);
   const p = s.script('a.sh');
   const code = (replaces) => P.propose(s.host, 'god-1', { ...s.base(p, { label: `L${replaces}` }), replaces }).status;
@@ -90,6 +92,7 @@ test('replaces: only a dispatch trigger that is not another agent\'s; built-in, 
   assert.equal(code('hb'), 403, 'not a dispatch trigger');
   assert.equal(code('sc'), 403);
   assert.equal(code('nope'), 403);
+  assert.equal(code('ops-standup'), 403, 'built-in has no kind or createdBy but is still refused');
 });
 
 test('approval is atomic: script + mission signed, the replaced trigger switched off, the proposal consumed', (t) => {

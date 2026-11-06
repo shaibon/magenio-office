@@ -902,7 +902,9 @@ function scriptApprovalKey(create: boolean): string | null {
 /** Pending script proposals live in main's private dir (userData), signed with the approval key. */
 const proposalHost: ProposalHost = {
   dir: join(app.getPath('userData'), 'script-proposals'),
-  isGod: (id) => hive.registry().godId === id,
+  // hive.isGod also honours the registry's isGod flag, so triggers god made under a former god id still count as god's.
+  isGod: (id) => hive.isGod(id),
+  isBuiltIn: (id) => [OPS_STANDUP_MISSION, HEARTBEAT_MISSION, JIRA_POLL_MISSION, TRELLO_INTAKE_MISSION, COMPACT_MAINTENANCE_MISSION].some((m) => m.id === id),
   key: (create) => scriptApprovalKey(create),
   missions: () => (readConfig().missions ?? []) as MissionLike[],
   log: (event) => {
