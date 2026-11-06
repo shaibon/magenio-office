@@ -32,6 +32,8 @@ import {
   type WebhookTrigger
 } from '../shared/triggers';
 
+import type { ApprovedScript } from './scriptAutomation';
+
 /** A recurring auto-dispatched mission fired on an interval by the scheduler. */
 export interface ScheduledMission {
   id: string;
@@ -66,7 +68,12 @@ export interface ScheduledMission {
    *  e.g. the ops standup). 'heartbeat' (Lane A #1) is a context-aware beat: it
    *  observes live floor state, re-engages a quiet god, and ticks the circuit
    *  breaker — armed with an adaptive cadence, not a fixed setInterval. */
-  kind?: 'dispatch' | 'heartbeat' | 'compact';
+  kind?: 'dispatch' | 'heartbeat' | 'compact' | 'script';
+  /** `script` only: id of an entry in `approvedScripts`. The mission runs that program in the main
+   *  process (no agent, no tokens) and messages `to` only if it exits 10 or fails. See scriptAutomation.ts. */
+  scriptId?: string;
+  /** `script` only: kill the run after this long (default 60s, max 10 min). */
+  scriptTimeoutMs?: number;
   /** Heartbeat only: a floor is "quiet" when no tracked signal (log.jsonl mtime,
    *  inbox/outbox mtimes, any PTY output) has moved in this many ms. Default
    *  ~5 min. NOT derived from registry.status (which never transitions in main). */
@@ -369,6 +376,8 @@ export interface HarnessConfig {
   embeddingModel: 'minilm' | 'embeddinggemma';
   /** Recurring auto-dispatch missions handled by the scheduler. */
   missions?: ScheduledMission[];
+  /** Scripts the human approved in Settings, pinned by sha256. Agents cannot write the app config. */
+  approvedScripts?: ApprovedScript[];
   /** One-time guard: has the built-in hourly ops standup been seeded into an
    *  existing install's missions? Prevents re-adding it after a user deletes it. */
   opsStandupSeeded?: boolean;

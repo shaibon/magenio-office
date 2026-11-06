@@ -21,7 +21,7 @@ export interface AutomationRecord {
   body: string;
   enabled: boolean;
   lastFiredAt?: number;
-  kind?: 'dispatch' | 'heartbeat' | 'compact';
+  kind?: 'dispatch' | 'heartbeat' | 'compact' | 'script';
   /** Agent id that created the trigger. Absent on operator and built-in ones. */
   createdBy?: string;
 }
@@ -150,9 +150,10 @@ export function createAutomation(host: AutomationHost, actor: string, raw: unkno
   return ok(publicView(rec), 201);
 }
 
-/** null = may touch it. Heartbeat/compact are app machinery, never editable here. */
+/** null = may touch it. Heartbeat/compact are app machinery and `script` runs a program outside every
+ *  sandbox (only the human creates one, in Settings): none is editable here, by any agent, god included. */
 function guard(host: AutomationHost, actor: string, m: AutomationRecord): AutomationResult | null {
-  if ((m.kind ?? 'dispatch') !== 'dispatch') return fail(403, 'forbidden', 'built-in system trigger');
+  if ((m.kind ?? 'dispatch') !== 'dispatch') return fail(403, 'forbidden', 'built-in system trigger or human-approved script (not editable by agents)');
   if (m.createdBy !== actor && !host.isGod(actor)) return fail(403, 'forbidden', 'not your automation (only its owner or god may change it)');
   return null;
 }

@@ -246,6 +246,9 @@ export interface SpawnPtyOptions {
 
 export interface PtyExit { exitCode: number; signal?: number | undefined }
 
+/** A script the human approved in Settings (sha256-pinned); `current` = the file still matches. */
+export interface ApprovedScriptView { id: string; path: string; sha256: string; approvedAt: number; current: boolean }
+
 /** A recurring auto-dispatched mission fired on an interval by the scheduler. */
 export interface ScheduledMission {
   id: string;
@@ -257,7 +260,10 @@ export interface ScheduledMission {
   autoCompact?: boolean;
   lastFiredAt?: number;
   /** Mission flavor; 'heartbeat' (Lane A #1) is a context-aware adaptive beat. */
-  kind?: 'dispatch' | 'heartbeat' | 'compact';
+  kind?: 'dispatch' | 'heartbeat' | 'compact' | 'script';
+  /** `script` only: id of an approved script (see ApprovedScriptView). */
+  scriptId?: string;
+  scriptTimeoutMs?: number;
   /** Heartbeat only: floor-quiet threshold in ms. */
   quietThresholdMs?: number;
   /** Agent id that created this schedule via the broker; absent otherwise. */
@@ -1232,6 +1238,10 @@ const api = {
 
   // ─── Scheduled missions (recurring auto-dispatch) ──────────────────────────
   listMissions: (): Promise<ScheduledMission[]> => ipcRenderer.invoke('missions:list'),
+  // Approved scripts for `script` automations (the human picks the file in a native dialog).
+  listApprovedScripts: (): Promise<ApprovedScriptView[]> => ipcRenderer.invoke('scripts:list'),
+  approveScript: (): Promise<{ ok: boolean; error?: string; scripts: ApprovedScriptView[] }> => ipcRenderer.invoke('scripts:approve'),
+  removeApprovedScript: (id: string): Promise<ApprovedScriptView[]> => ipcRenderer.invoke('scripts:remove', id),
   saveMissions: (missions: ScheduledMission[]): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke('missions:save', missions),
   /** Fires when the scheduler stamps a mission's lastFiredAt (a beat/dispatch),

@@ -14,6 +14,7 @@ import {
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { join, resolve, relative, sep, basename, dirname, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
+import { createScriptRunner, sha256Hex, SCRIPT_MAX_FILE_BYTES, type ApprovedScript } from './scriptAutomation';
 import { request as httpsRequest } from 'node:https';
 import { PtyManager, type SpawnOptions } from './pty';
 import { reapHiveMcp } from './mcpReap';
@@ -869,6 +870,22 @@ interface MissionTimer {
 /** Active scheduler timers keyed by mission id. */
 const missionTimers = new Map<string, MissionTimer>();
 
+/** Runs `script` missions: no agent, no LLM. Approval and hashing live in scriptAutomation.ts. */
+const scriptRunner = createScriptRunner({
+  approved: () => readConfig().approvedScripts ?? [],
+  cacheDir: join(app.getPath('userData'), 'automation-scripts'),
+  grant: (id) => (integrationBroker.running()
+    ? { url: integrationBroker.url(), token: integrationBroker.grant(`script:${id}`, integrations.enabledIds(), { readOnly: true }) }
+    : null),
+  revoke: (id) => integrationBroker.revoke(`script:${id}`),
+  send: (to, subject, body) => {
+    if (!hive.enabled()) return false;
+    hive.send({ to, act: 'request', subject, body }, 'scheduler');
+    return true;
+  },
+  log: (event) => hive.appendLog(event)
+});
+
 /** Clear and forget every armed mission timer (both the setTimeout and the
  *  setInterval handle). Safe to call from syncMissions and from shutdown
  *  teardown so a tick never fires into half-torn-down services. */
@@ -907,7 +924,10 @@ function syncMissions(): void {
         // Gate on `kind!=='compact'` ALONE — that already excludes the compact mission;
         // we deliberately do NOT add `&& m.body`, so other (dispatch) missions keep
         // their prior behaviour, including the historical empty-body send (Pam N1).
-        if (m.kind !== 'compact' && hive.enabled()) {
+        if (m.kind === 'script') {
+          // No agent, no tokens: run the human-approved program; it messages `to` only if it finds something or breaks.
+          void scriptRunner.run(m);
+        } else if (m.kind !== 'compact' && hive.enabled()) {
           hive.send({ to: m.to, act: 'request', subject: m.label, body: m.body }, 'scheduler');
         }
         // Auto-compact: do NOT jam /compact into busy terminals. Hand it to the
@@ -5317,6 +5337,40 @@ ipcMain.handle('missions:save', (_evt, missions) => {
   writeConfig({ missions: merged });
   syncMissions();
   return { ok: true };
+});
+
+// ─── IPC: approved scripts (script automations) ─────────────────────────────
+// The ONLY way a script becomes runnable: the human picks the file in a native dialog.
+// There is deliberately no path argument, so nothing in the renderer (let alone an agent) can name one.
+function approvedScriptsView(): Array<ApprovedScript & { current: boolean }> {
+  return (readConfig().approvedScripts ?? []).map((a) => {
+    let current = false;
+    try { current = sha256Hex(readFileSync(a.path)) === a.sha256; } catch { /* missing */ }
+    return { ...a, current };
+  });
+}
+ipcMain.handle('scripts:list', () => approvedScriptsView());
+ipcMain.handle('scripts:approve', async () => {
+  const res = await dialog.showOpenDialog(mainWindow ?? (undefined as unknown as BrowserWindow), { properties: ['openFile'], title: 'Approve a script for scheduled checks' });
+  if (res.canceled || !res.filePaths[0]) return { ok: false, scripts: approvedScriptsView() };
+  try {
+    const path = realpathSync(res.filePaths[0]);
+    if (statSync(path).size > SCRIPT_MAX_FILE_BYTES) return { ok: false, error: 'file too large', scripts: approvedScriptsView() };
+    const sha256 = sha256Hex(readFileSync(path));
+    const list = readConfig().approvedScripts ?? [];
+    const prev = list.find((a) => a.path === path);
+    const entry: ApprovedScript = { id: prev?.id ?? `s_${Date.now().toString(36)}`, path, sha256, approvedAt: Date.now() };
+    writeConfig({ approvedScripts: prev ? list.map((a) => (a.path === path ? entry : a)) : [...list, entry] });
+    hive.appendLog({ kind: 'script-approved', id: entry.id, path, sha256 });
+    return { ok: true, scripts: approvedScriptsView() };
+  } catch (e) { return { ok: false, error: (e as Error).message, scripts: approvedScriptsView() }; }
+});
+ipcMain.handle('scripts:remove', (_evt, id: unknown) => {
+  if (typeof id === 'string') {
+    writeConfig({ approvedScripts: (readConfig().approvedScripts ?? []).filter((a) => a.id !== id) });
+    hive.appendLog({ kind: 'script-removed', id });
+  }
+  return approvedScriptsView();
 });
 
 // ─── IPC: full-text search across hive files (board, tasks, memory) ──────────

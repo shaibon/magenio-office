@@ -38,7 +38,10 @@ export interface ScheduledMission {
   enabled: boolean;
   autoCompact?: boolean;
   lastFiredAt?: number;
-  kind?: 'dispatch' | 'heartbeat' | 'compact';
+  kind?: 'dispatch' | 'heartbeat' | 'compact' | 'script';
+  /** `script` only: id of an approved script (see ApprovedScriptView). */
+  scriptId?: string;
+  scriptTimeoutMs?: number;
   quietThresholdMs?: number;
   /** Agent id that created this schedule via the broker; absent otherwise. */
   createdBy?: string;

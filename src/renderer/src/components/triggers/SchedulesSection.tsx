@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import type { ApprovedScriptView } from '../../../../preload';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { PixelButton } from '../PixelButton';
@@ -32,7 +33,10 @@ interface ScheduledMission {
   enabled: boolean;
   autoCompact?: boolean;
   lastFiredAt?: number;
-  kind?: 'dispatch' | 'heartbeat' | 'compact';
+  kind?: 'dispatch' | 'heartbeat' | 'compact' | 'script';
+  /** `script` only: id of an approved script (see ApprovedScriptView). */
+  scriptId?: string;
+  scriptTimeoutMs?: number;
   quietThresholdMs?: number;
   createdBy?: string;
   /** Day-of-week + time. Present ⇒ this replaces intervalMs (main/config.ts). */
@@ -66,10 +70,13 @@ export function SchedulesSection({ onSummary }: { onSummary?: (s: string) => voi
   const [mWeekly, setMWeekly] = useState<WeeklyDraft | null>(null);
   const [mTo, setMTo] = useState<string>('god');
   const [mBody, setMBody] = useState('');
+  const [mScript, setMScript] = useState('');
+  const [scripts, setScripts] = useState<ApprovedScriptView[]>([]);
 
   useEffect(() => {
     const load = () => { window.cth.listMissions().then(setMissions).catch(() => { /* noop */ }); };
     load();
+    window.cth.listApprovedScripts().then(setScripts).catch(() => { /* noop */ });
     // Refresh "last fired" when the scheduler stamps a beat/dispatch.
     return window.cth.onMissionsUpdated(load);
   }, []);
@@ -92,7 +99,7 @@ export function SchedulesSection({ onSummary }: { onSummary?: (s: string) => voi
   const remove = (id: string) => persist(missions.filter((m) => m.id !== id));
 
   const add = () => {
-    if (!mLabel.trim() || !mBody.trim() || !whenIsUsable) return;
+    if (!mLabel.trim() || (!mScript && !mBody.trim()) || !whenIsUsable) return;
     persist([...missions, {
       id: `m_${Date.now().toString(36)}`,
       label: mLabel.trim(),
@@ -101,10 +108,11 @@ export function SchedulesSection({ onSummary }: { onSummary?: (s: string) => voi
       intervalMs: mInterval,
       ...(mWeekly ? { weekly: mWeekly } : {}),
       to: mTo,
-      body: mBody.trim(),
+      body: mScript ? '' : mBody.trim(),
+      ...(mScript ? { kind: 'script' as const, scriptId: mScript } : {}),
       enabled: true
     }]);
-    setMLabel(''); setMBody(''); setMWeekly(null); setAdding(false);
+    setMScript(''); setMLabel(''); setMBody(''); setMWeekly(null); setAdding(false);
   };
   /** A weekly draft with no days picked would never fire, so it cannot be saved. */
   const whenIsUsable = !mWeekly || weeklyIsUsable(mWeekly);
@@ -127,6 +135,24 @@ export function SchedulesSection({ onSummary }: { onSummary?: (s: string) => voi
           onDelete={() => remove(m.id)}
         />
       ))}
+
+      <SubCard>
+        <div style={{ fontFamily: 'var(--cth-font-display)', fontSize: 8, color: 'var(--cth-ink-500)' }}>{t('schedulesSection.scriptsTitle', { defaultValue: 'Approved scripts (run with no agent)' })}</div>
+        <Hint>{t('schedulesSection.scriptsHint', { defaultValue: 'A script runs outside the agent sandbox. Only a file you pick here is runnable, pinned by its hash: if it changes, it stops running until you approve it again. Exit 0 = nothing to report, exit 10 = message the recipient with its output, anything else = an error message.' })}</Hint>
+        {scripts.map((sc) => (
+          <div key={sc.id} style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 4, fontFamily: 'var(--cth-font-mono)', fontSize: 11 }}>
+            <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={sc.path}>{sc.path}</span>
+            <span>{sc.sha256.slice(0, 8)}</span>
+            <Chip tone={sc.current ? 'on' : 'off'}>{sc.current ? t('schedulesSection.scriptOk', { defaultValue: 'unchanged' }) : t('schedulesSection.scriptChanged', { defaultValue: 'CHANGED' })}</Chip>
+            <MiniButton tone="danger" onClick={() => { void window.cth.removeApprovedScript(sc.id).then(setScripts); }}>{t('common.delete')}</MiniButton>
+          </div>
+        ))}
+        <div style={{ marginTop: 6 }}>
+          <PixelButton variant="secondary" size="sm" onClick={() => { void window.cth.approveScript().then((r) => setScripts(r.scripts)); }}>
+            {t('schedulesSection.approveScript', { defaultValue: 'Approve a script…' })}
+          </PixelButton>
+        </div>
+      </SubCard>
 
       {!adding && (
         <div style={{ marginTop: 8 }}>
@@ -159,7 +185,15 @@ export function SchedulesSection({ onSummary }: { onSummary?: (s: string) => voi
               onWeekly={setMWeekly}
             />
           </Field>
-          <Field label={t('schedulesSection.prompt')}>
+          {scripts.length > 0 && (
+            <Field label={t('schedulesSection.runScript', { defaultValue: 'Run a script instead of an agent' })}>
+              <Select value={mScript} onChange={setMScript} style={{ width: '100%' }}>
+                <option value="">{t('schedulesSection.noScript', { defaultValue: 'No, send the prompt below' })}</option>
+                {scripts.map((sc) => <option key={sc.id} value={sc.id}>{sc.path}</option>)}
+              </Select>
+            </Field>
+          )}
+          {!mScript && <Field label={t('schedulesSection.prompt')}>
             <textarea
               dir={rtl ? 'auto' : undefined}
               value={mBody}
@@ -168,9 +202,9 @@ export function SchedulesSection({ onSummary }: { onSummary?: (s: string) => voi
               placeholder={t('schedulesSection.promptPlaceholder')}
               style={textareaStyle}
             />
-          </Field>
+          </Field>}
           <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
-            <PixelButton variant="primary" size="sm" onClick={add} disabled={!mLabel.trim() || !mBody.trim() || !whenIsUsable}>
+            <PixelButton variant="primary" size="sm" onClick={add} disabled={!mLabel.trim() || (!mScript && !mBody.trim()) || !whenIsUsable}>
               {t('common.add')}
             </PixelButton>
             <PixelButton variant="ghost" size="sm" onClick={() => { setAdding(false); setMLabel(''); setMBody(''); setMWeekly(null); }}>
@@ -288,7 +322,7 @@ function MissionRow({ mission, targetName, agents, onPatch, onDelete }: {
           background: 'var(--cth-paper-100)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)',
           fontFamily: 'var(--cth-font-mono)', fontSize: 11, lineHeight: '15px',
           color: 'var(--cth-ink-700)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
-        }}>{mission.body.trim() || t('schedulesSection.noPrompt')}</div>
+        }}>{mission.kind === 'script' ? `script ${mission.scriptId ?? ''}` : mission.body.trim() || t('schedulesSection.noPrompt')}</div>
       )}
 
       {open && (
@@ -312,7 +346,7 @@ function MissionRow({ mission, targetName, agents, onPatch, onDelete }: {
             {heartbeat && <Hint>{t('schedulesSection.beatCeiling')}</Hint>}
             {!heartbeat && !weekly && <ActiveWindowPicker value={win} onChange={setWin} />}
           </Field>
-          <Field label={t('schedulesSection.prompt')}>
+          {mission.kind !== 'script' && <Field label={t('schedulesSection.prompt')}>
             <textarea
               dir={rtl ? 'auto' : undefined}
               value={body}
@@ -321,7 +355,7 @@ function MissionRow({ mission, targetName, agents, onPatch, onDelete }: {
               placeholder={t('schedulesSection.promptPlaceholder')}
               style={textareaStyle}
             />
-          </Field>
+          </Field>}
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8 }}>
             <PixelButton variant="primary" size="sm" onClick={save} disabled={!dirty || !label.trim() || !whenIsUsable}>
               {saved && !dirty ? t('schedulesSection.saved') : t('common.save')}
