@@ -4,7 +4,7 @@ import { shouldRetryWithoutResume } from '../shared/resumeFailure';
 import { alertChannelFor, isSlackChannelId } from '../shared/jiraProjects';
 import { brokerGrantPlan } from '../shared/brokerGrant';
 import { withCodexSandboxMode, withCodexSandboxCommand } from '../shared/codexSandbox';
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, screen, shell, Notification } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, safeStorage, screen, shell, Notification } from 'electron';
 import { execFileSync, spawn } from 'node:child_process';
 import {
   rmSync, existsSync, readFileSync, readdirSync, statSync, cpSync, writeFileSync,
@@ -14,7 +14,7 @@ import {
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { join, resolve, relative, sep, basename, dirname, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
-import { createScriptRunner, sha256Hex, SCRIPT_MAX_FILE_BYTES, type ApprovedScript } from './scriptAutomation';
+import { createScriptRunner, sha256Hex, readRegularFile, approvalSignature, verifyApproval, type ApprovedScript } from './scriptAutomation';
 import { request as httpsRequest } from 'node:https';
 import { PtyManager, type SpawnOptions } from './pty';
 import { reapHiveMcp } from './mcpReap';
@@ -871,8 +871,30 @@ interface MissionTimer {
 const missionTimers = new Map<string, MissionTimer>();
 
 /** Runs `script` missions: no agent, no LLM. Approval and hashing live in scriptAutomation.ts. */
+/** Key that authenticates approval records. Random, kept ONLY encrypted with safeStorage (macOS Keychain):
+ *  config.json is writable by any process of this macOS user, so a record is trusted only if it verifies under
+ *  this key. null = no usable key (safeStorage unavailable, or the key file cannot be read) = nothing verifies. */
+let approvalKeyCache: string | null = null;
+function scriptApprovalKey(create: boolean): string | null {
+  if (approvalKeyCache) return approvalKeyCache;
+  try {
+    if (!safeStorage.isEncryptionAvailable()) return null;
+    const file = join(app.getPath('userData'), 'script-approval.key');
+    if (existsSync(file)) {
+      approvalKeyCache = safeStorage.decryptString(readRegularFile(file, 4096));
+      return approvalKeyCache;
+    }
+    if (!create) return null;
+    const key = randomBytes(32).toString('hex');
+    writeFileSync(file, safeStorage.encryptString(key), { mode: 0o600 });
+    approvalKeyCache = key;
+    return key;
+  } catch { return null; }
+}
+
 const scriptRunner = createScriptRunner({
   approved: () => readConfig().approvedScripts ?? [],
+  verify: (e) => verifyApproval(scriptApprovalKey(false), e),
   cacheDir: join(app.getPath('userData'), 'automation-scripts'),
   grant: (id) => (integrationBroker.running()
     ? { url: integrationBroker.url(), token: integrationBroker.grant(`script:${id}`, integrations.enabledIds(), { readOnly: true }) }
@@ -5344,8 +5366,9 @@ ipcMain.handle('missions:save', (_evt, missions) => {
 // There is deliberately no path argument, so nothing in the renderer (let alone an agent) can name one.
 function approvedScriptsView(): Array<ApprovedScript & { current: boolean }> {
   return (readConfig().approvedScripts ?? []).map((a) => {
+    // `current` = the file still matches AND the record is authentic; a FIFO or a huge file reads as not current.
     let current = false;
-    try { current = sha256Hex(readFileSync(a.path)) === a.sha256; } catch { /* missing */ }
+    try { current = verifyApproval(scriptApprovalKey(false), a) && sha256Hex(readRegularFile(a.path)) === a.sha256; } catch { /* missing / not a regular file */ }
     return { ...a, current };
   });
 }
@@ -5354,12 +5377,14 @@ ipcMain.handle('scripts:approve', async () => {
   const res = await dialog.showOpenDialog(mainWindow ?? (undefined as unknown as BrowserWindow), { properties: ['openFile'], title: 'Approve a script for scheduled checks' });
   if (res.canceled || !res.filePaths[0]) return { ok: false, scripts: approvedScriptsView() };
   try {
+    const key = scriptApprovalKey(true);
+    if (!key) return { ok: false, error: 'the macOS Keychain (safeStorage) is not available: cannot sign an approval', scripts: approvedScriptsView() };
     const path = realpathSync(res.filePaths[0]);
-    if (statSync(path).size > SCRIPT_MAX_FILE_BYTES) return { ok: false, error: 'file too large', scripts: approvedScriptsView() };
-    const sha256 = sha256Hex(readFileSync(path));
+    const sha256 = sha256Hex(readRegularFile(path)); // regular file only, bounded, never blocks on a FIFO
     const list = readConfig().approvedScripts ?? [];
     const prev = list.find((a) => a.path === path);
-    const entry: ApprovedScript = { id: prev?.id ?? `s_${Date.now().toString(36)}`, path, sha256, approvedAt: Date.now() };
+    const base = { id: prev?.id ?? `s_${Date.now().toString(36)}`, path, sha256, approvedAt: Date.now() };
+    const entry: ApprovedScript = { ...base, sig: approvalSignature(key, base) };
     writeConfig({ approvedScripts: prev ? list.map((a) => (a.path === path ? entry : a)) : [...list, entry] });
     hive.appendLog({ kind: 'script-approved', id: entry.id, path, sha256 });
     return { ok: true, scripts: approvedScriptsView() };

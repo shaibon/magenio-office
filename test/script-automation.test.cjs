@@ -8,27 +8,32 @@ const os = require('node:os');
 const path = require('node:path');
 const loadTs = require('./load-ts.cjs');
 
-const { createScriptRunner, sha256Hex } = loadTs('src/main/scriptAutomation.ts');
+const { createScriptRunner, sha256Hex, approvalSignature, verifyApproval, readRegularFile } = loadTs('src/main/scriptAutomation.ts');
 const A = loadTs('src/shared/agentAutomations.ts');
 
-function setup(t) {
+const KEY = 'test-approval-key';
+const signed = (e) => ({ ...e, sig: approvalSignature(KEY, e) });
+
+function setup(t, extra = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'script-auto-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const sent = []; const logs = []; const grants = []; const revoked = [];
   const approved = [];
   const runner = createScriptRunner({
     approved: () => approved,
+    verify: (e) => verifyApproval(KEY, e),
     cacheDir: path.join(dir, 'cache'),
     grant: (id) => { grants.push(id); return { url: 'http://127.0.0.1:1', token: 'tok-ro' }; },
     revoke: (id) => revoked.push(id),
     send: (to, subject, body) => { sent.push({ to, subject, body }); return true; },
-    log: (e) => logs.push(e)
+    log: (e) => logs.push(e),
+    ...extra
   });
   /** Write a script, approve its CURRENT bytes, return the mission. */
   const make = (name, body, opts = {}) => {
     const p = path.join(dir, name);
     fs.writeFileSync(p, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
-    approved.push({ id: name, path: p, sha256: sha256Hex(fs.readFileSync(p)), approvedAt: 1 });
+    approved.push(signed({ id: name, path: p, sha256: sha256Hex(fs.readFileSync(p)), approvedAt: 1 }));
     return { id: `m-${name}`, label: `check ${name}`, to: 'god', scriptId: name, ...opts, p };
   };
   return { dir, sent, logs, grants, revoked, runner, make, approved };
@@ -84,7 +89,7 @@ test('a script that cannot start (no shebang) is an error message', async (t) =>
   const s = setup(t);
   const p = path.join(s.dir, 'noshebang');
   fs.writeFileSync(p, 'echo hi\n', { mode: 0o755 });
-  s.approved.push({ id: 'ns', path: p, sha256: sha256Hex(fs.readFileSync(p)), approvedAt: 1 });
+  s.approved.push(signed({ id: 'ns', path: p, sha256: sha256Hex(fs.readFileSync(p)), approvedAt: 1 }));
   const r = await s.runner.run({ id: 'm-ns', label: 'ns', to: 'god', scriptId: 'ns' });
   assert.equal(r.status, 'error');
   assert.equal(s.sent.length, 1);
@@ -141,6 +146,76 @@ test('the same script never overlaps itself', async (t) => {
   assert.equal(s.runner.isRunning(m.id), false);
 });
 
+test('H1: a forged approval record (agent edited config.json) is refused and never runs', async (t) => {
+  const s = setup(t);
+  const marker = path.join(s.dir, 'forged-ran');
+  const p = path.join(s.dir, 'forged.sh');
+  fs.writeFileSync(p, `#!/bin/sh\ntouch ${marker}\n`, { mode: 0o755 });
+  const sha256 = sha256Hex(fs.readFileSync(p));
+  const m = { id: 'm-f', label: 'f', to: 'god', scriptId: 'f' };
+  for (const forged of [
+    { id: 'f', path: p, sha256, approvedAt: 1 },                                        // no signature
+    { id: 'f', path: p, sha256, approvedAt: 1, sig: 'a'.repeat(64) },                   // made-up signature
+    { id: 'f', path: p, sha256, approvedAt: 1, sig: 'zz' },                             // malformed
+    { ...signed({ id: 'f', path: '/bin/sh', sha256, approvedAt: 1 }), path: p },        // real signature, edited path
+    { ...signed({ id: 'f', path: p, sha256: 'b'.repeat(64), approvedAt: 1 }), sha256 }  // real signature, edited hash
+  ]) {
+    s.approved.length = 0; s.approved.push(forged);
+    const r = await s.runner.run(m);
+    assert.equal(r.status, 'error');
+    assert.match(r.reason, /not authentic/);
+  }
+  assert.equal(fs.existsSync(marker), false);
+  assert.equal(s.sent.length, 5, 'every refusal is reported');
+  // no usable key at all (Keychain unavailable): nothing verifies
+  assert.equal(verifyApproval(null, signed({ id: 'f', path: p, sha256, approvedAt: 1 })), false);
+  // a record signed with another key does not verify
+  assert.equal(verifyApproval('other-key', signed({ id: 'f', path: p, sha256, approvedAt: 1 })), false);
+});
+
+test('H2: a FIFO (or symlink, or oversized file) in place of the script never blocks and is refused', async (t) => {
+  const s = setup(t);
+  const fifo = path.join(s.dir, 'fifo.sh');
+  require('node:child_process').execFileSync('mkfifo', [fifo]);
+  assert.throws(() => readRegularFile(fifo), /not a regular file/);
+  s.approved.push(signed({ id: 'fifo', path: fifo, sha256: 'c'.repeat(64), approvedAt: 1 }));
+  const t0 = Date.now();
+  const r = await s.runner.run({ id: 'm-fifo', label: 'fifo', to: 'god', scriptId: 'fifo' });
+  assert.ok(Date.now() - t0 < 2000, 'returned immediately, did not block on the pipe');
+  assert.equal(r.status, 'error');
+  assert.equal(s.sent.length, 1);
+  // symlink as the last component is not followed
+  const real = path.join(s.dir, 'real.sh'); fs.writeFileSync(real, '#!/bin/sh\nexit 0\n');
+  const link = path.join(s.dir, 'link.sh'); fs.symlinkSync(real, link);
+  assert.throws(() => readRegularFile(link));
+  // bounded read
+  const big = path.join(s.dir, 'big.bin'); fs.writeFileSync(big, Buffer.alloc(2048));
+  assert.throws(() => readRegularFile(big, 1024), /too large/);
+  assert.equal(readRegularFile(real).toString(), '#!/bin/sh\nexit 0\n');
+});
+
+test('M1: at the timeout the run ends and the broker token is revoked even if a grandchild keeps the pipes open', async (t) => {
+  const { EventEmitter } = require('node:events');
+  let destroyed = 0;
+  // A child whose pipes stay open and which never emits "close", like a detached grandchild holding them.
+  const fakeSpawn = () => {
+    const c = new EventEmitter();
+    const pipe = () => { const e = new EventEmitter(); e.destroy = () => { destroyed++; }; return e; };
+    c.stdout = pipe(); c.stderr = pipe(); c.pid = undefined; c.kill = () => {};
+    return c;
+  };
+  const s = setup(t, { spawn: fakeSpawn });
+  const m = s.make('hang.sh', 'exit 0', { scriptTimeoutMs: 1000 });
+  const t0 = Date.now();
+  const r = await s.runner.run(m);
+  assert.ok(Date.now() - t0 < 5000, 'did not wait for close');
+  assert.equal(r.status, 'error');
+  assert.match(s.sent[0].body, /timed out/);
+  assert.deepEqual(s.revoked, ['m-hang.sh'], 'token revoked at the timeout');
+  assert.equal(destroyed, 2, 'pipes dropped');
+  assert.equal(s.runner.isRunning(m.id), false, 'a later tick is not blocked as overlap');
+});
+
 // ── no agent may create or change a script automation ─────────────────────────
 function host(records) {
   return {
@@ -170,6 +245,8 @@ test('the broker /automations cannot create, change or delete a script automatio
 test('wiring: fire() runs script missions through the runner; approval takes no path from the renderer', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'src/main/index.ts'), 'utf8');
   assert.match(src, /if \(m\.kind === 'script'\) \{[^}]*scriptRunner\.run\(m\)/s);
+  assert.match(src, /verify: \(e\) => verifyApproval\(scriptApprovalKey\(false\), e\)/);
+  assert.match(src, /sig: approvalSignature\(key, base\)/);
   assert.match(src, /ipcMain\.handle\('scripts:approve', async \(\) =>/);
   assert.match(src, /dialog\.showOpenDialog\(mainWindow/);
   assert.match(src, /integrationBroker\.grant\(`script:\$\{id\}`, integrations\.enabledIds\(\), \{ readOnly: true \}\)/);

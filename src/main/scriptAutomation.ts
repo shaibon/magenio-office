@@ -20,11 +20,12 @@
  * Electron-free on purpose: the host injects storage, broker and delivery.
  */
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
-import { createHash, randomBytes } from 'node:crypto';
-import { chmodSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { chmodSync, closeSync, constants as FS, fstatSync, mkdirSync, openSync, readSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-export interface ApprovedScript { id: string; path: string; sha256: string; approvedAt: number }
+/** `sig` = HMAC of the other fields under a key only the app can read (see approvalSignature). */
+export interface ApprovedScript { id: string; path: string; sha256: string; approvedAt: number; sig?: string }
 
 export const SCRIPT_EXIT_FOUND = 10;
 export const SCRIPT_DEFAULT_TIMEOUT_MS = 60_000;
@@ -35,6 +36,36 @@ const MAX_CAPTURE = 64 * 1024;
 const MAX_STDERR = 2 * 1024;
 
 export const sha256Hex = (b: Buffer | string): string => createHash('sha256').update(b).digest('hex');
+
+/** Signature of an approval record. The config file is writable by any process of the same macOS
+ *  user, so the record is only trusted if it verifies under a key kept in the Keychain (safeStorage). */
+export function approvalSignature(key: string, e: Pick<ApprovedScript, 'id' | 'path' | 'sha256' | 'approvedAt'>): string {
+  return createHmac('sha256', key).update(['script-approval-v1', e.id, e.path, e.sha256, String(e.approvedAt)].join('\0')).digest('hex');
+}
+export function verifyApproval(key: string | null, e: ApprovedScript): boolean {
+  if (!key || typeof e.sig !== 'string' || !/^[0-9a-f]{64}$/.test(e.sig)) return false;
+  return timingSafeEqual(Buffer.from(approvalSignature(key, e), 'hex'), Buffer.from(e.sig, 'hex'));
+}
+
+/** Read a regular file through ONE descriptor: non-blocking (a FIFO swapped in cannot hang the main
+ *  thread), no-follow on the last component, fstat must say regular file, bounded read. Throws otherwise. */
+export function readRegularFile(path: string, max = SCRIPT_MAX_FILE_BYTES): Buffer {
+  const fd = openSync(path, FS.O_RDONLY | FS.O_NONBLOCK | FS.O_NOFOLLOW);
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile()) throw Object.assign(new Error('not a regular file'), { code: 'ENOTREG' });
+    if (st.size > max) throw Object.assign(new Error('file too large'), { code: 'E2BIG' });
+    const buf = Buffer.alloc(Math.min(st.size, max) + 1);
+    let n = 0;
+    while (n < buf.length) {
+      const r = readSync(fd, buf, n, buf.length - n, null);
+      if (r === 0) break;
+      n += r;
+    }
+    if (n > max) throw Object.assign(new Error('file too large'), { code: 'E2BIG' });
+    return buf.subarray(0, n);
+  } finally { closeSync(fd); }
+}
 
 /** The slice of a mission this runner reads. */
 export interface ScriptMission { id: string; label: string; to: string; scriptId?: string; scriptTimeoutMs?: number }
@@ -48,6 +79,8 @@ export interface ScriptOutcome {
 
 export interface ScriptRunnerDeps {
   approved(): ApprovedScript[];
+  /** Is this approval record authentic (signed by the app)? An unverifiable record is refused. */
+  verify(entry: ApprovedScript): boolean;
   /** Private (0700) directory where the verified copy is executed from. */
   cacheDir: string;
   /** A read-only broker capability for this run, or null when the broker is down. */
@@ -88,10 +121,10 @@ export function createScriptRunner(deps: ScriptRunnerDeps) {
 
       const entry = deps.approved().find((s) => s.id === m.scriptId);
       if (!entry) return finish(fail('the script is not approved (approve it in Settings)'));
+      if (!deps.verify(entry)) return finish(fail('the approval record is not authentic (missing or invalid signature); approve the script again in Settings'));
       let bytes: Buffer;
       try {
-        if (statSync(entry.path).size > SCRIPT_MAX_FILE_BYTES) return finish(fail('the script file is too large'));
-        bytes = readFileSync(entry.path);
+        bytes = readRegularFile(entry.path);
       } catch (e) { return finish(fail(`cannot read ${entry.path}: ${(e as NodeJS.ErrnoException).code ?? 'error'}`)); }
       if (sha256Hex(bytes) !== entry.sha256) return finish(fail('the script changed since it was approved (hash mismatch); approve it again in Settings'));
 
@@ -120,6 +153,10 @@ export function createScriptRunner(deps: ScriptRunnerDeps) {
         const timer = setTimeout(() => {
           timedOut = true;
           try { if (child.pid) process.kill(-child.pid, 'SIGKILL'); } catch { try { child.kill('SIGKILL'); } catch { /* gone */ } }
+          // Do NOT wait for 'close': a detached grandchild can keep the pipes open indefinitely.
+          // Drop the pipes and settle now, so the run ends and its broker token is revoked at the timeout.
+          try { child.stdout?.destroy(); child.stderr?.destroy(); } catch { /* already closed */ }
+          done({ code: null, signal: 'SIGKILL' });
         }, timeoutMs);
         try {
           child = spawnFn(copy!, [], { cwd: deps.cacheDir, env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
