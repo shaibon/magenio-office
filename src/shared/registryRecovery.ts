@@ -48,7 +48,7 @@ export interface RegistryRecoveryRow {
 
 const CAST_NAMES = new Set([
   'michael', 'jim', 'pam', 'dwight', 'kevin', 'angela', 'oscar',
-  'stanley', 'phyllis', 'andy', 'kelly', 'ryan', 'toby', 'creed', 'meredith'
+  'stanley', 'phyllis', 'andy', 'kelly', 'ryan', 'toby', 'creed', 'meredith', 'hank'
 ]);
 
 function characterForId(id: string): string {

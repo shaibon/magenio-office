@@ -506,6 +506,7 @@ const RECIPES: Record<OfficeCharacterName, Recipe> = {
   toby:     { skin: 'light', hairc: [106, 90, 66],  hair: 'styleShort',  hairargs: { part: 'L', recede: 1 }, cloth: 'dressshirt', c1: [150, 150, 120], facial: 'mustacheSm', brow: 'soft', mouth: 'frown' },
   creed:    { skin: 'light', hairc: [170, 166, 156], hair: 'styleBald',   cloth: 'dressshirt', c1: [126, 130, 96], facial: 'stubble', brow: 'flat', mouth: 'neutral' },
   meredith: { skin: 'light', hairc: [154, 82, 46],  hair: 'styleMessy',  hairargs: { length: 15 }, cloth: 'blouse', c1: [176, 86, 74], brow: 'raised', mouth: 'smile', lashes: true },
+  hank:     { skin: 'light', hairc: [176, 176, 172], hair: 'styleRecede', cloth: 'dressshirt', c1: [108, 122, 138], tie: [36, 40, 50], facial: 'mustacheSm', brow: 'flat', mouth: 'neutral' },
 };
 
 /** The face/hair group (head → face → facial hair → hair → glasses), no clothing. */
