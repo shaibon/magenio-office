@@ -2135,7 +2135,7 @@ async function startSlackServer(): Promise<{ ok: boolean; url?: string; error?: 
   // Socket Mode dials out to Slack: no HTTP listener and NO tunnel to open.
   const activatedThreadsFile = join(app.getPath('userData'), 'slack-activated-threads.json');
   slackServer = socketMode
-    ? new SlackSocketServer({ appToken: cfg.slackAppToken as string, channelId: cfg.slackChannelId, onMessage, activatedThreadsFile })
+    ? new SlackSocketServer({ appToken: cfg.slackAppToken as string, channelId: cfg.slackChannelId, onMessage, activatedThreadsFile, onLog: (e) => hive.appendLog(e) })
     : new SlackWebhookServer({
         port: cfg.slackPort && cfg.slackPort > 0 ? cfg.slackPort : 3847,
         signingSecret: cfg.slackSigningSecret as string,
