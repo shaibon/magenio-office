@@ -35,7 +35,7 @@ const { SlackDispatcher: _SlackDispatcher } = require('./slack-trigger.cjs') as 
 };
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { SlackSocketClient: _SlackSocketClient } = require('./slack-socket.cjs') as {
-  SlackSocketClient: new (o: { appToken: string; onEvent: (payload: unknown) => void }) => {
+  SlackSocketClient: new (o: { appToken: string; onEvent: (payload: unknown) => void; onLog?: (event: Record<string, unknown>) => void }) => {
     start(): Promise<{ ok: boolean; error?: string }>;
     stop(): void;
     readonly connected: boolean;
@@ -261,9 +261,9 @@ export class SlackWebhookServer {
 export class SlackSocketServer {
   private readonly client: { start(): Promise<{ ok: boolean; error?: string }>; stop(): void; readonly connected: boolean };
 
-  constructor(opts: { appToken: string; channelId?: string; onMessage: (m: SlackInboundMessage) => void | Promise<void>; activatedThreadsFile?: string }) {
+  constructor(opts: { appToken: string; channelId?: string; onMessage: (m: SlackInboundMessage) => void | Promise<void>; activatedThreadsFile?: string; onLog?: (event: Record<string, unknown>) => void }) {
     const dispatcher = new _SlackDispatcher({ channelId: opts.channelId?.trim() || undefined, onMessage: opts.onMessage, activatedThreadsFile: opts.activatedThreadsFile });
-    this.client = new _SlackSocketClient({ appToken: opts.appToken, onEvent: (p) => { dispatcher.dispatch(p); } });
+    this.client = new _SlackSocketClient({ appToken: opts.appToken, onEvent: (p) => { dispatcher.dispatch(p); }, onLog: opts.onLog });
   }
 
   start(): Promise<{ ok: boolean; url?: string; error?: string }> { return this.client.start(); }

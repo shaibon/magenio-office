@@ -2,7 +2,7 @@
 
 const assert = require('assert');
 const { EventEmitter } = require('events');
-const { SlackSocketClient, BACKOFF_START_MS } = require('../src/main/slack-socket.cjs');
+const { SlackSocketClient, BACKOFF_START_MS, PING_EVERY_MS, STALE_AFTER_MS } = require('../src/main/slack-socket.cjs');
 const { SlackDispatcher } = require('../src/main/slack-trigger.cjs');
 
 let failures = 0;
@@ -15,6 +15,8 @@ class MockSocket extends EventEmitter {
   constructor(url) { super(); this.url = url; this.sent = []; this.closed = false; }
   send(s) { this.sent.push(JSON.parse(s)); }
   close() { this.closed = true; }
+  terminate() { this.terminated = true; }
+  ping() { this.pings = (this.pings || 0) + 1; }
   frame(obj) { this.emit('message', JSON.stringify(obj)); }
 }
 
@@ -23,15 +25,22 @@ function harness(onEvent = () => {}, openResults = []) {
   const sockets = [];
   const timers = [];
   const opened = [];
+  const beats = [];
+  const logs = [];
+  const clock = { t: 1000 };
   const client = new SlackSocketClient({
     appToken: 'xapp-test',
     onEvent,
     openUrl: async (tok) => { opened.push(tok); return openResults.shift() || { ok: true, url: `wss://mock/${opened.length}` }; },
     createSocket: (url) => { const s = new MockSocket(url); sockets.push(s); return s; },
     setTimer: (fn, ms) => { const t = { fn, ms }; timers.push(t); return t; },
-    clearTimer: (t) => { t.cleared = true; }
+    clearTimer: (t) => { t.cleared = true; },
+    setBeat: (fn, ms) => { beats.push({ fn, ms }); return beats[beats.length - 1]; },
+    clearBeat: (b) => { b.cleared = true; },
+    now: () => clock.t,
+    onLog: (e) => logs.push(e)
   });
-  return { client, sockets, timers, opened };
+  return { client, sockets, timers, opened, beats, clock, logs };
 }
 
 const BOT = 'U0BOT';
@@ -171,6 +180,54 @@ const cb = (ts, extra = {}) => ({
     const h = harness(() => {}, [{ ok: false, error: 'invalid_auth' }]);
     const r = await h.client.start();
     assert.ok(!JSON.stringify(r).includes('xapp-'));
+  });
+
+  await test('liveness: pings while frames arrive, keeps a quiet-but-answering socket', async () => {
+    const h = harness();
+    await h.client.start();
+    h.sockets[0].emit('open');
+    assert.strictEqual(h.beats[0].ms, PING_EVERY_MS);
+    h.clock.t += 60000; h.sockets[0].emit('pong');
+    h.clock.t += 60000; h.beats[0].fn(); // 60 s since the pong: still alive
+    assert.strictEqual(h.sockets[0].pings, 1);
+    assert.strictEqual(h.sockets[0].terminated, undefined);
+    assert.strictEqual(h.timers.length, 0);
+  });
+
+  await test('liveness: a silent socket is terminated and reconnected on a fresh one', async () => {
+    const h = harness();
+    await h.client.start();
+    h.sockets[0].emit('open');
+    h.clock.t += STALE_AFTER_MS + 1; // no frame, ping or pong at all (half-open)
+    h.beats[0].fn();
+    assert.strictEqual(h.sockets[0].terminated, true);
+    assert.strictEqual(h.beats[0].cleared, true);
+    assert.strictEqual(h.client.connected, false);
+    assert.strictEqual(h.timers[0].ms, 0);
+    h.sockets[0].emit('close'); // late close from the dead socket is ignored
+    assert.strictEqual(h.timers.length, 1);
+    await h.timers[0].fn();
+    assert.strictEqual(h.sockets.length, 2);
+    h.sockets[1].emit('open');
+    assert.strictEqual(h.client.connected, true);
+    assert.deepStrictEqual(h.logs.map((l) => `${l.phase}${l.reason ? ':' + l.reason : ''}`), ['connected', 'lost:stale', 'reconnecting', 'connected']);
+  });
+
+  await test('liveness logs never carry the token or the wss url', async () => {
+    const h = harness();
+    await h.client.start();
+    h.sockets[0].emit('open'); h.sockets[0].emit('close');
+    const out = JSON.stringify(h.logs);
+    assert.ok(!out.includes('xapp-') && !out.includes('wss://'));
+    assert.ok(h.logs.every((l) => l.kind === 'slack-socket'));
+  });
+
+  await test('stop clears the heartbeat', async () => {
+    const h = harness();
+    await h.client.start();
+    h.sockets[0].emit('open');
+    h.client.stop();
+    assert.strictEqual(h.beats[0].cleared, true);
   });
 
   if (failures) { console.log(`\n${failures} failed`); process.exit(1); }
