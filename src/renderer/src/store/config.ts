@@ -192,6 +192,8 @@ export interface HarnessConfig {
   webhookSecret?: string;
   /** @deprecated The port belongs to the shared server, not to any one trigger. */
   webhookPort?: number;
+  webhookPublicUrl?: string;
+  webhookTunnelDomain?: string;
   /** Auto-compaction / auto-clearing of agent terminal context. Main deep-fills
    *  both halves on read, so the renderer can treat the sub-keys as present
    *  (mirrors src/main/config.ts). */

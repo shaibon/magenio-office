@@ -255,3 +255,24 @@ test('a secretless endpoint is never served', async () => {
   });
   assert.equal(res.status, 401);
 });
+
+test('webhookPublicUrl: start() uses it and opens no tunnel', async () => {
+  const { normalizePublicUrl } = loadTs('src/main/webhook.ts');
+  assert.equal(normalizePublicUrl(' https://hooks.example.com/ '), 'https://hooks.example.com');
+  assert.equal(normalizePublicUrl('ftp://x'), null);
+  assert.equal(normalizePublicUrl('nope'), null);
+  assert.equal(normalizePublicUrl(''), null);
+  const s = new WebhookServer({ port: 0, endpoints: endpoints(), publicUrl: 'https://hooks.example.com/', onMessage: () => null, lookupStatus: () => null });
+  s.openTunnel = async () => { throw new Error('tunnel must not open'); };
+  const r = await s.start();
+  try {
+    assert.deepEqual(r, { ok: true, url: 'https://hooks.example.com' });
+    assert.equal(s.publicUrl(), 'https://hooks.example.com');
+  } finally { s.stop(); }
+});
+
+test('webhookTunnelDomain is passed to tunnelmole; an invalid publicUrl falls back to the tunnel', async () => {
+  const s = new WebhookServer({ port: 0, endpoints: endpoints(), publicUrl: 'garbage', tunnelDomain: ' my.tunnelmole.net ', onMessage: () => null, lookupStatus: () => null });
+  assert.equal(s.tunnelDomain, 'my.tunnelmole.net');
+  assert.equal(s.publicUrlFixed, null);
+});

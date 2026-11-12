@@ -349,6 +349,8 @@ export interface HarnessConfig {
   webhookEnabled?: boolean;
   webhookSecret?: string;
   webhookPort?: number;
+  webhookPublicUrl?: string;
+  webhookTunnelDomain?: string;
   /** Free Flow voice dictation — master flag (default off), user Groq key, model.
    *  Entry point B (hold-Option-to-talk) is handled in the renderer, no hotkey. */
   freeflowEnabled?: boolean;
@@ -1398,8 +1400,11 @@ const api = {
   generateWebhookSecret: (): Promise<string> => ipcRenderer.invoke('webhooks:generateSecret'),
   /** Server state, the tunnel root, and each endpoint's full public URL (`url` is
    *  '' until a tunnel has come up). */
-  webhooksStatus: (): Promise<{ running: boolean; url?: string; endpoints: { id: string; url: string }[] }> =>
+  webhooksStatus: (): Promise<{ running: boolean; url?: string; endpoints: { id: string; url: string }[]; port: number; publicUrl?: string; tunnelDomain?: string }> =>
     ipcRenderer.invoke('webhooks:status'),
+  /** Persist the stable-URL settings ('' clears) and restart the webhook server. */
+  webhooksSetNetwork: (p: { publicUrl?: string; tunnelDomain?: string }): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('webhooks:setNetwork', p),
 
   // ─── Triggers: organisation (clone-node peer messaging) ─────────────────────
   /** PERSISTENCE ONLY — the peer transport does not exist yet, so setting this

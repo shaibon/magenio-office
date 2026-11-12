@@ -94,7 +94,7 @@ export async function webhooksStatus(): Promise<WebhooksStatus> {
   try {
     return await window.cth.webhooksStatus();
   } catch {
-    return { running: false, endpoints: [] };
+    return { running: false, endpoints: [], port: 3849 };
   }
 }
 
