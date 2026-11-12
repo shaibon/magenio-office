@@ -54,7 +54,7 @@ import { readAgentUsage, readContextTokens, seedSessionTranscript, resolveSessio
 import { listIssues, listCIRuns } from './github';
 import { SlackWebhookServer, SlackSocketServer, SlackReplyServer, postSlackReply, type SlackEventFile, type SlackInboundMessage } from './slack';
 import {
-  WebhookServer,
+  WebhookServer, normalizePublicUrl,
   type WebhookDispatch, type WebhookEndpointRef, type WebhookInbound, type WebhookTaskStatus
 } from './webhook';
 import {
@@ -2215,6 +2215,10 @@ let lastWebhookUrl: string | undefined;
 /** Local port the shared server binds to. The port is a property of the SERVER,
  *  not of any one trigger — `webhookPort` stays the (legacy) override. */
 const WEBHOOK_DEFAULT_PORT = 3849;
+function webhookLocalPort(): number {
+  const p = readConfig().webhookPort;
+  return p && p > 0 ? p : WEBHOOK_DEFAULT_PORT;
+}
 
 /** The endpoints the operator has switched on. A disabled webhook is not merely
  *  rejected at the door — it is never handed to the server, so its id does not
@@ -2585,7 +2589,9 @@ async function startWebhookServer(): Promise<{ ok: boolean; url?: string; error?
   pruneHeldTokens();
   const cfg = readConfig();
   const server = new WebhookServer({
-    port: cfg.webhookPort && cfg.webhookPort > 0 ? cfg.webhookPort : WEBHOOK_DEFAULT_PORT,
+    port: webhookLocalPort(),
+    publicUrl: cfg.webhookPublicUrl,
+    tunnelDomain: cfg.webhookTunnelDomain,
     endpoints,
     onMessage: handleWebhookMessage,
     lookupStatus: lookupWebhookStatus
@@ -2619,7 +2625,7 @@ function reconcileWebhookServer(): void {
  *  when no tunnel has ever come up — the UI shows the endpoint, just not a URL
  *  it could hand out yet. */
 function webhookEndpointUrls(): { id: string; url: string }[] {
-  const base = (webhookServer?.publicUrl() ?? lastWebhookUrl ?? '').replace(/\/+$/, '');
+  const base = (normalizePublicUrl(readConfig().webhookPublicUrl) ?? webhookServer?.publicUrl() ?? lastWebhookUrl ?? '').replace(/\/+$/, '');
   return (readConfig().webhookTriggers ?? []).map((t) => ({
     id: t.id,
     url: base ? `${base}/${encodeURIComponent(t.id)}` : ''
@@ -5654,8 +5660,22 @@ ipcMain.handle('webhooks:generateSecret', () => randomBytes(32).toString('hex'))
 ipcMain.handle('webhooks:status', () => ({
   running: webhookServer != null,
   url: lastWebhookUrl,
-  endpoints: webhookEndpointUrls()
+  endpoints: webhookEndpointUrls(),
+  port: webhookLocalPort(),
+  publicUrl: readConfig().webhookPublicUrl,
+  tunnelDomain: readConfig().webhookTunnelDomain
 }));
+/** Stable public URL / tunnelmole domain. Both only take effect at server start,
+ *  so a change restarts the (single) server; callers see the new base URL. */
+ipcMain.handle('webhooks:setNetwork', (_evt, p: { publicUrl?: unknown; tunnelDomain?: unknown }) => {
+  const publicUrl = normalizePublicUrl(p?.publicUrl) ?? undefined;
+  const tunnelDomain = typeof p?.tunnelDomain === 'string' ? p.tunnelDomain.trim() || undefined : undefined;
+  writeConfig({ webhookPublicUrl: publicUrl, webhookTunnelDomain: tunnelDomain });
+  lastWebhookUrl = undefined;
+  stopWebhookServer();
+  reconcileWebhookServer();
+  return { ok: true };
+});
 
 /** Normalise one endpoint coming back from the renderer. Unknown/blank fields
  *  fall back to what is already persisted, so a UI that round-trips a partially

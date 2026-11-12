@@ -33,7 +33,10 @@ export function WebhooksSection({ onSummary }: { onSummary?: (s: string) => void
   const { t } = useTranslation();
   const hooks = useStore((s) => s.webhookTriggers);
   const setHooks = useStore((s) => s.setWebhookTriggers);
-  const [status, setStatus] = useState<WebhooksStatus>({ running: false, endpoints: [] });
+  const [status, setStatus] = useState<WebhooksStatus>({ running: false, endpoints: [], port: 3849 });
+  const [pubUrl, setPubUrl] = useState('');
+  const [domain, setDomain] = useState('');
+  const netSeeded = useRef(false);
   const [minting, setMinting] = useState(false);
 
   useEffect(() => {
@@ -47,7 +50,7 @@ export function WebhooksSection({ onSummary }: { onSummary?: (s: string) => void
         if (alive && l && useStore.getState().webhookTriggers.length === 0) setHooks(l);
       });
     }
-    const poll = () => { void webhooksStatus().then((s) => { if (alive) setStatus(s); }); };
+    const poll = () => { void webhooksStatus().then((s) => { if (!alive) return; setStatus(s); if (!netSeeded.current) { netSeeded.current = true; setPubUrl(s.publicUrl ?? ''); setDomain(s.tunnelDomain ?? ''); } }); };
     poll();
     const timer = setInterval(poll, STATUS_POLL_MS);
     return () => { alive = false; clearInterval(timer); };
@@ -90,6 +93,18 @@ export function WebhooksSection({ onSummary }: { onSummary?: (s: string) => void
       <Muted>
         {t('webhooksSection.intro')}
       </Muted>
+      <div style={{ height: 8 }} />
+      <Field label={t('webhooksSection.publicUrl')}>
+        <input value={pubUrl} onChange={(e) => setPubUrl(e.target.value)} style={inputStyle}
+          placeholder="https://hooks.example.com"
+          onBlur={() => { void window.cth.webhooksSetNetwork({ publicUrl: pubUrl, tunnelDomain: domain }); }} />
+      </Field>
+      <Field label={t('webhooksSection.tunnelDomain')}>
+        <input value={domain} onChange={(e) => setDomain(e.target.value)} style={inputStyle}
+          disabled={!!pubUrl.trim()} placeholder="my-name.tunnelmole.net"
+          onBlur={() => { void window.cth.webhooksSetNetwork({ publicUrl: pubUrl, tunnelDomain: domain }); }} />
+      </Field>
+      <Hint>{t('webhooksSection.networkHint', { port: status.port })}</Hint>
       <div style={{ height: 8 }} />
 
       {hooks.length === 0 && <Muted>{t('webhooksSection.noEndpoints')}</Muted>}

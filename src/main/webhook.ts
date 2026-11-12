@@ -102,6 +102,11 @@ export interface WebhookTaskStatus {
 export interface WebhookServerOptions {
   /** Local TCP port the HTTP server binds to (and the tunnel forwards to). */
   port: number;
+  /** Fixed public base URL (an external tunnel — cloudflared, ngrok static
+   *  domain — already points at `port`). When valid, NO tunnelmole is opened. */
+  publicUrl?: string;
+  /** Persistent tunnelmole domain, passed to `tunnelmole({port, domain})`. */
+  tunnelDomain?: string;
   /** The endpoints to serve. May be swapped later with `setEndpoints`. */
   endpoints: WebhookEndpoint[];
   /**
@@ -116,6 +121,17 @@ export interface WebhookServerOptions {
    * never reveal or enumerate any other task.
    */
   lookupStatus: (token: string) => WebhookTaskStatus | null;
+}
+
+/** Normalise an operator-typed public base URL: http(s) only, no query/hash,
+ *  no trailing slash. Returns null when blank or unusable. */
+export function normalizePublicUrl(raw: unknown): string | null {
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  try {
+    const u = new URL(raw.trim());
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+    return (u.origin + u.pathname).replace(/\/+$/, '');
+  } catch { return null; }
 }
 
 /** Reject bodies larger than this before buffering — callers send tiny JSON; the
@@ -144,6 +160,8 @@ export class WebhookServer {
   private server: Server | null = null;
   private tunnelUrl: string | null = null;
   private readonly port: number;
+  private readonly publicUrlFixed: string | null;
+  private readonly tunnelDomain: string | undefined;
   private endpoints = new Map<string, WebhookEndpoint>();
   private readonly onMessage: (msg: WebhookInbound, endpoint: WebhookEndpointRef) => WebhookDispatch | null;
   private readonly lookupStatus: (token: string) => WebhookTaskStatus | null;
@@ -157,6 +175,8 @@ export class WebhookServer {
 
   constructor(opts: WebhookServerOptions) {
     this.port = opts.port;
+    this.publicUrlFixed = normalizePublicUrl(opts.publicUrl);
+    this.tunnelDomain = opts.tunnelDomain?.trim() || undefined;
     this.onMessage = opts.onMessage;
     this.lookupStatus = opts.lookupStatus;
     this.setEndpoints(opts.endpoints);
@@ -216,6 +236,11 @@ export class WebhookServer {
       this.stop();
       return { ok: false, error: `failed to bind port ${this.port}: ${errMsg(e)}` };
     }
+    if (this.publicUrlFixed) {
+      // Stable URL supplied by the operator: no tunnelmole, nothing to open.
+      this.tunnelUrl = this.publicUrlFixed;
+      return { ok: true, url: this.publicUrlFixed };
+    }
     try {
       const url = await this.openTunnel();
       if (!url) throw new Error('tunnelmole returned empty URL');
@@ -250,12 +275,11 @@ export class WebhookServer {
   }
 
   private async openTunnel(): Promise<string> {
-    // TODO: optional persistent domain — pass `domain` here when config carries one.
     // Dynamic import keeps the ESM-only `tunnelmole` out of the CJS require graph.
     const { tunnelmole } = await import('tunnelmole');
     return new Promise<string>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('timed out')), TUNNEL_START_TIMEOUT_MS);
-      tunnelmole({ port: this.port })
+      tunnelmole(this.tunnelDomain ? { port: this.port, domain: this.tunnelDomain } : { port: this.port })
         .then((url) => { clearTimeout(timer); resolve(url); })
         .catch((e) => { clearTimeout(timer); reject(e); });
     });

@@ -580,6 +580,10 @@ export interface HarnessConfig {
    *  @deprecated The port is a property of the shared server, not of any one
    *  trigger; `webhookTriggers` are multiplexed over it by id. */
   webhookPort?: number;
+  /** Fixed public base URL for inbound webhooks; when set, no tunnel is opened. */
+  webhookPublicUrl?: string;
+  /** Persistent tunnelmole domain (used only when webhookPublicUrl is unset). */
+  webhookTunnelDomain?: string;
 
   // ─── Triggers (src/shared/triggers.ts owns every type here) ────────────────
   /** Auto-compaction / auto-clearing of agent terminal context. Both halves ship
@@ -666,6 +670,8 @@ const DEFAULTS: HarnessConfig = {
   webhookEnabled: false,
   webhookSecret: undefined,
   webhookPort: undefined,
+  webhookPublicUrl: undefined,
+  webhookTunnelDomain: undefined,
   // Triggers. These three are the ONLY object/array defaults that get handed
   // straight back out of `readConfig` for a config that never persisted them, so
   // `withTriggerDefaults` re-copies them on every read — see the note there.
