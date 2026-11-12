@@ -371,7 +371,7 @@ export interface HarnessConfig {
     [id: string]: { enabled: boolean; agents?: string[]; roles?: string[]; command?: string; args?: string[]; url?: string; projects?: Record<string, { url?: string; agents?: string[] }> };
   };
   /** Codex agent shell permissions (network / extra writable dirs / full access). Opt-in; absent = sandbox as before. See shared/codexSandbox.ts. */
-  codexSandbox?: { networkAccess?: boolean; extraWritableDirs?: string[]; dangerFullAccess?: boolean };
+  codexSandbox?: { networkAccess?: boolean; extraWritableDirs?: string[]; dangerFullAccess?: boolean; perAgent?: Record<string, { networkAccess?: boolean; extraWritableDirs?: string[] }> };
   /** Enable semantic memory (MemPalace CLI). No-op if mempalace isn't installed. */
   semanticMemory: boolean;
   /** Embedding model for the palace: lightweight 'minilm' or multilingual 'embeddinggemma'. */

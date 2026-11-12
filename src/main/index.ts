@@ -3,7 +3,7 @@ import { checkN8nToken } from './n8nTokenCheck';
 import { shouldRetryWithoutResume } from '../shared/resumeFailure';
 import { alertChannelFor, isSlackChannelId } from '../shared/jiraProjects';
 import { brokerGrantPlan } from '../shared/brokerGrant';
-import { withCodexSandboxMode, withCodexSandboxCommand } from '../shared/codexSandbox';
+import { withCodexSandboxMode, withCodexSandboxCommand, codexSandboxForAgent } from '../shared/codexSandbox';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerMonitor, powerSaveBlocker, safeStorage, screen, shell, Notification } from 'electron';
 import { execFileSync, spawn } from 'node:child_process';
 import {
@@ -3581,7 +3581,9 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
           theme: readConfig().terminalTheme ?? 'light',
           // W3 — default-MCP consent state + the bundled skills source dir.
           mcpDefaults: readConfig().mcpDefaults,
-          codexSandbox: readConfig().codexSandbox,
+          // Global block + this agent's perAgent override, keyed by hive id (never the
+          // display name, which a spawn-request can choose).
+          codexSandbox: codexSandboxForAgent(readConfig().codexSandbox, hiveMeta.id),
           magento: {
             config: magentoConfigForProject(project, readConfig().jiraProjects),
             stageConfig: magentoStageConfigForProject(project, readConfig().jiraProjects),
