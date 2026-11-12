@@ -116,7 +116,7 @@ export interface HarnessConfig {
    *  src/main/config.ts; seeded from MCP_CATALOG). */
   mcpDefaults?: { [id: string]: { enabled: boolean; agents?: string[]; command?: string; args?: string[]; url?: string; projects?: Record<string, { url?: string; agents?: string[] }> } };
   /** Codex agent shell permissions (network / extra writable dirs / full access). Opt-in; absent = sandbox as before. See shared/codexSandbox.ts. */
-  codexSandbox?: { networkAccess?: boolean; extraWritableDirs?: string[]; dangerFullAccess?: boolean };
+  codexSandbox?: { networkAccess?: boolean; extraWritableDirs?: string[]; dangerFullAccess?: boolean; perAgent?: Record<string, { networkAccess?: boolean; extraWritableDirs?: string[] }> };
   semanticMemory: boolean;
   embeddingModel: 'minilm' | 'embeddinggemma';
   missions?: ScheduledMission[];

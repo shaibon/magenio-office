@@ -344,6 +344,8 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
   const saveCodexSb = (next: typeof codexSb): void => {
     setCodexSb(next);
     stage({ codexSandbox: {
+      // Keep the per-agent map (keyed by hive id, edited in config.json): this panel only owns the global fields.
+      ...(csInit.perAgent ? { perAgent: csInit.perAgent } : {}),
       networkAccess: next.networkAccess,
       dangerFullAccess: next.dangerFullAccess,
       extraWritableDirs: next.dirs.split('\n').map(d => d.trim()).filter(Boolean)
