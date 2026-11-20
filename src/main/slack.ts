@@ -29,7 +29,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { SlackDispatcher: _SlackDispatcher } = require('./slack-trigger.cjs') as {
-  SlackDispatcher: new (o: { channelId?: string; onMessage: (m: SlackInboundMessage) => void | Promise<void>; activatedThreadsFile?: string }) => {
+  SlackDispatcher: new (o: { channelId?: string; onMessage: (m: SlackInboundMessage) => void | Promise<void>; activatedThreadsFile?: string; trustedBots?: Array<{ botId: string; channel: string }>; appBotId?: string }) => {
     dispatch(payload: unknown): boolean;
   };
 };
@@ -59,6 +59,8 @@ export interface SlackWebhookServerOptions {
   signingSecret: string;
   /** Optional channel id filter — when set, events from other channels are dropped. */
   channelId?: string;
+  trustedBots?: Array<{ botId: string; channel: string }>;
+  appBotId?: string;
   /** Called once per accepted, de-mentioned message — with the Slack thread
    *  coordinates needed to reply back in the originating thread. May be async
    *  (e.g. to download file attachments before forwarding via IPC). */
@@ -78,6 +80,8 @@ export interface SlackWebhookServerOptions {
  *  never see it. */
 export interface SlackInboundMessage {
   text: string;
+  /** Set when the message comes from a trusted bot (its bot_id). */
+  fromTrustedBot?: string;
   channel: string;
   ts: string;
   thread_ts: string;
@@ -104,14 +108,20 @@ export class SlackWebhookServer {
   private readonly port: number;
   private readonly signingSecret: string;
   private readonly channelId?: string;
+  private readonly trustedBots: Array<{ botId: string; channel: string }>;
   /** Shared mention filter + dedup + forward path (also used by Socket Mode). */
-  private readonly dispatcher: { dispatch(payload: unknown): boolean };
+  private readonly dispatcher: { dispatch(payload: unknown): boolean; setAppBotId?(id: string | null): void };
+  /** The app bot, from `auth.test`: the trusted-bot anti-loop needs it. */
+  setAppBotId(id: string | null): void {
+    this.dispatcher.setAppBotId?.(id);
+  }
 
   constructor(opts: SlackWebhookServerOptions) {
     this.port = opts.port;
     this.signingSecret = opts.signingSecret;
     this.channelId = opts.channelId?.trim() || undefined;
-    this.dispatcher = new _SlackDispatcher({ channelId: this.channelId, onMessage: opts.onMessage, activatedThreadsFile: opts.activatedThreadsFile });
+    this.trustedBots = Array.isArray(opts.trustedBots) ? opts.trustedBots : [];
+    this.dispatcher = new _SlackDispatcher({ channelId: this.channelId, onMessage: opts.onMessage, activatedThreadsFile: opts.activatedThreadsFile, trustedBots: this.trustedBots, appBotId: opts.appBotId });
   }
 
   /**
@@ -260,9 +270,18 @@ export class SlackWebhookServer {
  */
 export class SlackSocketServer {
   private readonly client: { start(): Promise<{ ok: boolean; error?: string }>; stop(): void; readonly connected: boolean };
+  /** Kept so the filter can be told the app bot when `auth.test` answers. */
+  private dispatcher: { dispatch(payload: unknown): boolean; setAppBotId?(id: string | null): void };
 
-  constructor(opts: { appToken: string; channelId?: string; onMessage: (m: SlackInboundMessage) => void | Promise<void>; activatedThreadsFile?: string; onLog?: (event: Record<string, unknown>) => void }) {
-    const dispatcher = new _SlackDispatcher({ channelId: opts.channelId?.trim() || undefined, onMessage: opts.onMessage, activatedThreadsFile: opts.activatedThreadsFile });
+  /** The app bot, from `auth.test`. */
+  setAppBotId(id: string | null): void {
+    this.dispatcher.setAppBotId?.(id);
+  }
+
+  constructor(opts: {
+ appToken: string; channelId?: string; trustedBots?: Array<{ botId: string; channel: string }>; appBotId?: string; onMessage: (m: SlackInboundMessage) => void | Promise<void>; activatedThreadsFile?: string; onLog?: (event: Record<string, unknown>) => void }) {
+    const dispatcher = new _SlackDispatcher({ channelId: opts.channelId?.trim() || undefined, onMessage: opts.onMessage, activatedThreadsFile: opts.activatedThreadsFile, trustedBots: Array.isArray(opts.trustedBots) ? opts.trustedBots : [], appBotId: opts.appBotId });
+    this.dispatcher = dispatcher;
     this.client = new _SlackSocketClient({ appToken: opts.appToken, onEvent: (p) => { dispatcher.dispatch(p); }, onLog: opts.onLog });
   }
 

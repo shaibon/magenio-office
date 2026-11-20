@@ -1,3 +1,4 @@
+import { buildGodInstruction } from '@shared/slackInstruction';
 import { selectionWakes } from './wakeOnSelect';
 import { isRestoringTeam } from './useRestoreTeam';
 import { useEffect, useRef } from 'react';
@@ -1080,7 +1081,11 @@ export function useHive(config: HarnessConfig | null): void {
       // instruction (what gets typed into his PTY), so the board stays readable
       // while every Slack-origin god-session runs under the autonomy policy. When
       // main sends no preamble (older build), god just gets the raw text.
-      const instruction = msg.autonomyPreamble ? `${msg.autonomyPreamble}${text}` : undefined;
+      // The rule lives in a shared function: for a bot notice the preamble already contains
+      // the delimited text, and appending the raw text would put it back outside the delimiters.
+      const instruction = buildGodInstruction({
+        autonomyPreamble: msg.autonomyPreamble, text, fromTrustedBot: msg.fromTrustedBot,
+      });
       useStore.getState().enqueueMessage(GOD_ID, text, { slack, instruction });
       // Immediate "queued" acknowledgement in the originating Slack thread.
       void window.cth.slackReply({
