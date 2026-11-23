@@ -246,6 +246,11 @@ export interface SpawnPtyOptions {
 
 export interface PtyExit { exitCode: number; signal?: number | undefined }
 
+/** State of a script mission's file against its approval (main computes it; the UI only shows it). */
+export interface ScriptStatusView { missionId: string; state: 'ok' | 'changed' | 'missing' | 'unapproved'; path?: string; approvedSha?: string; currentSha?: string }
+/** What the Boss reads before pressing Reapprove (untrusted text). */
+export interface ScriptReapprovalView { missionId: string; label: string; path: string; approvedSha: string; currentSha: string; size: number; content: string; diff: string | null }
+
 /** A script god proposed, waiting for the Boss's click (all text is untrusted data). */
 export interface ScriptProposalView {
   id: string; label: string; description: string; path: string; sha256: string; size: number;
@@ -1251,6 +1256,9 @@ const api = {
   listScriptProposals: (): Promise<ScriptProposalView[]> => ipcRenderer.invoke('scripts:proposals'),
   approveScriptProposal: (id: string): Promise<{ ok: boolean; error?: string; label?: string; replaced?: string | null }> => ipcRenderer.invoke('scripts:approveProposal', id),
   rejectScriptProposal: (id: string): Promise<boolean> => ipcRenderer.invoke('scripts:rejectProposal', id),
+  getScriptStatuses: (): Promise<ScriptStatusView[]> => ipcRenderer.invoke('scripts:status'),
+  getScriptReapproval: (missionId: string): Promise<ScriptReapprovalView | null> => ipcRenderer.invoke('scripts:reapprovePreview', missionId),
+  reapproveScript: (missionId: string, seenSha: string): Promise<{ ok: boolean; error?: string; label?: string }> => ipcRenderer.invoke('scripts:reapprove', missionId, seenSha),
   setScriptMissionEnabled: (id: string, enabled: boolean): Promise<{ ok: boolean }> => ipcRenderer.invoke('scripts:setMissionEnabled', id, enabled),
   onScriptProposalsUpdated: (cb: () => void): (() => void) => {
     const listener = () => cb();

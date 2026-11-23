@@ -115,6 +115,27 @@ test('hash changed since approval: refused, NOT executed, error delivered', asyn
   assert.equal(s.grants.length, 0, 'no broker token minted for a refused run');
 });
 
+test('a changed script says where to click; the alert is sent once, and again only after the hash matched in between', async (t) => {
+  const clock = { t: 1_000_000 };
+  const s = setup(t, { now: () => clock.t });
+  const m = s.make('rep.sh', 'exit 0');
+  const good = fs.readFileSync(m.p);
+  fs.writeFileSync(m.p, '#!/bin/sh\nexit 1\n');
+  const r1 = await s.runner.run(m);
+  assert.match(r1.reason, /Settings → Schedules → "check rep\.sh" press Reapprove/);
+  assert.match(s.sent[0].body, /Reapprove/);
+  clock.t += 600_000;
+  const r2 = await s.runner.run(m);
+  assert.equal(r2.status, 'error'); assert.equal(r2.delivered, false);
+  assert.equal(s.sent.length, 1, 'a second failing run sends nothing');
+  assert.equal(s.logs.at(-1).repeated, true);
+  fs.writeFileSync(m.p, good); clock.t += 600_000; // back to the approved bytes: runs, flag cleared
+  assert.equal((await s.runner.run(m)).status, 'ok');
+  fs.writeFileSync(m.p, '#!/bin/sh\nexit 2\n'); clock.t += 600_000;
+  await s.runner.run(m);
+  assert.equal(s.sent.length, 2, 'a new change is reported again');
+});
+
 test('unapproved or missing script: error message, nothing runs', async (t) => {
   const s = setup(t);
   const um = { id: 'm1', label: 'x', scriptId: 'nope', intervalMs: 1 };

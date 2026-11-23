@@ -195,7 +195,7 @@ export function rejectProposal(host: ProposalHost, id: string): boolean {
 }
 
 export interface ApprovalConfig { approvedScripts: ApprovedScript[]; missions: MissionLike[] }
-export type ApproveResult = { ok: true; approvedScripts: ApprovedScript[]; missions: MissionLike[]; label: string; replaced?: string } | { ok: false; error: string };
+export type ApproveResult = { ok: true; approvedScripts: ApprovedScript[]; missions: MissionLike[]; label: string; replaced?: string; scriptId: string; bytes: Buffer } | { ok: false; error: string };
 
 /** Everything the click does, computed in memory from STORED data. The caller writes the result in one config write
  *  and then calls `finishApproval`. A failure at any step returns an error and changes nothing. */
@@ -241,7 +241,7 @@ export function approveProposal(host: ProposalHost, id: string, cfg: ApprovalCon
   const at = missions.findIndex((m) => m.id === missionId);
   if (at >= 0) missions[at] = rec; else missions.push(rec);
   if (!verifyApproval(key, entry) || !verifyMissionSig(key, rec)) return { ok: false, error: 'internal: signatures do not verify' };
-  return { ok: true, approvedScripts, missions, label: p.label, replaced };
+  return { ok: true, approvedScripts, missions, label: p.label, replaced, scriptId, bytes: current };
 }
 
 /** After the config write succeeded: the proposal is consumed. */
@@ -251,3 +251,100 @@ export function finishApproval(host: ProposalHost, id: string, summary: Record<s
   host.log({ kind: 'script-proposal-approved', id, ...summary });
 }
 export const proposalCopyExists = (host: ProposalHost, id: string): boolean => existsSync(copyOf(host, id));
+
+// ─── Re-approval of a script whose file changed ───────────────────────────────────────────────────────────────
+// The approval pins a sha256. When the file on disk no longer matches, the run fails; the Boss can look at what changed
+// and press Reapprove. Same rules as a proposal: main reads the file itself, nothing from the renderer is trusted (the
+// hash it sends back only says WHICH content the Boss looked at), and one config write applies the new signed approval.
+
+const approvedCopyOf = (host: ProposalHost, scriptId: string): string => join(host.dir, `approved-${scriptId.replace(/[^A-Za-z0-9_-]/g, '_')}.copy`);
+
+/** Keep the bytes just approved, so the next change can be shown as a diff. Best effort: without it there is no diff. */
+export function keepApprovedCopy(host: ProposalHost, scriptId: string, bytes: Buffer): void {
+  try { ensureDir(host); writeFileSync(approvedCopyOf(host, scriptId), bytes, { mode: 0o600 }); } catch { /* the diff is optional */ }
+}
+
+export type ScriptState = 'ok' | 'changed' | 'missing' | 'unapproved';
+export interface ScriptStatus { missionId: string; state: ScriptState; path?: string; approvedSha?: string; currentSha?: string }
+
+function statusOf(host: ProposalHost, m: MissionLike, cfg: ApprovalConfig, key: string | null): ScriptStatus & { current?: Buffer; entry?: ApprovedScript } {
+  const entry = cfg.approvedScripts.find((a) => a.id === m.scriptId);
+  if (!entry || !verifyApproval(key, entry) || !verifyMissionSig(key, m)) return { missionId: m.id, state: 'unapproved' };
+  let current: Buffer;
+  try { current = readRegularFile(entry.path); } catch { return { missionId: m.id, state: 'missing', path: entry.path, approvedSha: entry.sha256 }; }
+  const currentSha = sha256Hex(current);
+  return { missionId: m.id, state: currentSha === entry.sha256 ? 'ok' : 'changed', path: entry.path, approvedSha: entry.sha256, currentSha, current, entry };
+}
+
+/** One entry per script mission: is the file on disk still what was approved? */
+export function scriptStatuses(host: ProposalHost, cfg: ApprovalConfig): ScriptStatus[] {
+  const key = host.key(false);
+  return cfg.missions.filter((m) => m.kind === 'script').map((m) => { const { current: _c, entry: _e, ...s } = statusOf(host, m, cfg, key); return s; });
+}
+
+/** Changed lines with two lines of context, `-` old / `+` new. Null when the files are too big to diff cheaply. */
+export function lineDiff(oldText: string, newText: string, maxCells = 4_000_000): string | null {
+  const a = oldText.split('\n'); const b = newText.split('\n');
+  if (a.length * b.length > maxCells) return null;
+  const w = b.length + 1;
+  const lcs = new Uint32Array((a.length + 1) * w);
+  for (let i = a.length - 1; i >= 0; i--) for (let j = b.length - 1; j >= 0; j--) {
+    lcs[i * w + j] = a[i] === b[j] ? lcs[(i + 1) * w + j + 1] + 1 : Math.max(lcs[(i + 1) * w + j], lcs[i * w + j + 1]);
+  }
+  const ops: { t: ' ' | '-' | '+'; s: string }[] = [];
+  let i = 0; let j = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) { ops.push({ t: ' ', s: a[i] }); i++; j++; }
+    else if (lcs[(i + 1) * w + j] >= lcs[i * w + j + 1]) ops.push({ t: '-', s: a[i++] });
+    else ops.push({ t: '+', s: b[j++] });
+  }
+  while (i < a.length) ops.push({ t: '-', s: a[i++] });
+  while (j < b.length) ops.push({ t: '+', s: b[j++] });
+  const keep = ops.map((o, k) => o.t !== ' ' || ops.slice(Math.max(0, k - 2), k + 3).some((x) => x.t !== ' '));
+  const out: string[] = [];
+  ops.forEach((o, k) => { if (keep[k]) out.push(`${o.t} ${o.s}`); else if (out[out.length - 1] !== '…') out.push('…'); });
+  return out.join('\n');
+}
+
+export interface ReapprovalView {
+  missionId: string; label: string; path: string; approvedSha: string; currentSha: string; size: number;
+  /** The file as it is now (untrusted text), and the diff against the copy kept at the last approval (null if none). */
+  content: string; diff: string | null;
+}
+
+/** What the Boss reads before pressing Reapprove. Null unless the mission's file really differs from the approved one. */
+export function reapprovalPreview(host: ProposalHost, cfg: ApprovalConfig, missionId: string): ReapprovalView | null {
+  const m = cfg.missions.find((x) => x.id === missionId && x.kind === 'script');
+  if (!m) return null;
+  const s = statusOf(host, m, cfg, host.key(false));
+  if (s.state !== 'changed' || !s.current || !s.entry) return null;
+  let diff: string | null = null;
+  try {
+    const old = readRegularFile(approvedCopyOf(host, s.entry.id));
+    if (sha256Hex(old) === s.entry.sha256) diff = lineDiff(old.toString('utf8'), s.current.toString('utf8'));
+  } catch { /* no kept copy */ }
+  return { missionId, label: m.label, path: s.entry.path, approvedSha: s.entry.sha256, currentSha: s.currentSha!, size: s.current.length, content: s.current.toString('utf8'), diff };
+}
+
+export type ReapproveResult = { ok: true; approvedScripts: ApprovedScript[]; label: string; scriptId: string; bytes: Buffer } | { ok: false; error: string };
+
+/** Approve the file's current content for an existing, authentic script mission. `seenSha` is only what the Boss was
+ *  shown: if the file is not exactly that any more, nothing is approved. The signed approval pins the bytes main just read. */
+export function reapprove(host: ProposalHost, cfg: ApprovalConfig, missionId: string, seenSha: unknown): ReapproveResult {
+  const key = host.key(true);
+  if (!key) return { ok: false, error: 'the macOS Keychain (safeStorage) is not available' };
+  if (typeof seenSha !== 'string' || !/^[0-9a-f]{64}$/.test(seenSha)) return { ok: false, error: 'bad request' };
+  const m = cfg.missions.find((x) => x.id === missionId && x.kind === 'script');
+  if (!m) return { ok: false, error: 'no such script check' };
+  const s = statusOf(host, m, cfg, key);
+  if (s.state === 'unapproved') return { ok: false, error: 'this check is not authentic any more: ask god for a new proposal' };
+  if (s.state === 'missing') return { ok: false, error: 'the script file cannot be read any more' };
+  if (s.state === 'ok') return { ok: false, error: 'the script has not changed since it was approved' };
+  const bytes = s.current!;
+  if (s.currentSha !== seenSha) return { ok: false, error: 'the script file changed after you opened it: look at it again' };
+  if (bytes.length === 0 || bytes[0] !== 0x23 || bytes[1] !== 0x21) return { ok: false, error: 'the script must start with a #! line' };
+  const base = { id: s.entry!.id, path: s.entry!.path, sha256: s.currentSha!, approvedAt: (host.now ?? Date.now)() };
+  const entry: ApprovedScript = { ...base, sig: approvalSignature(key, base) };
+  if (!verifyApproval(key, entry)) return { ok: false, error: 'internal: signature does not verify' };
+  return { ok: true, approvedScripts: cfg.approvedScripts.map((a) => (a.id === entry.id ? entry : a)), label: m.label, scriptId: entry.id, bytes };
+}
