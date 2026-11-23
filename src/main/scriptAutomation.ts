@@ -169,6 +169,8 @@ export function createScriptRunner(deps: ScriptRunnerDeps) {
   const running = new Set<string>();
   /** Last start per mission, in memory: config.json's lastFiredAt is agent-writable, so it never decides whether a run is due. */
   const lastStart = new Map<string, number>();
+  /** Missions whose file already failed the hash check and was reported (cleared when the hash matches again). */
+  const mismatched = new Set<string>();
   const spawnFn = deps.spawn ?? nodeSpawn;
   const now = deps.now ?? Date.now;
 
@@ -212,7 +214,15 @@ export function createScriptRunner(deps: ScriptRunnerDeps) {
       try {
         bytes = readRegularFile(entry.path);
       } catch (e) { return finish(fail(`cannot read ${entry.path}: ${(e as NodeJS.ErrnoException).code ?? 'error'}`)); }
-      if (sha256Hex(bytes) !== entry.sha256) return finish(fail('the script changed since it was approved (hash mismatch); approve it again in Settings'));
+      if (sha256Hex(bytes) !== entry.sha256) {
+        // A changed file stays changed until the Boss reapproves it: say so ONCE, not at every scheduled run.
+        const again = mismatched.has(m.id);
+        mismatched.add(m.id);
+        const reason = `the script changed since it was approved (hash mismatch); in Settings → Schedules → "${m.label}" press Reapprove (Riapprova) after reading the change`;
+        if (again) return finish({ status: 'error', exitCode: null, reason, delivered: false }, { repeated: true });
+        return finish(fail(reason));
+      }
+      mismatched.delete(m.id);
 
       // Execute our own copy of the bytes we just verified, never the original path.
       mkdirSync(deps.cacheDir, { recursive: true, mode: 0o700 });

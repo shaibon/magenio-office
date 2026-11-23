@@ -121,6 +121,73 @@ test('approval is atomic: script + mission signed, the replaced trigger switched
   assert.equal(fs.existsSync(path.join(s.host.dir, `${id}.copy`)), false);
 });
 
+/** An approved script mission, as the app stores it after a proposal was approved. */
+function approved(t) {
+  const s = setup(t);
+  const p = s.script('a.sh', 'echo one; exit 10');
+  const id = P.propose(s.host, 'god-1', s.base(p)).body.id;
+  const r = P.approveProposal(s.host, id, cfg());
+  P.keepApprovedCopy(s.host, r.scriptId, r.bytes);
+  P.finishApproval(s.host, id, {});
+  const c = { approvedScripts: r.approvedScripts, missions: r.missions };
+  return { s, p, c, mid: r.missions.find((m) => m.kind === 'script').id };
+}
+
+test('reapprove: file unchanged = ok; changed = state changed, preview with diff; missing = missing', (t) => {
+  const { s, p, c, mid } = approved(t);
+  assert.equal(P.scriptStatuses(s.host, c)[0].state, 'ok');
+  assert.equal(P.reapprovalPreview(s.host, c, mid), null);
+  fs.writeFileSync(p, '#!/bin/sh\necho two; exit 10\n');
+  const st = P.scriptStatuses(s.host, c)[0];
+  assert.equal(st.state, 'changed'); assert.notEqual(st.approvedSha, st.currentSha);
+  const v = P.reapprovalPreview(s.host, c, mid);
+  assert.equal(v.path, p); assert.equal(v.currentSha, S.sha256Hex(fs.readFileSync(p)));
+  assert.match(v.diff, /- echo one; exit 10/); assert.match(v.diff, /\+ echo two; exit 10/);
+  fs.rmSync(p);
+  assert.equal(P.scriptStatuses(s.host, c)[0].state, 'missing');
+});
+
+test('reapprove: signs the new hash for the same script id, mission untouched, only main-read bytes are pinned', (t) => {
+  const { s, p, c, mid } = approved(t);
+  fs.writeFileSync(p, '#!/bin/sh\necho two; exit 10\n');
+  const seen = S.sha256Hex(fs.readFileSync(p));
+  const r = P.reapprove(s.host, c, mid, seen);
+  assert.equal(r.ok, true, r.error);
+  const entry = r.approvedScripts[0];
+  assert.equal(r.approvedScripts.length, 1); assert.equal(entry.sha256, seen); assert.equal(entry.path, c.approvedScripts[0].path);
+  assert.equal(S.verifyApproval(KEY, entry), true);
+  assert.equal(P.scriptStatuses(s.host, { ...c, approvedScripts: r.approvedScripts })[0].state, 'ok');
+  assert.equal(S.verifyMissionSig(KEY, c.missions.find((m) => m.id === mid)), true, 'the mission record is not rewritten, its signature still holds');
+});
+
+test('reapprove refuses when the file changes between viewing and clicking, or nothing changed, or the hash is junk', (t) => {
+  const { s, p, c, mid } = approved(t);
+  assert.match(P.reapprove(s.host, c, mid, c.approvedScripts[0].sha256).error, /has not changed/);
+  fs.writeFileSync(p, '#!/bin/sh\necho two; exit 10\n');
+  const seen = S.sha256Hex(fs.readFileSync(p));
+  fs.writeFileSync(p, '#!/bin/sh\necho evil; exit 10\n'); // swapped after the Boss opened the review
+  assert.match(P.reapprove(s.host, c, mid, seen).error, /changed after you opened it/);
+  assert.match(P.reapprove(s.host, c, mid, 'zz').error, /bad request/);
+  assert.match(P.reapprove(s.host, c, 'nope', seen).error, /no such/);
+});
+
+test('reapprove refuses a forged approval record or mission, and a file with no shebang', (t) => {
+  const { s, p, c, mid } = approved(t);
+  fs.writeFileSync(p, '#!/bin/sh\necho two\n');
+  const seen = S.sha256Hex(fs.readFileSync(p));
+  const forgedEntry = { ...c, approvedScripts: [{ ...c.approvedScripts[0], path: '/bin/sh' }] };
+  assert.match(P.reapprove(s.host, forgedEntry, mid, seen).error, /not authentic/);
+  const forgedMission = { ...c, missions: c.missions.map((m) => ({ ...m, intervalMs: 1 })) };
+  assert.match(P.reapprove(s.host, forgedMission, mid, seen).error, /not authentic/);
+  fs.writeFileSync(p, 'echo no shebang\n');
+  assert.match(P.reapprove(s.host, c, mid, S.sha256Hex(fs.readFileSync(p))).error, /#!/);
+});
+
+test('lineDiff shows only changed lines with context', () => {
+  const d = P.lineDiff('a\nb\nc\nd\ne\nf\ng\nh', 'a\nb\nc\nd\nE\nf\ng\nh');
+  assert.match(d, /- e\n\+ E/); assert.match(d, /^…/); assert.equal(P.lineDiff('a', 'b', 0), null);
+});
+
 test('approval fails as a whole: nothing applied when the file changed after the proposal', (t) => {
   const s = setup(t, [{ id: 'old', label: 'Old poll', kind: 'dispatch', enabled: true, to: 'god-1', body: 'wake', intervalMs: 1 }]);
   const p = s.script('a.sh');

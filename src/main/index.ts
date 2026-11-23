@@ -17,7 +17,7 @@ import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { join, resolve, relative, sep, basename, dirname, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
 import { createScriptRunner, readRegularFile, verifyApproval, verifyMissionSig, signedScriptMission, alertSignature, resolveAlertAgent } from './scriptAutomation';
-import { propose as proposeScript, listProposals, rejectProposal, approveProposal, finishApproval, type ProposalHost, type MissionLike } from './scriptProposals';
+import { propose as proposeScript, listProposals, rejectProposal, approveProposal, finishApproval, keepApprovedCopy, scriptStatuses, reapprovalPreview, reapprove, type ProposalHost, type MissionLike } from './scriptProposals';
 import { request as httpsRequest } from 'node:https';
 import { PtyManager, type SpawnOptions } from './pty';
 import { reapHiveMcp } from './mcpReap';
@@ -5486,9 +5486,26 @@ ipcMain.handle('scripts:approveProposal', (evt, id: unknown) => {
   try { writeConfig({ approvedScripts: r.approvedScripts, missions: r.missions as ScheduledMission[] }); }
   catch (e) { return { ok: false, error: `could not save: ${(e as Error).message}` }; }
   finishApproval(proposalHost, id, { label: r.label, replaced: r.replaced });
+  keepApprovedCopy(proposalHost, r.scriptId, r.bytes);
   syncMissions();
   try { liveWebContents()?.send('missions:updated'); } catch { /* window gone */ }
   return { ok: true, label: r.label, replaced: r.replaced ?? null };
+});
+// A script whose file changed since its approval: state per mission, what changed, and the Boss's Reapprove click.
+const approvalCfg = () => { const c = readConfig(); return { approvedScripts: c.approvedScripts ?? [], missions: (c.missions ?? []) as MissionLike[] }; };
+ipcMain.handle('scripts:status', (evt) => (fromUi(evt) ? scriptStatuses(proposalHost, approvalCfg()) : []));
+ipcMain.handle('scripts:reapprovePreview', (evt, id: unknown) => (fromUi(evt) && typeof id === 'string' ? reapprovalPreview(proposalHost, approvalCfg(), id) : null));
+ipcMain.handle('scripts:reapprove', (evt, id: unknown, seenSha: unknown) => {
+  if (!fromUi(evt) || typeof id !== 'string') return { ok: false, error: 'not allowed' };
+  const r = reapprove(proposalHost, approvalCfg(), id, seenSha);
+  if (!r.ok) return r;
+  try { writeConfig({ approvedScripts: r.approvedScripts }); }
+  catch (e) { return { ok: false, error: `could not save: ${(e as Error).message}` }; }
+  keepApprovedCopy(proposalHost, r.scriptId, r.bytes);
+  hive.appendLog({ kind: 'script-reapproved', id, label: r.label, scriptId: r.scriptId });
+  syncMissions();
+  try { liveWebContents()?.send('missions:updated'); } catch { /* window gone */ }
+  return { ok: true, label: r.label };
 });
 // On/off of an approved script mission: the mission is re-signed with the new `enabled` (it is part of the signature).
 ipcMain.handle('scripts:setMissionEnabled', (evt, id: unknown, enabled: unknown) => {

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { ScriptProposalView } from '../../../../preload';
+import type { ScriptProposalView, ScriptStatusView, ScriptReapprovalView } from '../../../../preload';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { PixelButton } from '../PixelButton';
@@ -74,17 +74,21 @@ export function SchedulesSection({ onSummary }: { onSummary?: (s: string) => voi
   const [mBody, setMBody] = useState('');
   const [proposals, setProposals] = useState<ScriptProposalView[]>([]);
   const [alertAgent, setAlertAgent] = useState('');
+  const [statuses, setStatuses] = useState<ScriptStatusView[]>([]);
 
   useEffect(() => {
     const load = () => { window.cth.listMissions().then(setMissions).catch(() => { /* noop */ }); };
     load();
     const loadProposals = () => { window.cth.listScriptProposals().then(setProposals).catch(() => { /* noop */ }); };
     loadProposals();
+    const loadStatuses = () => { window.cth.getScriptStatuses().then(setStatuses).catch(() => { /* noop */ }); };
+    loadStatuses();
+    window.addEventListener('focus', loadStatuses);
     window.cth.getScriptAlertAgent().then(setAlertAgent).catch(() => { /* noop */ });
     // Refresh "last fired" when the scheduler stamps a beat/dispatch; proposals when god sends one.
-    const offMissions = window.cth.onMissionsUpdated(() => { load(); loadProposals(); });
+    const offMissions = window.cth.onMissionsUpdated(() => { load(); loadProposals(); loadStatuses(); });
     const offProposals = window.cth.onScriptProposalsUpdated(loadProposals);
-    return () => { offMissions(); offProposals(); };
+    return () => { offMissions(); offProposals(); window.removeEventListener('focus', loadStatuses); };
   }, []);
 
   useEffect(() => {
@@ -138,6 +142,8 @@ export function SchedulesSection({ onSummary }: { onSummary?: (s: string) => voi
           <ScriptRow
             key={m.id}
             mission={m}
+            status={statuses.find((x) => x.missionId === m.id)}
+            onChanged={() => { void window.cth.getScriptStatuses().then(setStatuses); }}
             onToggle={() => { void window.cth.setScriptMissionEnabled(m.id, !m.enabled).then(() => window.cth.listMissions().then(setMissions)); }}
             onDelete={() => remove(m.id)}
           />
@@ -372,8 +378,21 @@ function MissionRow({ mission, targetName, agents, onPatch, onDelete }: {
 /* ───────────────────────── script proposals (one-click approval) ───────────────────────── */
 
 /** An approved script mission. Nothing here is editable: a change of schedule, timeout or file is a new proposal. */
-function ScriptRow({ mission, onToggle, onDelete }: { mission: ScheduledMission; onToggle: () => void; onDelete: () => void }) {
+function ScriptRow({ mission, status, onChanged, onToggle, onDelete }: { mission: ScheduledMission; status?: ScriptStatusView; onChanged: () => void; onToggle: () => void; onDelete: () => void }) {
   const { t } = useTranslation();
+  const [review, setReview] = useState<ScriptReapprovalView | null>(null);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const openReview = () => { setError(''); void window.cth.getScriptReapproval(mission.id).then((v) => { if (v) setReview(v); else onChanged(); }); };
+  const confirm = () => {
+    if (!review) return;
+    setBusy(true); setError('');
+    void window.cth.reapproveScript(mission.id, review.currentSha)
+      .then((r) => { if (r.ok) setReview(null); else setError(t('schedulesSection.reapproveFailed', { error: r.error ?? '' })); onChanged(); })
+      .catch(() => setError(t('schedulesSection.reapproveFailed', { error: '?' })))
+      .finally(() => setBusy(false));
+  };
+  const pre = { margin: 0, padding: 6, maxHeight: 240, overflow: 'auto', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', background: 'var(--cth-paper-100)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)', fontFamily: 'var(--cth-font-mono)', fontSize: 11, lineHeight: '15px' } as const;
   const storedWeekly = weeklyDraft(mission.weekly);
   const fired = mission.lastFiredAt
     ? t('schedulesSection.fired', { time: relTime(Date.now() - mission.lastFiredAt, t) })
@@ -386,7 +405,26 @@ function ScriptRow({ mission, onToggle, onDelete }: { mission: ScheduledMission;
         <Toggle on={mission.enabled} onClick={onToggle} />
       </div>
       <Hint>{t('schedulesSection.scriptSub')} · {fired}</Hint>
-      <div style={{ marginTop: 6 }}>
+      {status?.state === 'changed' && <Hint>{t('schedulesSection.scriptChanged')}</Hint>}
+      {status?.state === 'missing' && <Hint>{t('schedulesSection.scriptMissing')}</Hint>}
+      {review && (
+        <div style={{ marginTop: 6 }}>
+          <div style={{ fontWeight: 600 }}>{t('schedulesSection.reapproveReview')}</div>
+          <Field label={t('schedulesSection.proposalFile')}>
+            <span style={{ fontFamily: 'var(--cth-font-mono)', fontSize: 11, overflowWrap: 'anywhere' }}>{review.path}</span>
+          </Field>
+          <Hint>{t('schedulesSection.reapproveHashes', { old: review.approvedSha.slice(0, 12), new: review.currentSha.slice(0, 12), size: review.size })}</Hint>
+          <Field label={review.diff !== null ? t('schedulesSection.reapproveDiff') : t('schedulesSection.reapproveContent')}>
+            <pre style={pre}>{review.diff ?? review.content}</pre>
+          </Field>
+          {review.diff === null && <Hint>{t('schedulesSection.reapproveNoDiff')}</Hint>}
+        </div>
+      )}
+      {error && <Hint>{error}</Hint>}
+      <div style={{ marginTop: 6, display: 'flex', gap: 6, alignItems: 'center' }}>
+        {status?.state === 'changed' && !review && <PixelButton variant="primary" size="sm" onClick={openReview}>{t('schedulesSection.reapprove')}</PixelButton>}
+        {review && <PixelButton variant="primary" size="sm" onClick={confirm} disabled={busy}>{t('schedulesSection.reapproveConfirm')}</PixelButton>}
+        {review && <PixelButton variant="ghost" size="sm" onClick={() => setReview(null)} disabled={busy}>{t('schedulesSection.reapproveCancel')}</PixelButton>}
         <MiniButton tone="danger" onClick={onDelete}>{t('common.delete')}</MiniButton>
       </div>
     </SubCard>
